@@ -525,6 +525,19 @@ export function AssistantPage({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [quoteSearchOpen, setQuoteSearchOpen] = useState(false);
 
+  // ── Side SharePoint search (real D&Q index) ──────────────────────────────
+  const [searchQ, setSearchQ]         = useState('');
+  const [searchRes, setSearchRes]     = useState<DqDoc[] | null>(null);
+  const [searching, setSearching]     = useState(false);
+  async function runSearch() {
+    const q = searchQ.trim();
+    if (!q) { setSearchRes(null); return; }
+    setSearching(true); setSearchRes(null);
+    try { const r = await api.dqSearch(q); setSearchRes(r.results || []); }
+    catch { setSearchRes([]); }
+    setSearching(false);
+  }
+
   const endRef       = useRef<HTMLDivElement>(null);
   const textareaRef  = useRef<HTMLTextAreaElement>(null);
   const historyRef   = useRef<HTMLDivElement>(null);
@@ -695,8 +708,12 @@ export function AssistantPage({
   const isEmpty = messages.length === 0;
 
   return (
-    // Break out of the parent p-6 to fill the full content area
-    <div className="-mx-6 -my-6 flex flex-col bg-ink-50 dark:bg-ink-950" style={{ height: 'calc(100vh - 56px)' }}>
+    // Break out of the parent p-6 to fill the full content area; 2-column shell:
+    // chat (left) + SharePoint search panel (right).
+    <div className="-mx-6 -my-6 flex bg-ink-50 dark:bg-ink-950" style={{ height: 'calc(100vh - 56px)' }}>
+
+      {/* ── Chat column ─────────────────────────────────────────────────────── */}
+      <div className="flex-1 min-w-0 flex flex-col border-r border-ink-200/70 dark:border-ink-800">
 
       {/* ── Top bar ─────────────────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center justify-between px-5 py-2.5 bg-white dark:bg-ink-900 border-b border-ink-200/70 dark:border-ink-800">
@@ -970,6 +987,40 @@ export function AssistantPage({
           Shift+Enter for new line · history saved locally
         </p>
       </div>
+      </div>{/* end chat column */}
+
+      {/* ── SharePoint search column ────────────────────────────────────────── */}
+      <aside className="hidden lg:flex w-[340px] shrink-0 flex-col bg-white dark:bg-ink-900">
+        <div className="shrink-0 flex items-center gap-2 px-5 py-3.5 border-b border-ink-200/70 dark:border-ink-800">
+          <Search className="w-3.5 h-3.5 text-ink-400" />
+          <span className="text-[13px] font-semibold flex-1">SharePoint search</span>
+        </div>
+        <div className="shrink-0 flex gap-2 px-4 py-3 border-b border-ink-200/70 dark:border-ink-800">
+          <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
+            placeholder="SR number, customer, title…"
+            className="flex-1 h-8 px-2.5 rounded-md text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 focus:ring-brand-400 focus:outline-none" />
+          <button onClick={runSearch} disabled={searching}
+            className="h-8 px-3 rounded-lg text-[11.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-800 dark:hover:bg-ink-100 disabled:opacity-50 transition-colors">
+            Search
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 min-h-0">
+          {searching ? (
+            <div className="py-10 flex justify-center"><Loader2 className="w-5 h-5 animate-spin text-ink-300" /></div>
+          ) : searchRes === null ? (
+            <p className="text-[11.5px] text-ink-400 text-center py-10 px-4">
+              {connected ? 'Search the D&Q Store — try a customer, SR number, kVA rating or fitting code.' : 'Connect to JOE to search SharePoint.'}
+            </p>
+          ) : searchRes.length === 0 ? (
+            <p className="text-[11.5px] text-ink-400 text-center py-10">No results.</p>
+          ) : (
+            <div className="space-y-2">
+              {searchRes.map((d, i) => <QuoteResultCard key={i} doc={d} />)}
+            </div>
+          )}
+        </div>
+      </aside>
 
       {/* Quote search modal */}
       {quoteSearchOpen && <QuoteSearchPanel onClose={() => setQuoteSearchOpen(false)} />}
