@@ -1,0 +1,2615 @@
+// ─── Inbox — Outlook email reader + AI triage ────────────────────────────────
+import React, { useState, useEffect, useCallback, useRef, KeyboardEvent } from 'react';
+import {
+  Mail, RefreshCw, Paperclip, FileText, Sparkles, Loader2,
+  Filter, Users, ChevronRight, Download,
+  CheckCircle2, Inbox as InboxIcon,
+  ThumbsUp, ThumbsDown, Send, Edit3, Trash2, RotateCcw,
+  Play, ArrowLeft, Zap, Eye, X, Image as ImageIcon, ChevronLeft,
+  Pin, PinOff, Search, FolderOpen, MoreHorizontal, Star, ExternalLink,
+  Forward, MessageSquare, PenLine, Plus, GripVertical,
+} from 'lucide-react';
+
+// ─── Module-level state — survives tab switches / component remounts ─────────
+const CACHE_TTL = 15 * 60 * 1000;
+const BRIEFING_TTL = 4 * 60 * 60 * 1000;
+interface CacheEntry { emails: EmailSummary[]; ts: number; }
+const emailCache = new Map<string, CacheEntry>();
+
+function loadBriefingCache(): BriefingItem[] {
+  try {
+    const raw = localStorage.getItem('vector_briefing');
+    if (!raw) return [];
+    const { items, ts } = JSON.parse(raw);
+    if (Date.now() - ts > BRIEFING_TTL) { localStorage.removeItem('vector_briefing'); return []; }
+    return items || [];
+  } catch { return []; }
+}
+
+// These are initialised once and kept alive while the app is open
+let _available: boolean | null = null;
+let _availError = '';
+let _newOutlook = false;
+let _graphAuth  = false;
+let _mailboxes: Mailbox[] = [];
+let _analysisCache: Record<string, string> = {};
+let _briefingItems: BriefingItem[] = loadBriefingCache();
+let _briefingMode = _briefingItems.length > 0;
+let _selectedId = '';
+let _detail: EmailDetail | null = null;
+import { cn } from '../lib/cn';
+import { api } from '../lib/api';
+import type { ToastFn } from '../App';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+interface Mailbox {
+  storeId:   string;
+  name:      string;
+  type:      'personal' | 'shared' | 'other';
+  inboxName: string;
+}
+
+interface AttachmentInfo {
+  index: number;
+  name:  string;
+  size:  number;
+  isPdf: boolean;
+}
+
+interface EmailSummary {
+  entryId:     string;
+  subject:     string;
+  sender:      string;
+  senderEmail: string;
+  received:    string;
+  bodyPreview: string;
+  unread:      boolean;
+  attachments: AttachmentInfo[];
+  hasPdf:      boolean;
+}
+
+interface EmailDetail extends EmailSummary {
+  to:       string;
+  cc:       string;
+  body:     string;
+  htmlBody?: string;
+}
+
+interface BriefingItem {
+  entryId:  string;
+  priority: 'high' | 'medium' | 'low';
+  tag:      string;
+  action:   string;
+  summary:  string;
+}
+
+interface AttachSuggestion {
+  sourceEntryId:   string;
+  attachmentIndex: number;
+  attachmentName:  string;
+  attachmentSize:  number;
+  emailSubject:    string;
+  sender:          string;
+  received:        string;
+  score:           number;
+}
+
+const CATEGORIES = ['Quote Request', 'Approval', 'Follow-up', 'Urgent', 'Info', 'Admin'] as const;
+
+// ─── Tiny markdown renderer (for AI analysis) ─────────────────────────────────
+function Md({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const out: React.ReactNode[] = [];
+  let ulBuf: string[] = [];
+  let olBuf: string[] = [];
+
+  const flushUl = () => {
+    if (!ulBuf.length) return;
+    out.push(
+      <ul key={out.length} className="my-1 space-y-1 pl-0.5">
+        {ulBuf.map((item, i) => (
+          <li key={i} className="flex gap-2 text-[12px] text-ink-700 dark:text-ink-200 leading-relaxed">
+            <span className="text-violet-400 shrink-0 mt-0.5">•</span>
+            <span>{inline(item)}</span>
+          </li>
+        ))}
+      </ul>,
+    );
+    ulBuf = [];
+  };
+  const flushOl = () => {
+    if (!olBuf.length) return;
+    out.push(
+      <ol key={out.length} className="my-1 space-y-1 pl-0.5">
+        {olBuf.map((item, i) => (
+          <li key={i} className="flex gap-2 text-[12px] text-ink-700 dark:text-ink-200 leading-relaxed">
+            <span className="text-violet-500 font-semibold shrink-0 w-4 text-right mt-0.5">{i + 1}.</span>
+            <span>{inline(item)}</span>
+          </li>
+        ))}
+      </ol>,
+    );
+    olBuf = [];
+  };
+
+  for (const line of lines) {
+    const raw = line.trim();
+    if (!raw) { flushUl(); flushOl(); out.push(<div key={out.length} className="h-1" />); continue; }
+    if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[11.5px] font-bold mt-2 mb-0.5 text-ink-800 dark:text-ink-100">{inline(raw.slice(4))}</p>); continue; }
+    if (raw.startsWith('## '))  { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[12.5px] font-bold mt-2.5 mb-0.5 text-ink-800 dark:text-ink-100">{inline(raw.slice(3))}</p>); continue; }
+    if (raw.startsWith('# '))   { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[13px] font-bold mt-2.5 mb-1 text-ink-800 dark:text-ink-100">{inline(raw.slice(2))}</p>); continue; }
+    if (/^[-*•]\s/.test(raw))  { flushOl(); ulBuf.push(raw.replace(/^[-*•]\s+/, '')); continue; }
+    if (/^\d+\.\s/.test(raw))  { flushUl(); olBuf.push(raw.replace(/^\d+\.\s+/, '')); continue; }
+    if (/^---+$/.test(raw))    { flushUl(); flushOl(); out.push(<hr key={out.length} className="my-2 border-violet-200/60 dark:border-violet-800/40" />); continue; }
+    flushUl(); flushOl();
+    out.push(<p key={out.length} className="text-[12px] text-ink-700 dark:text-ink-200 leading-relaxed">{inline(raw)}</p>);
+  }
+  flushUl(); flushOl();
+  return <div className="space-y-0.5">{out}</div>;
+}
+
+function inline(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  const re = /(\*\*(.+?)\*\*)|(`([^`]+)`)/g;
+  let last = 0, m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    if (m[1])      parts.push(<strong key={m.index} className="font-semibold text-ink-900 dark:text-ink-50">{m[2]}</strong>);
+    else if (m[3]) parts.push(<code key={m.index} className="px-1 py-0.5 rounded bg-ink-100 dark:bg-ink-700 text-[11px] font-mono text-brand-600 dark:text-brand-300">{m[4]}</code>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts.length === 1 ? parts[0] : <>{parts}</>;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function fmtDate(iso: string) {
+  try {
+    const d = new Date(iso);
+    const now = new Date();
+    const diff = (now.getTime() - d.getTime()) / 1000;
+    if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  } catch { return iso; }
+}
+
+function fmtSize(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Opens a PDF attachment in a new browser tab using the native PDF viewer
+function openAttachmentPdf(entryId: string, index: number) {
+  window.open(`/api/outlook/attachment-view/${encodeURIComponent(entryId)}/${index}`, '_blank', 'noopener');
+}
+
+const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tif', '.tiff']);
+function isImageFile(name: string) {
+  const dot = name.lastIndexOf('.');
+  return dot !== -1 && IMAGE_EXTS.has(name.slice(dot).toLowerCase());
+}
+function attViewUrl(entryId: string, index: number) {
+  return `/api/outlook/attachment-view/${encodeURIComponent(entryId)}/${index}`;
+}
+
+function ImageLightbox({ src, name, onClose }: { src: string; name: string; onClose: () => void }) {
+  useEffect(() => {
+    const h = (e: Event) => { if ((e as globalThis.KeyboardEvent).key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-[9999] bg-black/85 flex items-center justify-center p-6 cursor-zoom-out"
+      onClick={onClose}>
+      <div
+        className="relative max-w-[90vw] max-h-[90vh] cursor-default"
+        onClick={e => e.stopPropagation()}>
+        <img
+          src={src}
+          alt={name}
+          className="block max-w-[88vw] max-h-[85vh] rounded-xl shadow-2xl object-contain"
+        />
+        <div className="absolute top-2 right-2 flex items-center gap-2">
+          <span className="text-white/80 text-[11px] bg-black/50 px-2 py-0.5 rounded-md truncate max-w-[260px]">{name}</span>
+          <button
+            onClick={onClose}
+            className="w-7 h-7 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── HTML email renderer (iframe, sandboxed, Outlook-matched fonts) ──────────
+function wrapEmailHtml(html: string): string {
+  const t = html.trim();
+  const injectStyle = [
+    `<style>`,
+    `* { max-width: 100%; box-sizing: border-box; }`,
+    `img { max-width: 100%; height: auto; }`,
+    `body { font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: #1f1f1f; margin: 16px 20px; line-height: 1.5; background: #fff; word-wrap: break-word; }`,
+    `a { color: #0563C1; }`,
+    `p { margin: 0 0 8px; }`,
+    `pre, code { white-space: pre-wrap; word-break: break-all; }`,
+    `</style>`,
+  ].join('');
+  if (/^<!DOCTYPE|^<html/i.test(t)) {
+    return t.includes('<head') ? t.replace(/<head([^>]*)>/i, `<head$1>${injectStyle}`) : t;
+  }
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">${injectStyle}</head><body>${t}</body></html>`;
+}
+
+function EmailBodyFrame({ html }: { html: string }) {
+  const ref = useRef<HTMLIFrameElement>(null);
+  function onLoad() {
+    const doc = ref.current?.contentDocument;
+    if (!doc) return;
+    const h = Math.max(200, doc.documentElement.scrollHeight || doc.body?.scrollHeight || 200);
+    if (ref.current) ref.current.style.height = (h + 20) + 'px';
+  }
+  return (
+    <iframe
+      ref={ref}
+      srcDoc={wrapEmailHtml(html)}
+      sandbox="allow-same-origin"
+      onLoad={onLoad}
+      className="w-full border-0 block"
+      style={{ minHeight: 200 }}
+      title="email-body"
+    />
+  );
+}
+
+// ─── Inline EL Material Pricer ───────────────────────────────────────────────
+interface MiniPricedItem {
+  ref: string; cat_no: string; description: string;
+  qty: number; ntp: number; line_ntp: number;
+  matched: boolean; match_type?: string; original_input?: string;
+  search_note?: string; status?: string;
+  closest_matches?: { cat_no: string; description: string; family: string; ntp: number; list_price: number }[];
+}
+
+interface MiniCandidate {
+  cat_no:        string;
+  family:        string;
+  description:   string;
+  confidence:    string;
+  reasoning:     string;
+  source_url:    string;
+  matched:       boolean;
+  list_price:    number | null;
+  ntp:           number | null;
+  status:        string | null;
+  suggested_qty?: number;
+}
+
+interface ScheduleEntry { source: string; items: MiniPricedItem[]; total_ntp: number; }
+let _pricerSchedule: ScheduleEntry[] = [];
+
+function fmtGbp(n: number) { return '£' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+
+function extractMaterialHints(body: string): string {
+  const hits: string[] = [];
+  const catalogRe = /\b(MP2[A-Z0-9\-]*|NXL[A-Z0-9\-]*|LUM[A-Z0-9\-]*|AT-S[A-Z0-9\-]*|LP-STAR[A-Z0-9\-]*|I-P65[A-Z0-9 \-]*|IP65[A-Z0-9\-]*|CGS[A-Z0-9\-]*|CG-S[A-Z0-9\-]*|CGLine[A-Z0-9\-]*|CrystalWay[A-Z0-9\-]*|RoundTech[A-Z0-9\-]*|NexiLite[A-Z0-9\-]*|ExLin[A-Z0-9\-]*|LHID[A-Z0-9\-]*|EMP[A-Z0-9\-]*|CEAG[A-Z0-9\-]*)\b/i;
+  const qtyLineRe = /\d+\s*[xX×]\s*[A-Z][A-Z0-9\-]{3,}|[A-Z][A-Z0-9\-]{3,}\s*[,;]\s*\d+/;
+  for (const line of body.split('\n')) {
+    const t = line.trim();
+    if (!t || t.length > 200) continue;
+    if (catalogRe.test(t) || qtyLineRe.test(t)) hits.push(t);
+  }
+  return hits.join('\n');
+}
+
+function InlineELPricer({
+  emailBody, entryId, attachments, toast,
+}: {
+  emailBody: string;
+  entryId: string;
+  attachments: AttachmentInfo[];
+  toast: ToastFn;
+}) {
+  const [listText, setListText] = useState(() => extractMaterialHints(emailBody));
+  const [loading, setLoading]   = useState(false);
+  const [result, setResult]     = useState<{ items: MiniPricedItem[]; total_ntp: number; unmatched: string[]; candidates?: MiniCandidate[] } | null>(null);
+  const [copied, setCopied]     = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [pdfSource, setPdfSource] = useState<string | null>(null);
+  const [schedule, setSchedule] = useState<ScheduleEntry[]>(() => _pricerSchedule);
+  const [schedCopied, setSchedCopied] = useState(false);
+
+  const pricerAtts = attachments.filter(a => a.isPdf || isImageFile(a.name));
+
+  async function run() {
+    if (!listText.trim()) return;
+    setLoading(true);
+    setPdfSource(null);
+    try {
+      // Use multipart so the unified endpoint can auto-route descriptive text
+      // through Gemini + Google Search and return candidate suggestions.
+      const fd = new FormData();
+      fd.append('text', listText);
+      const resp = await fetch('/api/schematics/price', { method: 'POST', body: fd });
+      const data = await resp.json();
+      if (data.error) { toast('err', data.error); }
+      else setResult(data);
+    } catch (e: any) { toast('err', e.message); }
+    setLoading(false);
+  }
+
+  function pickCandidate(c: MiniCandidate) {
+    if (!c.matched || c.ntp == null) {
+      toast('warn', `${c.cat_no} is not in the price list`);
+      return;
+    }
+    const qty = c.suggested_qty && c.suggested_qty > 0 ? c.suggested_qty : 1;
+    const newItem: MiniPricedItem = {
+      ref:        '',
+      cat_no:     c.cat_no,
+      description: c.description,
+      qty,
+      ntp:        c.ntp,
+      line_ntp:   Math.round(c.ntp * qty * 100) / 100,
+      matched:    true,
+      match_type: 'exact',
+      original_input: c.cat_no,
+      status:     c.status || '',
+    };
+    setResult(prev => {
+      if (!prev) return { items: [newItem], total_ntp: newItem.line_ntp, unmatched: [], candidates: [] };
+      const items = [...prev.items, newItem];
+      return {
+        ...prev,
+        items,
+        total_ntp: items.filter(i => i.matched).reduce((s, i) => s + i.line_ntp, 0),
+      };
+    });
+    toast('ok', `Added ${c.cat_no} × ${qty}`);
+  }
+
+  async function priceFromAttachment(attIndex: number, attName: string, isImage = false) {
+    setLoading(true);
+    setResult(null);
+    setPdfSource(attName);
+    try {
+      const resp = await fetch('/api/outlook/attachment-price', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ entryId, index: attIndex, isImage }),
+      });
+      const data = await resp.json();
+      if (data.error) { toast('err', data.error); setPdfSource(null); }
+      else setResult(data);
+    } catch (e: any) { toast('err', e.message); setPdfSource(null); }
+    setLoading(false);
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    if (e.dataTransfer.types.includes('vector/attachment')) setDragOver(true);
+  }
+  function handleDragLeave(e: React.DragEvent) {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false);
+  }
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOver(false);
+    try {
+      const raw = e.dataTransfer.getData('vector/attachment');
+      if (!raw) return;
+      const { attIndex, attName, isImage } = JSON.parse(raw);
+      priceFromAttachment(attIndex, attName, !!isImage);
+    } catch {}
+  }
+
+  function addToSchedule() {
+    if (!result) return;
+    const matched = result.items.filter(i => i.matched);
+    if (!matched.length) return;
+    const entry: ScheduleEntry = {
+      source:    pdfSource || 'Manual list',
+      items:     matched,
+      total_ntp: matched.reduce((s, i) => s + i.line_ntp, 0),
+    };
+    const updated = [..._pricerSchedule.filter(e => e.source !== entry.source), entry];
+    _pricerSchedule = updated;
+    setSchedule(updated);
+    toast('ok', `Added ${matched.length} item${matched.length !== 1 ? 's' : ''} to schedule`);
+  }
+
+  function clearSchedule() {
+    _pricerSchedule = [];
+    setSchedule([]);
+  }
+
+  function copyFullSchedule() {
+    if (!schedule.length) return;
+    const allItems = schedule.flatMap(e => e.items);
+    const grandTotal = schedule.reduce((s, e) => s + e.total_ntp, 0);
+    const lines = [
+      'MATERIAL SCHEDULE — EATON EMERGENCY LIGHTING',
+      '─'.repeat(70),
+      `${'Ref'.padEnd(8)} ${'Catalogue No'.padEnd(18)} ${'Description'.padEnd(36)} ${'Qty'.padStart(4)} ${'NTP/Unit'.padStart(10)} ${'Line NTP'.padStart(10)}`,
+      '─'.repeat(70),
+    ];
+    for (const entry of schedule) {
+      if (schedule.length > 1) lines.push(`  [${entry.source}]`);
+      for (const i of entry.items) {
+        lines.push(
+          `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmtGbp(i.ntp).padStart(10)} ${fmtGbp(i.line_ntp).padStart(10)}`
+        );
+      }
+    }
+    lines.push('─'.repeat(70));
+    lines.push(`${'TOTAL NTP'.padEnd(68)} ${fmtGbp(grandTotal).padStart(10)}`);
+    lines.push('');
+    lines.push('Prices: Eaton EL Global Price List July 2026 (valid from 1 July 2026). Ex VAT. Subject to confirmation.');
+    navigator.clipboard.writeText(lines.join('\n'));
+    setSchedCopied(true);
+    setTimeout(() => setSchedCopied(false), 2000);
+    toast('ok', 'Full schedule copied');
+  }
+
+  function copySchedule() {
+    if (!result) return;
+    const matched = result.items.filter(i => i.matched);
+    const src = pdfSource ? `Source: ${pdfSource}` : 'Source: manual list';
+    const lines = [
+      `MATERIAL SCHEDULE — EATON EMERGENCY LIGHTING`,
+      `${'─'.repeat(70)}`,
+      `${'Ref'.padEnd(8)} ${'Catalogue No'.padEnd(18)} ${'Description'.padEnd(36)} ${'Qty'.padStart(4)} ${'NTP/Unit'.padStart(10)}`,
+      `${'─'.repeat(70)}`,
+      ...matched.map(i =>
+        `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmtGbp(i.ntp).padStart(10)}`
+      ),
+      `${'─'.repeat(70)}`,
+      '',
+      'Prices: Eaton EL Global Price List July 2026 (valid from 1 July 2026). Ex VAT. Subject to confirmation.',
+      src,
+    ];
+    navigator.clipboard.writeText(lines.join('\n'));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    toast('ok', 'Material schedule copied');
+  }
+
+  const matched   = result?.items.filter(i => i.matched) || [];
+  const unmatched = result?.items.filter(i => !i.matched) || [];
+
+  return (
+    <div
+      className={cn(
+        'rounded-xl ring-1 ring-inset p-4 space-y-3 transition-colors',
+        dragOver
+          ? 'bg-amber-50/70 dark:bg-amber-900/20 ring-amber-400 dark:ring-amber-500'
+          : 'bg-white dark:bg-ink-900 ring-amber-200/70 dark:ring-amber-700/30',
+      )}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}>
+
+      {/* Header */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center shrink-0">
+          <Zap className="w-3 h-3 text-amber-500" />
+        </div>
+        <p className="text-[12px] font-semibold text-ink-800 dark:text-ink-100">EL Material Pricer</p>
+        {pdfSource
+          ? <span className="text-[10px] text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900/20 px-2 py-0.5 rounded-full ring-1 ring-inset ring-brand-200 dark:ring-brand-700/30 truncate max-w-[200px]">{pdfSource}</span>
+          : <span className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full ring-1 ring-inset ring-amber-200 dark:ring-amber-700/30">detected</span>}
+      </div>
+
+      {/* Attachment chips — PDF and images */}
+      {pricerAtts.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pb-0.5">
+          {pricerAtts.map(a => {
+            const img = isImageFile(a.name);
+            return (
+              <button
+                key={a.index}
+                onClick={() => priceFromAttachment(a.index, a.name, img)}
+                disabled={loading}
+                title={`Price ${a.name} with AI`}
+                className={cn(
+                  'inline-flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset disabled:opacity-50 transition-colors cursor-pointer',
+                  img
+                    ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-700/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
+                    : 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-brand-200 dark:ring-brand-700/30 hover:bg-brand-100 dark:hover:bg-brand-900/40',
+                )}>
+                {img ? <ImageIcon className="w-3 h-3 shrink-0" /> : <FileText className="w-3 h-3 shrink-0" />}
+                <span className="truncate max-w-[160px]">{a.name}</span>
+                <span className="opacity-50 ml-0.5">→ Price</span>
+              </button>
+            );
+          })}
+          <span className="text-[10px] text-ink-400 dark:text-ink-500 self-center ml-1">or drag here</span>
+        </div>
+      )}
+
+      {/* Drop zone highlight */}
+      {dragOver && (
+        <div className="flex items-center justify-center h-10 rounded-lg border-2 border-dashed border-amber-400 dark:border-amber-500 text-[11.5px] font-medium text-amber-600 dark:text-amber-400">
+          Drop PDF or image to price
+        </div>
+      )}
+
+      {/* Loading state for PDF pricing */}
+      {loading && pdfSource && (
+        <div className="flex items-center gap-2 text-[12px] text-amber-600 dark:text-amber-400 py-1">
+          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+          Extracting items from {pdfSource} via AI…
+        </div>
+      )}
+
+      {/* Manual text input (shown when not in PDF mode or alongside) */}
+      {!pdfSource && (
+        <textarea
+          value={listText}
+          onChange={e => setListText(e.target.value)}
+          placeholder={`Paste material list here…\nMP2ES230CGS, 6\nNXL100, 12`}
+          rows={3}
+          className="w-full rounded-lg bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 p-2.5 text-[11.5px] font-mono focus:outline-none focus:ring-brand-400 resize-none placeholder:text-ink-300 dark:placeholder:text-ink-600"
+        />
+      )}
+
+      {/* Action row */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {!pdfSource && (
+          <button
+            onClick={run} disabled={loading || !listText.trim()}
+            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-50 transition-colors">
+            {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+            {loading ? 'Pricing…' : 'Get NTP Prices'}
+          </button>
+        )}
+        {pdfSource && !loading && (
+          <button
+            onClick={() => { setResult(null); setPdfSource(null); }}
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-ink-500 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">
+            ← Manual input
+          </button>
+        )}
+        {result && matched.length > 0 && (
+          <>
+            <button
+              onClick={addToSchedule}
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors">
+              <Plus className="w-3 h-3" />
+              Add to Schedule
+            </button>
+            <button
+              onClick={copySchedule}
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-medium ring-1 ring-inset ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">
+              {copied ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <FileText className="w-3 h-3" />}
+              {copied ? 'Copied!' : 'Copy result'}
+            </button>
+          </>
+        )}
+        {result && (
+          <span className="text-[10.5px] text-ink-400">
+            {matched.length} matched{unmatched.length > 0 ? ` · ${unmatched.length} not found` : ''}
+          </span>
+        )}
+      </div>
+
+      {/* Candidate suggestions (descriptive search) */}
+      {result && result.candidates && result.candidates.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[10px] font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wide">
+            Suggested matches · pick to add
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {result.candidates.map((c, idx) => {
+              const tone = c.confidence === 'high'
+                ? 'bg-emerald-50 dark:bg-emerald-900/20 ring-emerald-200 dark:ring-emerald-800/40'
+                : c.confidence === 'low'
+                  ? 'bg-amber-50 dark:bg-amber-900/20 ring-amber-200 dark:ring-amber-800/40'
+                  : 'bg-ink-50 dark:bg-ink-800/40 ring-ink-200 dark:ring-ink-700';
+              return (
+                <div key={`${c.cat_no}-${idx}`} className={cn('rounded-lg ring-1 ring-inset p-2.5 text-[11px]', tone)}>
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
+                        <span className="text-[9.5px] font-semibold uppercase tracking-wide text-ink-500">
+                          {c.confidence || 'med'}
+                        </span>
+                        {c.matched
+                          ? <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">in list</span>
+                          : <span className="text-[9px] px-1 py-0.5 rounded bg-ink-200 dark:bg-ink-700 text-ink-600">not priced</span>}
+                        {c.suggested_qty && c.suggested_qty > 1 && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300">qty {c.suggested_qty}</span>
+                        )}
+                      </div>
+                      <p className="font-mono text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 truncate">{c.cat_no}</p>
+                      {c.family && <p className="text-[10.5px] text-brand-600 dark:text-brand-400 truncate">{c.family}</p>}
+                      {c.description && <p className="text-[10.5px] text-ink-600 dark:text-ink-300 line-clamp-2">{c.description}</p>}
+                      {c.reasoning && <p className="text-[10px] text-ink-500 dark:text-ink-400 italic mt-0.5 line-clamp-2">"{c.reasoning}"</p>}
+                    </div>
+                    {c.matched && c.ntp != null && (
+                      <div className="text-right shrink-0">
+                        <p className="text-[9px] uppercase text-ink-400">NTP</p>
+                        <p className="text-[12.5px] font-semibold tabular-nums">{fmtGbp(c.ntp)}</p>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5 mt-1.5">
+                    <button
+                      onClick={() => pickCandidate(c)}
+                      disabled={!c.matched}
+                      className="inline-flex items-center gap-1 h-6 px-2 rounded text-[10.5px] font-semibold bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white transition-colors">
+                      <Plus className="w-2.5 h-2.5" /> Add
+                    </button>
+                    {c.source_url && (
+                      <a href={c.source_url} target="_blank" rel="noreferrer"
+                         className="inline-flex items-center h-6 px-2 rounded text-[10.5px] text-brand-600 dark:text-brand-400 hover:underline">
+                        source ↗
+                      </a>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Results table */}
+      {result && matched.length > 0 && (
+        <div className="overflow-x-auto rounded-lg ring-1 ring-inset ring-ink-100 dark:ring-ink-800">
+          <table className="w-full text-[11.5px]">
+            <thead>
+              <tr className="bg-ink-50 dark:bg-ink-900 text-[10px] text-ink-400 font-semibold uppercase tracking-wide">
+                <th className="px-3 py-1.5 text-left">Catalogue No</th>
+                <th className="px-3 py-1.5 text-left">Description</th>
+                <th className="px-3 py-1.5 text-right">Qty</th>
+                <th className="px-3 py-1.5 text-right">NTP/Unit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {matched.map((item, i) => (
+                <tr key={i} className="border-t border-ink-50 dark:border-ink-800/60">
+                  <td className="px-3 py-1.5">
+                    <span className="font-mono font-semibold text-brand-700 dark:text-brand-400">{item.cat_no}</span>
+                    {item.original_input && item.original_input !== item.cat_no && (
+                      <span className="ml-1.5 text-[9.5px] text-amber-500 font-mono">← {item.original_input}</span>
+                    )}
+                    {item.search_note && (
+                      <span className="ml-1.5 text-[9px] bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 px-1 py-0.5 rounded">Google</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300 max-w-[200px] truncate">{item.description}</td>
+                  <td className="px-3 py-1.5 text-right text-ink-600 dark:text-ink-300">{item.qty}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-ink-800 dark:text-ink-100">{fmtGbp(item.ntp)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Unmatched items with closest matches */}
+      {result && unmatched.length > 0 && (
+        <div className="rounded-lg ring-1 ring-inset ring-red-100 dark:ring-red-900/30 overflow-hidden">
+          <div className="px-3 py-1.5 bg-red-50 dark:bg-red-900/20 text-[10px] font-semibold text-red-600 dark:text-red-400 uppercase tracking-wide">
+            {unmatched.length} not found in price list
+          </div>
+          {unmatched.map((item, i) => (
+            <div key={i} className="border-t border-red-50 dark:border-red-900/20 px-3 py-2 space-y-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-mono text-[11px] font-semibold text-red-700 dark:text-red-400">{item.cat_no}</span>
+                {item.description && <span className="text-[10.5px] text-ink-500 dark:text-ink-400 truncate">{item.description}</span>}
+                {item.status === 'Non-Eaton' && (
+                  <span className="text-[9px] bg-ink-100 dark:bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded">Non-Eaton</span>
+                )}
+                {item.search_note && (
+                  <span className="text-[9.5px] text-ink-400 italic truncate max-w-[200px]">{item.search_note}</span>
+                )}
+              </div>
+              {item.closest_matches && item.closest_matches.length > 0 && (
+                <div className="space-y-0.5">
+                  <p className="text-[9.5px] text-ink-400 dark:text-ink-500 font-medium">Closest in price list:</p>
+                  {item.closest_matches.map((m, j) => (
+                    <div key={j} className="flex items-center gap-2 text-[10px]">
+                      <span className="font-mono text-brand-600 dark:text-brand-400">{m.cat_no}</span>
+                      <span className="text-ink-500 dark:text-ink-400 truncate flex-1">{m.description}</span>
+                      {m.ntp > 0 && <span className="font-mono text-ink-600 dark:text-ink-300 shrink-0">{fmtGbp(m.ntp)}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Accumulated schedule */}
+      {schedule.length > 0 && (
+        <div className="rounded-lg ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/40 overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-900/20">
+            <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide flex-1">
+              Schedule · {schedule.reduce((s, e) => s + e.items.length, 0)} items · {fmtGbp(schedule.reduce((s, e) => s + e.total_ntp, 0))} NTP
+            </p>
+            <button
+              onClick={copyFullSchedule}
+              className="inline-flex items-center gap-1 h-5 px-2 rounded text-[10px] font-semibold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors">
+              {schedCopied ? <CheckCircle2 className="w-2.5 h-2.5" /> : <FileText className="w-2.5 h-2.5" />}
+              {schedCopied ? 'Copied!' : 'Copy all'}
+            </button>
+            <button
+              onClick={clearSchedule}
+              className="h-5 px-1.5 rounded text-[10px] text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+              Clear
+            </button>
+          </div>
+          {schedule.map((entry, ei) => (
+            <div key={ei} className="border-t border-emerald-100 dark:border-emerald-900/30">
+              {schedule.length > 1 && (
+                <div className="px-3 py-1 text-[10px] font-medium text-ink-500 dark:text-ink-400 bg-ink-50/50 dark:bg-ink-900/30">{entry.source}</div>
+              )}
+              {entry.items.map((item, ii) => (
+                <div key={ii} className="flex items-center gap-2 px-3 py-1 text-[10.5px] border-t border-emerald-50 dark:border-emerald-900/20 first:border-t-0">
+                  <span className="font-mono text-brand-700 dark:text-brand-400 shrink-0">{item.cat_no}</span>
+                  <span className="text-ink-500 dark:text-ink-400 flex-1 truncate">{item.description}</span>
+                  <span className="text-ink-500 dark:text-ink-400 shrink-0">×{item.qty}</span>
+                  <span className="font-mono text-ink-700 dark:text-ink-200 shrink-0">{fmtGbp(item.line_ntp)}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Compose Modal ────────────────────────────────────────────────────────────
+function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn }) {
+  const [to, setTo]           = useState('');
+  const [subject, setSubject] = useState('');
+  const [body, setBody]       = useState('');
+  const [atts, setAtts]       = useState<AttachSuggestion[]>([]);
+  const [suggestions, setSuggestions]       = useState<AttachSuggestion[]>([]);
+  const [loadingSugg, setLoadingSugg]       = useState(false);
+  const [searchedQ, setSearchedQ]           = useState('');
+  const [sending, setSending] = useState(false);
+
+  async function searchAtts() {
+    if (!subject.trim()) { toast('warn', 'Enter a subject first'); return; }
+    const q = subject;
+    setLoadingSugg(true);
+    setSearchedQ(q);
+    try {
+      const r = await api.outlookSuggestAtts(q);
+      setSuggestions(r.results || []);
+    } catch {}
+    setLoadingSugg(false);
+  }
+
+  async function send() {
+    if (!to.trim() || !subject.trim()) { toast('warn', 'To and Subject are required'); return; }
+    setSending(true);
+    try {
+      const r = await api.outlookSendNew(to.trim(), subject.trim(), body, atts.map(a => ({ entryId: a.sourceEntryId, index: a.attachmentIndex })));
+      if (r.error) { toast('err', 'Send failed: ' + r.error); }
+      else { toast('ok', 'Email sent'); onClose(); }
+    } catch (e: any) { toast('err', e.message); }
+    setSending(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[9980] bg-black/50 flex items-end sm:items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-xl bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-inset ring-ink-200 dark:ring-ink-600 flex flex-col max-h-[90vh]">
+        {/* Header */}
+        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-ink-200 dark:border-ink-700">
+          <PenLine className="w-4 h-4 text-ink-400 shrink-0" />
+          <p className="text-[13px] font-semibold flex-1">New Email</p>
+          <button onClick={onClose} className="w-7 h-7 rounded-md flex items-center justify-center text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          <div>
+            <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide">To</label>
+            <input value={to} onChange={e => setTo(e.target.value)} placeholder="recipient@example.com"
+              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400" />
+          </div>
+          <div>
+            <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide">Subject</label>
+            <input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Subject…"
+              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400" />
+          </div>
+          <div>
+            <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide">Message</label>
+            <textarea value={body} onChange={e => setBody(e.target.value)} rows={6} placeholder="Write your message…"
+              className="mt-1 w-full px-3 py-2.5 rounded-lg text-[12.5px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400 resize-none" />
+          </div>
+          {/* Attachments */}
+          <div>
+            <div className="flex items-center gap-2 mb-2">
+              <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide flex-1">Attachments from Outlook</label>
+              <button onClick={searchAtts} disabled={loadingSugg}
+                className="inline-flex items-center gap-1 h-6 px-2.5 rounded-md text-[10.5px] font-medium bg-ink-100 dark:bg-ink-800 hover:bg-ink-200 dark:hover:bg-ink-700 text-ink-600 dark:text-ink-300 transition-colors disabled:opacity-50">
+                {loadingSugg ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
+                {loadingSugg ? 'Searching…' : 'Search'}
+              </button>
+            </div>
+            {atts.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {atts.map((a, i) => (
+                  <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-1 ring-inset ring-brand-200 dark:ring-brand-700/40">
+                    <FileText className="w-3 h-3 shrink-0" />
+                    <span className="max-w-[160px] truncate">{a.attachmentName}</span>
+                    <button onClick={() => setAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
+                  </span>
+                ))}
+              </div>
+            )}
+            {suggestions.length > 0 && (
+              <div className="space-y-1 max-h-36 overflow-y-auto">
+                {suggestions.filter(s => !atts.some(a => a.sourceEntryId === s.sourceEntryId && a.attachmentIndex === s.attachmentIndex)).map((s, i) => (
+                  <button key={i} onClick={() => setAtts(prev => [...prev, s])}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-left hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors ring-1 ring-inset ring-ink-100 dark:ring-ink-700">
+                    <FileText className="w-3 h-3 text-brand-500 shrink-0" />
+                    <span className="flex-1 min-w-0">
+                      <span className="font-medium text-ink-700 dark:text-ink-200 truncate block">{s.attachmentName}</span>
+                      <span className="text-ink-400 dark:text-ink-500 truncate block">{s.emailSubject}</span>
+                    </span>
+                    <Plus className="w-3 h-3 text-ink-400 shrink-0" />
+                  </button>
+                ))}
+              </div>
+            )}
+            {searchedQ && !loadingSugg && suggestions.length === 0 && (
+              <p className="text-[11px] text-ink-400 dark:text-ink-500">No matching PDFs found in Outlook for "{searchedQ}"</p>
+            )}
+          </div>
+        </div>
+        <div className="px-5 py-3 border-t border-ink-200 dark:border-ink-700 flex items-center gap-2">
+          <button onClick={send} disabled={sending || !to.trim() || !subject.trim()}
+            className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 disabled:opacity-50 transition-colors">
+            {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            {sending ? 'Sending…' : 'Send'}
+          </button>
+          <button onClick={onClose} className="h-8 px-3 rounded-lg text-[12px] text-ink-500 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Email Detail Panel — one instance per open tab ──────────────────────────
+function EmailDetailPanel({
+  initialEntryId,
+  emailList,
+  toast,
+  setAppTab,
+  onMarkRead,
+  onLabelChange,
+}: {
+  initialEntryId: string;
+  emailList: EmailSummary[];
+  toast: ToastFn;
+  setAppTab: (t: string) => void;
+  onMarkRead: (entryId: string) => void;
+  onLabelChange: (label: string) => void;
+}) {
+  const [entryId, setEntryId]             = useState(initialEntryId);
+  const [detail, setDetail]               = useState<EmailDetail | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(true);
+  const [analysis, setAnalysis]           = useState(() => _analysisCache[initialEntryId] || '');
+  const [analyzing, setAnalyzing]         = useState(false);
+  const [savingPdf, setSavingPdf]         = useState(false);
+  const [draft, setDraft]                 = useState('');
+  const [draftingReply, setDraftingReply] = useState(false);
+  const [replyText, setReplyText]         = useState(() => {
+    try { return localStorage.getItem(`inbox_draft_${initialEntryId}`) || ''; } catch { return ''; }
+  });
+  const [editingReply, setEditingReply]   = useState(() => {
+    try { return !!localStorage.getItem(`inbox_draft_${initialEntryId}`); } catch { return false; }
+  });
+  const [sendingReply, setSendingReply]             = useState(false);
+  const [replySent, setReplySent]                   = useState(false);
+  const [analysisLiked, setAnalysisLiked]           = useState<'up' | 'down' | null>(null);
+  const [lightbox, setLightbox]                     = useState<{ src: string; name: string } | null>(null);
+  const [chatMessages, setChatMessages]             = useState<Array<{ role: 'user' | 'ai'; text: string }>>([]);
+  const [chatInput, setChatInput]                   = useState('');
+  const [chatLoading, setChatLoading]               = useState(false);
+  const [activePanel, setActivePanel]               = useState<'analyze' | 'reply' | 'reply-attach' | 'pricer' | 'chat' | null>(null);
+  const [attachSuggestions, setAttachSuggestions]   = useState<AttachSuggestion[]>([]);
+  const [loadingSugg, setLoadingSugg]               = useState(false);
+  const [selectedAtts, setSelectedAtts]             = useState<AttachSuggestion[]>([]);
+  const [replyAttachText, setReplyAttachText]       = useState('');
+  const [sendingWithAtts, setSendingWithAtts]       = useState(false);
+  const bodyRef    = useRef<HTMLDivElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  // ── EL Pricer panel height resize ────────────────────────────────────────
+  const [panelHeight, setPanelHeight]     = useState(() => {
+    const s = localStorage.getItem('inbox_panel_height');
+    return s ? parseInt(s, 10) : 288;
+  });
+  const [panelMaximized, setPanelMaximized] = useState(false);
+  const panelRef          = useRef<HTMLDivElement>(null);
+  const panelResizingRef  = useRef(false);
+  const panelResizeStartY = useRef(0);
+  const panelResizeStartH = useRef(288);
+
+  // ── Attachment strip height resize ───────────────────────────────────────
+  const [attStripHeight, setAttStripHeight] = useState(() => {
+    const s = localStorage.getItem('inbox_att_height');
+    return s ? parseInt(s, 10) : 80;
+  });
+  const attStripRef      = useRef<HTMLDivElement>(null);
+  const attResizingRef   = useRef(false);
+  const attResizeStartY  = useRef(0);
+  const attResizeStartH  = useRef(80);
+
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      if (panelResizingRef.current) {
+        const h = Math.max(120, Math.min(800, panelResizeStartH.current - (e.clientY - panelResizeStartY.current)));
+        if (panelRef.current) panelRef.current.style.height = h + 'px';
+      }
+      if (attResizingRef.current) {
+        const h = Math.max(36, Math.min(400, attResizeStartH.current + (e.clientY - attResizeStartY.current)));
+        if (attStripRef.current) attStripRef.current.style.maxHeight = h + 'px';
+      }
+    }
+    function onMouseUp() {
+      if (panelResizingRef.current) {
+        panelResizingRef.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        if (panelRef.current) {
+          const h = panelRef.current.offsetHeight;
+          setPanelHeight(h);
+          localStorage.setItem('inbox_panel_height', String(h));
+        }
+      }
+      if (attResizingRef.current) {
+        attResizingRef.current = false;
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        if (attStripRef.current) {
+          const h = attStripRef.current.offsetHeight;
+          setAttStripHeight(h);
+          localStorage.setItem('inbox_att_height', String(h));
+        }
+      }
+    }
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    const key = `inbox_draft_${initialEntryId}`;
+    if (replyText.trim()) { try { localStorage.setItem(key, replyText); } catch {} }
+    else                  { try { localStorage.removeItem(key); } catch {} }
+  }, [replyText, initialEntryId]);
+
+  useEffect(() => { fetchDetail(entryId); }, [entryId]);
+
+  async function fetchDetail(id: string) {
+    setDetail(null);
+    setAnalysis(_analysisCache[id] || '');
+    setDraft(''); setReplyText(''); setEditingReply(false);
+    setReplySent(false); setAnalysisLiked(null);
+    setChatMessages([]); setChatInput('');
+    setActivePanel(null);
+    setAttachSuggestions([]); setSelectedAtts([]);
+    setLoadingDetail(true);
+    bodyRef.current?.scrollTo({ top: 0 });
+    try {
+      const r = await api.outlookEmail(id) as EmailDetail & { error?: string };
+      if (r.error) { toast('warn', r.error); setLoadingDetail(false); return; }
+      setDetail(r);
+      onMarkRead(id);
+      onLabelChange(r.subject);
+    } catch (e: any) { toast('err', e.message); }
+    setLoadingDetail(false);
+  }
+
+  const emailIdx  = emailList.findIndex(e => e.entryId === entryId);
+  const prevEmail = emailIdx > 0 ? emailList[emailIdx - 1] : null;
+  const nextEmail = emailIdx < emailList.length - 1 ? emailList[emailIdx + 1] : null;
+
+  async function runAnalyze(emailData: EmailDetail) {
+    if (analyzing) return;
+    setAnalyzing(true);
+    try {
+      const r = await api.outlookAnalyze({
+        subject: emailData.subject, sender: emailData.sender,
+        senderEmail: emailData.senderEmail, received: emailData.received,
+        body: emailData.body, attachments: emailData.attachments,
+      });
+      const text = r.analysis || r.error || 'No analysis returned.';
+      setAnalysis(text);
+      _analysisCache[emailData.entryId] = text;
+    } catch (e: any) { setAnalysis(`Error: ${e.message}`); }
+    setAnalyzing(false);
+  }
+
+  async function draftReply(emailData: EmailDetail) {
+    setDraftingReply(true);
+    setDraft(''); setReplyText(''); setEditingReply(false); setReplySent(false);
+    try {
+      const r = await api.outlookDraftReply({
+        subject: emailData.subject, sender: emailData.sender,
+        senderEmail: emailData.senderEmail, received: emailData.received,
+        body: emailData.body, analysis,
+      });
+      if (r.error) { toast('warn', r.error); }
+      else { setDraft(r.draft || ''); setReplyText(r.draft || ''); }
+    } catch (e: any) { toast('err', e.message); }
+    setDraftingReply(false);
+  }
+
+  async function sendReply() {
+    if (!detail || !replyText.trim()) return;
+    setSendingReply(true);
+    try {
+      const r = await api.outlookSendReply(detail.entryId, replyText.trim());
+      if (r.error) { toast('err', 'Send failed: ' + r.error); }
+      else {
+        setReplySent(true);
+        try { localStorage.removeItem(`inbox_draft_${initialEntryId}`); } catch {}
+        toast('ok', `Reply sent to ${detail.senderEmail}`);
+        const edited = replyText.trim() !== draft.trim();
+        await api.outlookFeedback({
+          entryId: detail.entryId, subject: detail.subject,
+          senderEmail: detail.senderEmail, draftReply: draft,
+          finalReply: replyText.trim(), feedbackType: edited ? 'edited_sent' : 'sent',
+        });
+      }
+    } catch (e: any) { toast('err', e.message); }
+    setSendingReply(false);
+  }
+
+  async function sendReplyWithAtts() {
+    if (!detail || !replyAttachText.trim()) return;
+    setSendingWithAtts(true);
+    try {
+      const r = await api.outlookReplyWithAtts(
+        detail.entryId,
+        replyAttachText.trim(),
+        selectedAtts.map(a => ({ entryId: a.sourceEntryId, index: a.attachmentIndex }))
+      );
+      if (r.error) { toast('err', 'Send failed: ' + r.error); }
+      else {
+        toast('ok', `Reply sent with ${selectedAtts.length} attachment${selectedAtts.length !== 1 ? 's' : ''}`);
+        setActivePanel(null);
+        setSelectedAtts([]);
+        setReplyAttachText('');
+      }
+    } catch (e: any) { toast('err', e.message); }
+    setSendingWithAtts(false);
+  }
+
+  async function submitAnalysisFeedback(type: 'up' | 'down') {
+    if (!detail || analysisLiked) return;
+    setAnalysisLiked(type);
+    await api.outlookFeedback({
+      entryId: detail.entryId, subject: detail.subject, senderEmail: detail.senderEmail,
+      feedbackType: type === 'up' ? 'liked_analysis' : 'disliked_analysis',
+    }).catch(() => {});
+  }
+
+  async function sendChatMessage() {
+    if (!detail || !chatInput.trim() || chatLoading) return;
+    const question = chatInput.trim();
+    setChatInput('');
+    setChatMessages(prev => [...prev, { role: 'user' as const, text: question }]);
+    setChatLoading(true);
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+    try {
+      const r = await api.outlookChat({
+        subject: detail.subject, sender: detail.sender, senderEmail: detail.senderEmail,
+        body: detail.body, analysis, history: chatMessages, question,
+      });
+      setChatMessages(prev => [...prev, { role: 'ai', text: r.answer || r.error || 'No response.' }]);
+    } catch (e: any) {
+      setChatMessages(prev => [...prev, { role: 'ai', text: 'Error: ' + e.message }]);
+    }
+    setChatLoading(false);
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+  }
+
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
+
+  async function loadAttachSuggestions(emailData: EmailDetail) {
+    const sfMatch = (emailData.subject + ' ' + emailData.body).match(/SR00[A-Za-z0-9]+/i);
+    const q = sfMatch ? sfMatch[0] + ' ' + emailData.subject : emailData.subject;
+    setLoadingSugg(true);
+    setAttachSuggestions([]);
+    try {
+      const r = await api.outlookSuggestAtts(q);
+      setAttachSuggestions(r.results || []);
+    } catch {}
+    setLoadingSugg(false);
+  }
+
+  async function queuePdf() {
+    if (!detail) return;
+    setSavingPdf(true);
+    try {
+      const r = await api.outlookSaveAttachment(detail.entryId);
+      if (r.error) { toast('err', r.error); }
+      else if (r.count === 0) { toast('warn', 'No PDF attachments found'); }
+      else { toast('ok', `Queued: ${r.saved.map((s: any) => s.name).join(', ')}`); }
+    } catch (e: any) { toast('err', e.message); }
+    setSavingPdf(false);
+  }
+
+  function togglePanel(p: typeof activePanel) {
+    const next = activePanel === p ? null : p;
+    setActivePanel(next);
+    if (next === 'analyze' && !_analysisCache[entryId] && detail && !analyzing) {
+      runAnalyze(detail);
+    }
+    if (next === 'reply' && !draft && detail && !draftingReply) {
+      draftReply(detail);
+    }
+    if (next === 'reply-attach' && detail) {
+      setReplyAttachText(replyText || '');
+      if (attachSuggestions.length === 0 && !loadingSugg) loadAttachSuggestions(detail);
+    }
+  }
+
+  function ABtn({ panel, icon: Icon, label, color }: { panel: NonNullable<typeof activePanel>; icon: React.ComponentType<{className?: string}>; label: string; color?: string }) {
+    const active = activePanel === panel;
+    return (
+      <button onClick={() => togglePanel(panel)}
+        className={cn(
+          'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+          active
+            ? `bg-${color || 'violet'}-100 dark:bg-${color || 'violet'}-900/30 text-${color || 'violet'}-700 dark:text-${color || 'violet'}-300 ring-${color || 'violet'}-200 dark:ring-${color || 'violet'}-600`
+            : 'text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800',
+        )}>
+        <Icon className="w-3 h-3 shrink-0" />
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col min-h-0">
+      {lightbox && <ImageLightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
+
+      {loadingDetail ? (
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="w-5 h-5 animate-spin text-ink-300" />
+        </div>
+      ) : detail ? (
+        <>
+          {/* ── Compact header ──────────────────────────────────────────────── */}
+          <div className="shrink-0 px-5 pt-4 pb-3 border-b border-ink-200 dark:border-ink-700 bg-white dark:bg-ink-900">
+            {/* Nav + counter */}
+            <div className="flex items-center gap-1 mb-2">
+              <button onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} title={prevEmail?.subject}
+                className="w-6 h-6 rounded flex items-center justify-center text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 disabled:opacity-25 transition-colors">
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <button onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} title={nextEmail?.subject}
+                className="w-6 h-6 rounded flex items-center justify-center text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 disabled:opacity-25 transition-colors">
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+              {emailIdx >= 0 && <span className="text-[10px] text-ink-400 ml-1 num">{emailIdx + 1} / {emailList.length}</span>}
+            </div>
+
+            {/* Subject */}
+            <h2 className="text-[15px] font-bold text-ink-900 dark:text-ink-50 leading-snug mb-1.5">{detail.subject}</h2>
+
+            {/* Meta row */}
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-ink-500 dark:text-ink-400">
+              <span className="font-medium text-ink-700 dark:text-ink-200">{detail.sender}</span>
+              <span className="text-ink-400 dark:text-ink-500">&lt;{detail.senderEmail}&gt;</span>
+              {detail.to && <span>→ {detail.to}</span>}
+              {detail.cc && <span className="truncate max-w-[200px]">CC: {detail.cc}</span>}
+              <span className="ml-auto shrink-0 text-ink-400 dark:text-ink-500">
+                {(() => { try { return new Date(detail.received).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }); } catch { return detail.received; } })()}
+              </span>
+            </div>
+
+            {/* Attachments strip */}
+            {detail.attachments.length > 0 && (
+              <div className="mt-2.5 pt-2.5 border-t border-ink-100 dark:border-ink-700">
+                <div
+                  ref={attStripRef}
+                  className="flex flex-wrap gap-1.5 overflow-y-auto"
+                  style={{ maxHeight: attStripHeight }}>
+                  {detail.attachments.map(att => (
+                    att.isPdf ? (
+                      <button key={att.index} onClick={() => openAttachmentPdf(detail.entryId, att.index)}
+                        draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
+                        title="View · Drag to EL Pricer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-brand-200 dark:ring-brand-600 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors">
+                        <FileText className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">{fmtSize(att.size)}</span>
+                      </button>
+                    ) : isImageFile(att.name) ? (
+                      <button key={att.index} onClick={() => setLightbox({ src: attViewUrl(detail.entryId, att.index), name: att.name })}
+                        draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name, isImage: true })); e.dataTransfer.effectAllowed = 'copy'; }}
+                        title="View · Drag to EL Pricer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-600 hover:bg-emerald-100 transition-colors">
+                        <ImageIcon className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
+                      </button>
+                    ) : (
+                      <span key={att.index} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset bg-ink-50 dark:bg-ink-800 text-ink-500 dark:text-ink-400 ring-ink-200 dark:ring-ink-600">
+                        <Paperclip className="w-2.5 h-2.5" />{att.name}
+                      </span>
+                    )
+                  ))}
+                  {detail.hasPdf && (detail.senderEmail.toLowerCase().includes('manualnotification') || /SR00[A-Za-z0-9]+/i.test(detail.subject)) && (
+                    <button onClick={queuePdf} disabled={savingPdf}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-semibold bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-60 transition-colors">
+                      {savingPdf ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Download className="w-2.5 h-2.5" />}Queue
+                    </button>
+                  )}
+                </div>
+                {/* Attachment strip resize handle */}
+                <div
+                  className="flex items-center justify-center h-2.5 mt-0.5 cursor-ns-resize select-none group"
+                  onMouseDown={e => {
+                    attResizingRef.current = true;
+                    attResizeStartY.current = e.clientY;
+                    attResizeStartH.current = attStripRef.current?.offsetHeight ?? attStripHeight;
+                    document.body.style.cursor = 'ns-resize';
+                    document.body.style.userSelect = 'none';
+                    e.preventDefault();
+                  }}>
+                  <div className="w-6 h-0.5 rounded-full bg-ink-200 dark:bg-ink-700 group-hover:bg-ink-400 dark:group-hover:bg-ink-500 transition-colors" />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* ── Email body — main scrollable area ───────────────────────────── */}
+          <div ref={bodyRef} className="flex-1 overflow-y-auto bg-white dark:bg-ink-900">
+            {detail.htmlBody
+              ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} />
+              : <pre className="px-5 py-4 text-[12.5px] text-ink-700 dark:text-ink-200 leading-relaxed whitespace-pre-wrap font-sans">{detail.body || '(no body)'}</pre>
+            }
+          </div>
+
+          {/* ── Bottom: expanded panel + action bar ─────────────────────────── */}
+          <div className="shrink-0 border-t border-ink-200 dark:border-ink-700 bg-white dark:bg-ink-900">
+
+            {/* Expanded panel */}
+            {activePanel && (
+              <>
+                {/* ── Resize handle — OUTSIDE the scroll container so drag works ── */}
+                <div
+                  className="flex items-center h-5 border-b border-ink-100 dark:border-ink-800 select-none bg-ink-50 dark:bg-ink-900/80 hover:bg-ink-100 dark:hover:bg-ink-800/60 transition-colors"
+                  style={{ cursor: 'row-resize' }}
+                  onMouseDown={e => {
+                    if ((e.target as HTMLElement).closest('button')) return;
+                    panelResizingRef.current = true;
+                    panelResizeStartY.current = e.clientY;
+                    panelResizeStartH.current = panelRef.current?.offsetHeight ?? panelHeight;
+                    document.body.style.cursor = 'row-resize';
+                    document.body.style.userSelect = 'none';
+                    e.preventDefault();
+                  }}>
+                  <div className="flex-1 flex items-center justify-center pointer-events-none">
+                    <div className="w-8 h-0.5 rounded-full bg-ink-300 dark:bg-ink-600" />
+                  </div>
+                  <div className="flex items-center gap-0.5 pr-1.5">
+                    <button
+                      onClick={() => setPanelMaximized(p => !p)}
+                      title={panelMaximized ? 'Restore' : 'Maximise'}
+                      className="w-5 h-5 rounded flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+                      {panelMaximized
+                        ? <ChevronRight className="w-3 h-3 rotate-90" />
+                        : <ChevronLeft className="w-3 h-3 -rotate-90" />}
+                    </button>
+                    <button
+                      onClick={() => window.open('/schematics', '_blank', 'noopener,width=900,height=700')}
+                      title="Open EL Pricer in new window"
+                      className="w-5 h-5 rounded flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+                      <ExternalLink className="w-3 h-3" />
+                    </button>
+                    <button
+                      onClick={() => setActivePanel(null)}
+                      title="Close"
+                      className="w-5 h-5 rounded flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Scrollable panel content */}
+                <div
+                  ref={panelRef}
+                  className="overflow-y-auto border-b border-ink-200 dark:border-ink-700"
+                  style={{ height: panelMaximized ? 600 : panelHeight }}>
+
+                {/* ── Analysis panel ── */}
+                {activePanel === 'analyze' && (
+                  <div className="px-5 py-3">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Sparkles className="w-3.5 h-3.5 text-violet-500 shrink-0" />
+                      <p className="text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 flex-1">AI Analysis</p>
+                      {analyzing && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
+                      {!analyzing && analysis && (
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => submitAnalysisFeedback('up')} disabled={!!analysisLiked}
+                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'up' ? 'text-emerald-500' : 'text-ink-300 hover:text-emerald-500 disabled:opacity-40')}>
+                            <ThumbsUp className="w-2.5 h-2.5" />
+                          </button>
+                          <button onClick={() => submitAnalysisFeedback('down')} disabled={!!analysisLiked}
+                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'down' ? 'text-red-500' : 'text-ink-300 hover:text-red-500 disabled:opacity-40')}>
+                            <ThumbsDown className="w-2.5 h-2.5" />
+                          </button>
+                          <button onClick={() => runAnalyze(detail)} className="text-[10px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-300 ml-1 transition-colors">Re-run</button>
+                        </div>
+                      )}
+                    </div>
+                    {analyzing && !analysis
+                      ? <p className="text-[12px] text-ink-400 py-1">Analysing…</p>
+                      : analysis
+                        ? <Md text={analysis} />
+                        : <p className="text-[12px] text-ink-400">Click the button above to re-run analysis.</p>
+                    }
+                  </div>
+                )}
+
+                {/* ── Chat panel ── */}
+                {activePanel === 'chat' && (
+                  <div className="px-5 py-3 flex flex-col gap-2">
+                    <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400">Ask about this email</p>
+                    {chatMessages.length > 0 && (
+                      <div className="space-y-2">
+                        {chatMessages.map((m, i) => (
+                          <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
+                            <div className={cn('max-w-[90%] px-3 py-1.5 rounded-xl text-[12px]',
+                              m.role === 'user' ? 'bg-violet-600 text-white rounded-br-sm' : 'bg-ink-100 dark:bg-ink-800 text-ink-800 dark:text-ink-100 rounded-bl-sm')}>
+                              {m.role === 'ai' ? <Md text={m.text} /> : m.text}
+                            </div>
+                          </div>
+                        ))}
+                        {chatLoading && <div className="flex justify-start"><div className="px-3 py-1.5 rounded-xl bg-ink-100 dark:bg-ink-800 text-[12px] text-ink-400 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Thinking…</div></div>}
+                        <div ref={chatEndRef} />
+                      </div>
+                    )}
+                    <div className="flex gap-2">
+                      <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+                        onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
+                        placeholder="Ask about this email…"
+                        className="flex-1 h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 focus:outline-none focus:ring-violet-400 placeholder:text-ink-400 text-ink-800 dark:text-ink-100" />
+                      <button onClick={sendChatMessage} disabled={!chatInput.trim() || chatLoading}
+                        className="w-7 h-7 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
+                        <Send className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Reply panel ── */}
+                {activePanel === 'reply' && (
+                  <div className="px-5 py-3 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400 flex-1">Reply to {detail.senderEmail}</p>
+                      {draftingReply && <Loader2 className="w-3 h-3 animate-spin text-ink-400" />}
+                      {replySent && <span className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Sent</span>}
+                    </div>
+                    {!replySent && (
+                      <>
+                        <textarea value={replyText} onChange={e => setReplyText(e.target.value)} rows={5}
+                          placeholder={draftingReply ? 'Drafting AI reply…' : 'Write your reply…'}
+                          className="w-full text-[12.5px] text-ink-800 dark:text-ink-100 bg-ink-50 dark:bg-ink-800 rounded-lg px-3 py-2.5 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-ink-400" />
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button onClick={sendReply} disabled={sendingReply || !replyText.trim()}
+                            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 disabled:opacity-50 transition-colors">
+                            {sendingReply ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}Send
+                          </button>
+                          <button onClick={() => draftReply(detail)} disabled={draftingReply}
+                            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-ink-500 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-50 transition-colors">
+                            <Sparkles className="w-3 h-3" />AI Draft
+                          </button>
+                          {draft && (
+                            <button onClick={() => draftReply(detail)} disabled={draftingReply}
+                              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-ink-500 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-50 transition-colors">
+                              <RotateCcw className="w-3 h-3" />Regen
+                            </button>
+                          )}
+                          {replyText && (
+                            <button onClick={() => { setDraft(''); setReplyText(''); }}
+                              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-red-500 ring-1 ring-inset ring-red-200 dark:ring-red-700/50 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                              <Trash2 className="w-3 h-3" />Clear
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Reply + Attach panel ── */}
+                {activePanel === 'reply-attach' && (
+                  <div className="px-5 py-3 space-y-2">
+                    <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400">Reply to {detail.senderEmail} with attachments</p>
+                    <textarea value={replyAttachText} onChange={e => setReplyAttachText(e.target.value)} rows={4}
+                      placeholder="Write your reply…"
+                      className="w-full text-[12.5px] text-ink-800 dark:text-ink-100 bg-ink-50 dark:bg-ink-800 rounded-lg px-3 py-2.5 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-ink-400" />
+                    {/* Suggested attachments */}
+                    <div>
+                      <p className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide mb-1.5 flex items-center gap-2">
+                        Suggested attachments from Outlook
+                        {loadingSugg && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
+                      </p>
+                      {selectedAtts.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                          {selectedAtts.map((a, i) => (
+                            <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-1 ring-inset ring-brand-200 dark:ring-brand-600">
+                              <FileText className="w-3 h-3 shrink-0" />
+                              <span className="max-w-[140px] truncate">{a.attachmentName}</span>
+                              <button onClick={() => setSelectedAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {!loadingSugg && attachSuggestions.length === 0 && (
+                        <p className="text-[11px] text-ink-400 dark:text-ink-500">No matching PDFs found in Outlook</p>
+                      )}
+                      {attachSuggestions.filter(s => !selectedAtts.some(a => a.sourceEntryId === s.sourceEntryId && a.attachmentIndex === s.attachmentIndex)).map((s, i) => (
+                        <button key={i} onClick={() => setSelectedAtts(prev => [...prev, s])}
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 mb-1 rounded-lg text-[11px] text-left hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors ring-1 ring-inset ring-ink-100 dark:ring-ink-700">
+                          <FileText className="w-3 h-3 text-brand-500 shrink-0" />
+                          <span className="flex-1 min-w-0">
+                            <span className="font-medium text-ink-700 dark:text-ink-200 truncate block">{s.attachmentName}</span>
+                            <span className="text-ink-400 dark:text-ink-500 truncate block text-[10.5px]">{s.emailSubject} · {s.sender}</span>
+                          </span>
+                          <Plus className="w-3 h-3 text-ink-400 shrink-0" />
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button onClick={sendReplyWithAtts} disabled={sendingWithAtts || !replyAttachText.trim()}
+                        className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 disabled:opacity-50 transition-colors">
+                        {sendingWithAtts ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                        Send {selectedAtts.length > 0 ? `(${selectedAtts.length} file${selectedAtts.length > 1 ? 's' : ''})` : ''}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* ── EL Pricer panel ── */}
+                {activePanel === 'pricer' && (
+                  <div className="px-5 py-3">
+                    <InlineELPricer emailBody={detail.body || ''} entryId={detail.entryId} attachments={detail.attachments} toast={toast} />
+                  </div>
+                )}
+                </div>
+              </>
+            )}
+
+            {/* Action bar */}
+            <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
+              <ABtn panel="analyze"      icon={Sparkles}      label="Analyse"   color="violet" />
+              <ABtn panel="reply"        icon={Edit3}         label="Reply"     color="ink" />
+              <ABtn panel="reply-attach" icon={Paperclip}     label="+ Attach"  color="brand" />
+              <ABtn panel="pricer"       icon={Zap}           label="EL Pricer" color="amber" />
+              <ABtn panel="chat"         icon={MessageSquare} label="Chat"      color="violet" />
+            </div>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+// (ImapSetupScreen removed — using Classic Outlook / win32com)
+function _ImapSetupScreen_UNUSED({
+  availError,
+  onConnected,
+  onRetry,
+}: {
+  availError: string;
+  onConnected: () => void;
+  onRetry: () => void;
+}) {
+  const [email, setEmail]       = useState('laithal-soub@eaton.com');
+  const [password, setPassword] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError]       = useState('');
+  const [step, setStep]         = useState<'intro'|'paste'>('intro');
+
+  async function connect() {
+    if (!email.trim()) { setError('Email is required'); return; }
+    if (!password.trim()) { setError('Paste your app password first'); return; }
+    setConnecting(true);
+    setError('');
+    try {
+      const r = await api.outlookImapConfig(email.trim(), password);
+      if (r.ok) { onConnected(); }
+      else {
+        const msg = r.error || 'Connection failed';
+        const hint = msg.includes('535') || msg.includes('AUTHENTICATIONFAILED') || msg.includes('AUTHENTICATE failed')
+          ? 'Wrong password — make sure you copied the full app password (no spaces).'
+          : msg;
+        setError(hint);
+      }
+    } catch (e: any) { setError(e.message || 'Connection failed'); }
+    setConnecting(false);
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-center gap-5 h-full px-8 text-center">
+      <div className="w-14 h-14 rounded-2xl bg-violet-100 dark:bg-violet-900/30 ring-1 ring-inset ring-violet-200 dark:ring-violet-700/40 flex items-center justify-center">
+        <Mail className="w-6 h-6 text-violet-500" />
+      </div>
+
+      <div>
+        <p className="text-[15px] font-semibold text-ink-900 dark:text-ink-50">Connect your Eaton inbox</p>
+        <p className="text-[12.5px] text-ink-500 dark:text-ink-400 mt-1 max-w-xs leading-relaxed">
+          Eaton blocks standard login for apps. You need a one-time <strong>App Password</strong> from Microsoft — it takes about 60 seconds.
+        </p>
+      </div>
+
+      {step === 'intro' && (
+        <div className="w-full max-w-sm space-y-3">
+          {/* Step 1 */}
+          <div className="rounded-xl bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 px-4 py-3 text-left space-y-2">
+            <p className="text-[10.5px] font-bold text-ink-400 uppercase tracking-wide">Step 1 — Open Microsoft Security</p>
+            <p className="text-[11.5px] text-ink-600 dark:text-ink-300 leading-relaxed">
+              Click the button below. Sign in with your Eaton account if asked.
+            </p>
+            <a
+              href="https://mysignins.microsoft.com/security-info"
+              target="_blank"
+              rel="noreferrer"
+              className="w-full inline-flex items-center justify-center gap-2 h-9 px-4 rounded-lg text-[12.5px] font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors">
+              <ExternalLink className="w-3.5 h-3.5" /> Open mysignins.microsoft.com
+            </a>
+          </div>
+
+          {/* Step 2 */}
+          <div className="rounded-xl bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 px-4 py-3 text-left space-y-1.5">
+            <p className="text-[10.5px] font-bold text-ink-400 uppercase tracking-wide">Step 2 — Create an App Password</p>
+            <ol className="text-[11.5px] text-ink-600 dark:text-ink-300 leading-relaxed list-decimal list-inside space-y-0.5">
+              <li>Click <strong>+ Add sign-in method</strong></li>
+              <li>Choose <strong>App password</strong> from the dropdown</li>
+              <li>Name it anything (e.g. <em>Vector</em>)</li>
+              <li>Copy the generated password — shown <strong>once only</strong></li>
+            </ol>
+            <p className="text-[10.5px] text-amber-600 dark:text-amber-400 mt-1">
+              If "App password" is not in the list, Eaton IT has disabled it — contact IT support.
+            </p>
+          </div>
+
+          <button
+            onClick={() => setStep('paste')}
+            className="w-full inline-flex items-center justify-center gap-2 h-9 px-4 rounded-lg text-[12.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
+            I have my app password →
+          </button>
+
+          <div className="flex justify-end">
+            <button onClick={onRetry}
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-ink-100 dark:bg-ink-800 text-ink-500 dark:text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+              <RefreshCw className="w-3 h-3" /> Retry connection
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === 'paste' && (
+        <div className="w-full max-w-sm space-y-3">
+          <div>
+            <label className="block text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide mb-1 text-left">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              className="w-full h-9 px-3 rounded-lg text-[12.5px] bg-white dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400"
+            />
+          </div>
+          <div>
+            <label className="block text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide mb-1 text-left">App Password</label>
+            <input
+              type="text"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') connect(); }}
+              placeholder="Paste app password here"
+              autoFocus
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full h-9 px-3 rounded-lg text-[12.5px] font-mono bg-white dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 placeholder:font-sans focus:outline-none focus:ring-violet-400"
+            />
+          </div>
+
+          <button
+            onClick={connect}
+            disabled={connecting || !email.trim() || !password.trim()}
+            className="w-full inline-flex items-center justify-center gap-2 h-9 px-4 rounded-lg text-[12.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">
+            {connecting
+              ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Connecting…</>
+              : <><Mail className="w-3.5 h-3.5" /> Connect</>}
+          </button>
+
+          {error && (
+            <div className="rounded-lg bg-red-50 dark:bg-red-900/20 ring-1 ring-inset ring-red-200 dark:ring-red-700/40 px-3 py-2.5 text-left">
+              <p className="text-[11.5px] text-red-700 dark:text-red-300 leading-relaxed">{error}</p>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setStep('intro'); setError(''); }}
+              className="text-[11px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors">
+              ← Back to instructions
+            </button>
+            <div className="flex-1" />
+            <button onClick={onRetry}
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-ink-100 dark:bg-ink-800 text-ink-500 dark:text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+              <RefreshCw className="w-3 h-3" /> Retry
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ─── Main component ──────────────────────────────────────────────────────────
+export function InboxPage({
+  toast,
+  setTab,
+  onUnreadCount,
+}: {
+  toast: ToastFn;
+  setTab: (t: string) => void;
+  onUnreadCount?: (n: number) => void;
+}) {
+  // Backed by module-level variables so state survives tab switches
+  const [available, _setAvailable]      = useState<boolean | null>(_available);
+  const setAvailable = (v: boolean | null) => { _available = v; _setAvailable(v); };
+
+  const [availError, _setAvailError]    = useState(_availError);
+  const setAvailError = (v: string) => { _availError = v; _setAvailError(v); };
+  const [newOutlook, _setNewOutlook]    = useState(_newOutlook);
+  const setNewOutlook = (v: boolean) => { _newOutlook = v; _setNewOutlook(v); };
+  const [graphAuth,  _setGraphAuth]     = useState(_graphAuth);
+  const setGraphAuth  = (v: boolean) => { _graphAuth  = v; _setGraphAuth(v); };
+
+  const [mailboxes, _setMailboxes]      = useState<Mailbox[]>(_mailboxes);
+  const setMailboxes = (v: Mailbox[]) => { _mailboxes = v; _setMailboxes(v); };
+
+  const [storeId, setStoreId]           = useState(() => localStorage.getItem('inbox_storeId') || 'default');
+  const [emails, setEmails]             = useState<EmailSummary[]>([]);
+
+  const [selectedId, _setSelectedId]    = useState(_selectedId);
+  const setSelectedId = (v: string) => { _selectedId = v; _setSelectedId(v); };
+
+  const [unreadOnly, setUnreadOnly]     = useState(() => localStorage.getItem('inbox_unreadOnly') === 'true');
+  const [loadingEmails, setLoadingEmails] = useState(false);
+  const [cacheAge, setCacheAge]         = useState('');
+
+  const [briefingMode, _setBriefingMode]      = useState(_briefingMode);
+  const setBriefingMode = (v: boolean) => { _briefingMode = v; _setBriefingMode(v); };
+
+  const [briefingItems, _setBriefingItems]    = useState<BriefingItem[]>(_briefingItems);
+  const setBriefingItems = (v: BriefingItem[]) => {
+    _briefingItems = v;
+    _setBriefingItems(v);
+    if (v.length > 0) {
+      localStorage.setItem('vector_briefing', JSON.stringify({ items: v, ts: Date.now() }));
+    } else {
+      localStorage.removeItem('vector_briefing');
+    }
+  };
+
+  const [briefingLoading, setBriefingLoading] = useState(false);
+  const [composeOpen, setComposeOpen]         = useState(false);
+  const [emailMenu, setEmailMenu]             = useState<{ id: string; x: number; y: number } | null>(null);
+  const [starredEmails, setStarredEmails]     = useState<Set<string>>(new Set());
+  const [emailCategories, setEmailCategories] = useState<Record<string, string>>({});
+  const [dragTabIdx, setDragTabIdx]           = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx]         = useState<number | null>(null);
+  const [categoryMenuId, setCategoryMenuId]   = useState<string | null>(null);
+  const [popoutId, setPopoutId]               = useState<string | null>(null);
+
+  // ── Resizable list panel — direct DOM to avoid re-render jank ───────────
+  const [listWidth, setListWidth] = useState(() => {
+    const saved = localStorage.getItem('inbox_list_width');
+    return saved ? parseInt(saved, 10) : 288;
+  });
+  const listPaneRef      = useRef<HTMLDivElement>(null);
+  const resizingRef      = useRef(false);
+  const resizeStartX     = useRef(0);
+  const resizeStartWidth = useRef(288);
+
+  useEffect(() => {
+    function onMouseMove(e: MouseEvent) {
+      if (!resizingRef.current) return;
+      const w = Math.max(180, Math.min(520, resizeStartWidth.current + e.clientX - resizeStartX.current));
+      if (listPaneRef.current) listPaneRef.current.style.width = w + 'px';
+    }
+    function onMouseUp() {
+      if (!resizingRef.current) return;
+      resizingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      if (listPaneRef.current) {
+        const w = listPaneRef.current.offsetWidth;
+        setListWidth(w);
+        localStorage.setItem('inbox_list_width', String(w));
+      }
+    }
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
+
+  // ── Browser-style email tabs ─────────────────────────────────────────────
+  type Tab = { id: string; label: string; unread: boolean; pinned: boolean };
+  const [openTabs, setOpenTabs]       = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState('');
+  const [tabCtxMenu, setTabCtxMenu]   = useState<{ id: string; x: number; y: number } | null>(null);
+  const [tabBarDragOver, setTabBarDragOver] = useState(false);
+  const tabBarRef = useRef<HTMLDivElement>(null);
+
+  // ── Email list search ─────────────────────────────────────────────────────
+  const [emailSearch, setEmailSearch] = useState('');
+
+  function scrollTabBar(dir: 'left' | 'right') {
+    tabBarRef.current?.scrollBy({ left: dir === 'left' ? -160 : 160, behavior: 'smooth' });
+  }
+
+  // Restore pinned tabs from localStorage on first load
+  useEffect(() => {
+    const pinned: string[] = JSON.parse(localStorage.getItem('inbox_pinned_tabs') || '[]');
+    if (pinned.length === 0) return;
+    setOpenTabs(prev => {
+      const existing = new Set(prev.map(t => t.id));
+      const newPins: Tab[] = pinned
+        .filter(id => !existing.has(id))
+        .map(id => ({ id, label: '…', unread: false, pinned: true }));
+      return [...newPins, ...prev];
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function savePinnedToStorage(tabs: Tab[]) {
+    const ids = tabs.filter(t => t.pinned).map(t => t.id);
+    localStorage.setItem('inbox_pinned_tabs', JSON.stringify(ids));
+  }
+
+  function togglePinTab(id: string) {
+    setOpenTabs(prev => {
+      const updated = prev.map(t => t.id === id ? { ...t, pinned: !t.pinned } : t);
+      // Pinned tabs always sit at the front
+      const pinned   = updated.filter(t => t.pinned);
+      const unpinned = updated.filter(t => !t.pinned);
+      const sorted   = [...pinned, ...unpinned];
+      savePinnedToStorage(sorted);
+      return sorted;
+    });
+    setTabCtxMenu(null);
+  }
+
+  function openAllPdf() {
+    const pdfEmails = displayEmails.filter(e => e.hasPdf);
+    if (pdfEmails.length === 0) { toast('warn', 'No emails with PDFs visible'); return; }
+    pdfEmails.forEach(e => openEmail(e.entryId));
+    toast('ok', `Opened ${pdfEmails.length} PDF email${pdfEmails.length > 1 ? 's' : ''}`);
+  }
+
+  // ── Check Outlook availability on mount (skip if already known) ─────────
+  useEffect(() => {
+    if (_available !== null) return; // already checked this session
+    api.outlookStatus()
+      .then(r => {
+        setAvailable(r.available);
+        if (!r.available) {
+          setAvailError(r.error || 'Outlook not available');
+          setNewOutlook(!!r.newOutlook);
+          setGraphAuth(!!r.graphAuth);
+        } else {
+          setGraphAuth(false);
+          loadMailboxes();
+        }
+      })
+      .catch(e => { setAvailable(false); setAvailError(e.message); });
+  }, []);
+
+  const loadMailboxes = useCallback(async () => {
+    if (_mailboxes.length > 0) return;
+    try {
+      const r = await api.outlookMailboxes();
+      const list: Mailbox[] = r.mailboxes || [];
+      setMailboxes(list);
+      // Default to first shared mailbox if available
+      const saved = localStorage.getItem('inbox_storeId');
+      const savedExists = saved && (saved === 'default' || list.some(m => m.storeId === saved));
+      if (!savedExists) {
+        const firstShared = list.find(m => m.type === 'shared');
+        if (firstShared) { setStoreId(firstShared.storeId); localStorage.setItem('inbox_storeId', firstShared.storeId); }
+      }
+    } catch {}
+  }, []);
+
+  const loadEmails = useCallback(async (sid = storeId, uread = unreadOnly, force = false, silent = false) => {
+    const key = `${sid}:${uread}`;
+    const cached = emailCache.get(key);
+    if (!force && cached && Date.now() - cached.ts < CACHE_TTL) {
+      setEmails(cached.emails);
+      const ageMin = Math.floor((Date.now() - cached.ts) / 60000);
+      setCacheAge(ageMin === 0 ? 'just now' : `${ageMin}m ago`);
+      return;
+    }
+    if (!silent) setLoadingEmails(true);
+    try {
+      const r = await api.outlookEmails(sid, 50, uread);
+      if (r.error && !silent) toast('warn', r.error);
+      const list = r.emails || [];
+      emailCache.set(key, { emails: list, ts: Date.now() });
+      setEmails(list);
+      if (!silent) setCacheAge('just now');
+    } catch (e: any) {
+      if (!silent) toast('err', e.message);
+    }
+    if (!silent) setLoadingEmails(false);
+  }, [storeId, unreadOnly, toast]);
+
+  // Load emails when store or unread filter changes
+  useEffect(() => {
+    if (available) loadEmails(storeId, unreadOnly);
+  }, [available, storeId, unreadOnly]);
+
+  // Silent background refresh every 30 seconds — no spinner, no visual disruption
+  useEffect(() => {
+    if (!available) return;
+    const id = setInterval(() => loadEmails(storeId, unreadOnly, true, true), 30_000);
+    return () => clearInterval(id);
+  }, [available, storeId, unreadOnly, loadEmails]);
+
+  // Report unread count to parent (sidebar badge)
+  useEffect(() => {
+    onUnreadCount?.(emails.filter(e => e.unread).length);
+  }, [emails, onUnreadCount]);
+
+  // ── Tab management ────────────────────────────────────────────────────────
+  function openEmail(entryId: string) {
+    const existing = openTabs.find(t => t.id === entryId);
+    if (existing) { setActiveTabId(entryId); setSelectedId(entryId); return; }
+    const meta   = emails.find(e => e.entryId === entryId);
+    const label  = meta?.subject || '…';
+    const unread = meta?.unread ?? false;
+    setOpenTabs(prev => {
+      const pinned   = prev.filter(t => t.pinned);
+      const unpinned = prev.filter(t => !t.pinned);
+      return [...pinned, ...unpinned, { id: entryId, label, unread, pinned: false }];
+    });
+    setActiveTabId(entryId);
+    setSelectedId(entryId);
+  }
+
+  function closeTab(id: string) {
+    setOpenTabs(prev => {
+      const tab = prev.find(t => t.id === id);
+      if (tab?.pinned) return prev; // pinned tabs cannot be closed
+      const next = prev.filter(t => t.id !== id);
+      if (activeTabId === id) {
+        const idx = prev.findIndex(t => t.id === id);
+        const fallback = next[idx] || next[idx - 1] || null;
+        setActiveTabId(fallback?.id || '');
+        setSelectedId(fallback?.id || '');
+      }
+      return next;
+    });
+  }
+
+  function handleMarkRead(entryId: string) {
+    setEmails(prev => {
+      const updated = prev.map(e => e.entryId === entryId ? { ...e, unread: false } : e);
+      const key = `${storeId}:${unreadOnly}`;
+      const cached = emailCache.get(key);
+      if (cached) emailCache.set(key, { ...cached, emails: updated });
+      return updated;
+    });
+    setOpenTabs(prev => prev.map(t => t.id === entryId ? { ...t, unread: false } : t));
+  }
+
+  function updateTabLabel(tabId: string, label: string) {
+    setOpenTabs(prev => prev.map(t => t.id === tabId ? { ...t, label } : t));
+  }
+
+  async function runBriefing() {
+    if (emails.length === 0) { toast('warn', 'No emails loaded — refresh first'); return; }
+    setBriefingMode(true);
+    setBriefingLoading(true);
+    setBriefingItems([]);
+    try {
+      const r = await api.outlookBriefing(emails.slice(0, 30));
+      if (r.error) toast('err', r.error);
+      else if (!r.briefing) toast('err', 'Briefing returned no data');
+      setBriefingItems(r.briefing || []);
+    } catch (e: any) { toast('err', e.message); }
+    setBriefingLoading(false);
+  }
+
+  // ── Email row action handlers ─────────────────────────────────────────────
+  async function handleFlag(entryId: string) {
+    const isStarred = starredEmails.has(entryId);
+    const next = new Set(starredEmails);
+    if (isStarred) next.delete(entryId); else next.add(entryId);
+    setStarredEmails(next);
+    setEmailMenu(null);
+    try { await api.outlookFlag(entryId, !isStarred); } catch (e: any) { toast('err', e.message); }
+  }
+
+  async function handleMarkUnread(entryId: string) {
+    setEmails(prev => {
+      const updated = prev.map(e => e.entryId === entryId ? { ...e, unread: true } : e);
+      const key = `${storeId}:${unreadOnly}`;
+      const cached = emailCache.get(key);
+      if (cached) emailCache.set(key, { ...cached, emails: updated });
+      return updated;
+    });
+    setEmailMenu(null);
+    try { await api.outlookMarkUnread(entryId); } catch (e: any) { toast('err', e.message); }
+  }
+
+  async function handleDelete(entryId: string) {
+    setEmailMenu(null);
+    setEmails(prev => {
+      const updated = prev.filter(e => e.entryId !== entryId);
+      const key = `${storeId}:${unreadOnly}`;
+      const cached = emailCache.get(key);
+      if (cached) emailCache.set(key, { ...cached, emails: updated });
+      return updated;
+    });
+    closeTab(entryId);
+    try {
+      await api.outlookDelete(entryId);
+      toast('ok', 'Email deleted');
+    } catch (e: any) { toast('err', e.message); }
+  }
+
+  async function handleForward(entryId: string) {
+    setEmailMenu(null);
+    const to = window.prompt('Forward to (email address):');
+    if (!to?.trim()) return;
+    try {
+      const r = await api.outlookForward(entryId, to.trim());
+      if (r.error) toast('err', r.error); else toast('ok', 'Forwarded');
+    } catch (e: any) { toast('err', e.message); }
+  }
+
+  async function handleOpenInOutlook(entryId: string) {
+    setEmailMenu(null);
+    try { await api.outlookOpenInOutlook(entryId); } catch (e: any) { toast('err', e.message); }
+  }
+
+  async function handleCategorize(entryId: string, category: string) {
+    setEmailMenu(null);
+    setCategoryMenuId(null);
+    setEmailCategories(prev => ({ ...prev, [entryId]: category }));
+    try {
+      const r = await api.outlookCategorize(entryId, category);
+      if (r.error) toast('err', r.error); else toast('ok', `Categorized: ${category}`);
+    } catch (e: any) { toast('err', e.message); }
+  }
+
+  // ─── Unavailable state ─────────────────────────────────────────────────────
+  if (available === null) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <Loader2 className="w-5 h-5 animate-spin text-ink-400" />
+      </div>
+    );
+  }
+
+  if (available === false) {
+    const retryStatus = () => {
+      setAvailable(null); setNewOutlook(false); setGraphAuth(false);
+      api.outlookStatus().then(r => {
+        setAvailable(r.available);
+        if (!r.available) {
+          setAvailError(r.error || '');
+          setNewOutlook(!!r.newOutlook);
+          setGraphAuth(!!r.graphAuth);
+        } else { setGraphAuth(false); loadMailboxes(); }
+      }).catch(() => setAvailable(false));
+    };
+
+    // ── Classic Outlook / pywin32 error screen ────────────────────────────
+    return (
+      <div className="flex flex-col items-center justify-center gap-4 h-full px-8 text-center">
+        <div className="w-14 h-14 rounded-2xl bg-amber-100 dark:bg-amber-900/30 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/40 flex items-center justify-center">
+          <Mail className="w-6 h-6 text-amber-500" />
+        </div>
+        <div>
+          <p className="text-[15px] font-semibold text-ink-900 dark:text-ink-50">Outlook not available</p>
+          <p className="text-[12.5px] text-ink-500 dark:text-ink-400 mt-1 max-w-sm leading-relaxed">
+            Make sure Classic Outlook is open and <code className="text-[11px] bg-ink-100 dark:bg-ink-800 px-1 rounded">pywin32</code> is installed.
+          </p>
+        </div>
+        <div className="mt-1 px-4 py-3 rounded-xl bg-white dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 text-left max-w-sm w-full">
+          <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wide mb-2">Setup</p>
+          <p className="text-[12px] text-ink-700 dark:text-ink-200 font-mono bg-ink-50 dark:bg-ink-800 rounded px-2 py-1.5">pip install pywin32</p>
+          {availError && <p className="text-[11px] text-red-500 dark:text-red-400 mt-2">{availError}</p>}
+        </div>
+        <button onClick={retryStatus}
+          className="inline-flex items-center gap-2 h-8 px-4 rounded-lg text-[12px] font-medium bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 transition-colors">
+          <RefreshCw className="w-3.5 h-3.5" /> Retry
+        </button>
+      </div>
+    );
+  }
+
+  // Filtered email list (search)
+  const sq = emailSearch.trim().toLowerCase();
+  const displayEmails = sq
+    ? emails.filter(e =>
+        e.subject.toLowerCase().includes(sq) ||
+        e.sender.toLowerCase().includes(sq) ||
+        e.senderEmail.toLowerCase().includes(sq) ||
+        e.bodyPreview.toLowerCase().includes(sq)
+      )
+    : emails;
+
+  return (
+    <div className="flex flex-col h-full">
+
+      {/* ── Compose modal ───────────────────────────────────────────────────── */}
+      {composeOpen && <ComposeModal onClose={() => setComposeOpen(false)} toast={toast} />}
+
+      {/* ── Full-screen email popout (double-click) ─────────────────────────── */}
+      {popoutId && (
+        <div className="fixed inset-0 z-[9960] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+          onClick={e => { if (e.target === e.currentTarget) setPopoutId(null); }}>
+          <div className="w-full max-w-4xl bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-inset ring-ink-200 dark:ring-ink-700 flex flex-col overflow-hidden"
+            style={{ height: 'min(90vh, 860px)' }}>
+            {/* Popout header */}
+            <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-ink-200 dark:border-ink-700 bg-ink-50/60 dark:bg-ink-950/40">
+              <Mail className="w-4 h-4 text-ink-400 shrink-0" />
+              <p className="flex-1 text-[12.5px] font-semibold text-ink-700 dark:text-ink-200 truncate">
+                {emails.find(e => e.entryId === popoutId)?.subject || '…'}
+              </p>
+              <button onClick={() => setPopoutId(null)}
+                className="w-7 h-7 rounded-md flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-800 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {/* Popout body */}
+            <div className="flex-1 min-h-0">
+              <EmailDetailPanel
+                initialEntryId={popoutId}
+                emailList={emails}
+                toast={toast}
+                setAppTab={setTab}
+                onMarkRead={handleMarkRead}
+                onLabelChange={() => {}}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Email row context menu ──────────────────────────────────────────── */}
+      {emailMenu && (
+        <>
+          <div className="fixed inset-0 z-[9990]" onClick={() => { setEmailMenu(null); setCategoryMenuId(null); }} />
+          <div
+            className="fixed z-[9991] bg-white dark:bg-ink-900 rounded-xl shadow-xl ring-1 ring-inset ring-ink-200 dark:ring-ink-700 py-1 min-w-[176px] text-[12px]"
+            style={{ top: emailMenu.y, left: emailMenu.x }}>
+            <button onClick={() => handleFlag(emailMenu.id)}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
+              <Star className={cn('w-3.5 h-3.5', starredEmails.has(emailMenu.id) ? 'text-amber-400 fill-amber-400' : 'text-ink-400')} />
+              {starredEmails.has(emailMenu.id) ? 'Unflag' : 'Flag'}
+            </button>
+            <button onClick={() => handleMarkUnread(emailMenu.id)}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
+              <Mail className="w-3.5 h-3.5 text-ink-400" />
+              Mark as Unread
+            </button>
+            <button onClick={() => handleForward(emailMenu.id)}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
+              <Forward className="w-3.5 h-3.5 text-ink-400" />
+              Forward
+            </button>
+            <button onClick={() => handleOpenInOutlook(emailMenu.id)}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
+              <ExternalLink className="w-3.5 h-3.5 text-ink-400" />
+              Open in Outlook
+            </button>
+            <button onClick={() => setCategoryMenuId(categoryMenuId === emailMenu.id ? null : emailMenu.id)}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
+              <FolderOpen className="w-3.5 h-3.5 text-ink-400" />
+              <span className="flex-1">Categorize</span>
+              <ChevronRight className="w-3 h-3 text-ink-400" />
+            </button>
+            {categoryMenuId === emailMenu.id && (
+              <div className="px-3 pb-2 flex flex-wrap gap-1.5">
+                {CATEGORIES.map(cat => (
+                  <button key={cat} onClick={() => handleCategorize(emailMenu.id, cat)}
+                    className={cn(
+                      'px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors',
+                      emailCategories[emailMenu.id] === cat
+                        ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
+                        : 'bg-ink-50 dark:bg-ink-800 text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-700 hover:bg-ink-100 dark:hover:bg-ink-700',
+                    )}>
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            )}
+            <hr className="my-1 border-ink-100 dark:border-ink-800" />
+            <button onClick={() => handleDelete(emailMenu.id)}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-red-600 dark:text-red-400">
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
+      <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-700">
+
+        {/* Mailbox tabs */}
+        <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
+          {/* Default personal inbox */}
+          <button
+            onClick={() => { setStoreId('default'); localStorage.setItem('inbox_storeId', 'default'); }}
+            className={cn(
+              'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium whitespace-nowrap transition-colors',
+              storeId === 'default'
+                ? 'bg-ink-900 dark:bg-white text-white dark:text-ink-900'
+                : 'text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800',
+            )}>
+            <InboxIcon className="w-3 h-3 shrink-0" />
+            Personal
+          </button>
+          {mailboxes.filter(m => m.type === 'shared').map(m => (
+            <button
+              key={m.storeId}
+              onClick={() => { setStoreId(m.storeId); localStorage.setItem('inbox_storeId', m.storeId); }}
+              className={cn(
+                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium whitespace-nowrap transition-colors',
+                storeId === m.storeId
+                  ? 'bg-ink-900 dark:bg-white text-white dark:text-ink-900'
+                  : 'text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800',
+              )}>
+              <Users className="w-3 h-3 shrink-0" />
+              {m.name}
+            </button>
+          ))}
+        </div>
+
+        <div className="flex-1" />
+
+        {/* Unread filter */}
+        <button
+          onClick={() => setUnreadOnly(u => { const next = !u; localStorage.setItem('inbox_unreadOnly', String(next)); return next; })}
+          className={cn(
+            'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+            unreadOnly
+              ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-200 dark:ring-violet-700/40'
+              : 'text-ink-500 ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800',
+          )}>
+          <Filter className="w-3 h-3" />
+          Unread
+        </button>
+
+        {/* Briefing */}
+        <button
+          onClick={briefingMode ? () => { setBriefingMode(false); setBriefingItems([]); } : runBriefing}
+          disabled={briefingLoading}
+          title="Morning Briefing — AI-prioritised action list"
+          className={cn(
+            'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+            briefingMode
+              ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 ring-amber-200 dark:ring-amber-700/40'
+              : 'text-ink-500 ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800',
+          )}>
+          {briefingLoading
+            ? <Loader2 className="w-3 h-3 animate-spin" />
+            : briefingMode
+              ? <ArrowLeft className="w-3 h-3" />
+              : <Play className="w-3 h-3" />}
+          {briefingMode ? 'Back' : 'Briefing'}
+        </button>
+
+        {/* Compose */}
+        <button
+          onClick={() => setComposeOpen(true)}
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">
+          <PenLine className="w-3 h-3" />
+          Compose
+        </button>
+
+        {/* Refresh */}
+        <button
+          onClick={() => loadEmails(storeId, unreadOnly, true)}
+          disabled={loadingEmails}
+          className="w-7 h-7 rounded-md flex items-center justify-center text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800 disabled:opacity-40 transition-colors">
+          <RefreshCw className={cn('w-3.5 h-3.5', loadingEmails && 'animate-spin')} />
+        </button>
+      </div>
+
+      {/* ── Content: briefing panel or split pane ──────────────────────────── */}
+      {briefingMode ? (
+        <div className="flex-1 overflow-y-auto bg-ink-50 dark:bg-ink-950 px-6 py-6">
+          {briefingLoading ? (
+            <div className="flex flex-col items-center justify-center h-64 gap-4">
+              <Loader2 className="w-8 h-8 animate-spin text-amber-400" />
+              <div className="text-center">
+                <p className="text-[14px] font-semibold text-ink-800 dark:text-ink-100">Analysing your inbox…</p>
+                <p className="text-[12px] text-ink-400 mt-1">Reading {emails.length} emails and prioritising actions</p>
+              </div>
+            </div>
+          ) : briefingItems.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-64 gap-3">
+              <Play className="w-10 h-10 text-ink-200 dark:text-ink-700" />
+              <p className="text-[13px] text-ink-400 dark:text-ink-500">No actions returned — try refreshing emails then re-run</p>
+            </div>
+          ) : (
+            <div className="max-w-4xl mx-auto space-y-7">
+              {(['high', 'medium', 'low'] as const).map(priority => {
+                const group = briefingItems.filter(i => i.priority === priority);
+                if (!group.length) return null;
+                const label = { high: 'High Priority', medium: 'Medium Priority', low: 'Low Priority' }[priority];
+                const dot   = { high: 'bg-red-500',    medium: 'bg-amber-400',    low: 'bg-emerald-400'  }[priority];
+                const tagColor: Record<string, string> = {
+                  'Quote Request':   'text-violet-700 bg-violet-100 dark:text-violet-300 dark:bg-violet-900/30',
+                  'PDF Received':    'text-brand-700 bg-brand-100 dark:text-brand-300 dark:bg-brand-900/30',
+                  'Action Required': 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/30',
+                  'Follow Up':       'text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-900/30',
+                };
+                return (
+                  <div key={priority}>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className={cn('w-2 h-2 rounded-full', dot)} />
+                      <p className="text-[11px] font-semibold tracking-wider uppercase text-ink-500 dark:text-ink-400">
+                        {label} · {group.length}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                      {group.map((item, idx) => {
+                        const tc  = tagColor[item.tag] || 'text-ink-600 bg-ink-100 dark:text-ink-400 dark:bg-ink-800';
+                        const src = emails.find(e => e.entryId === item.entryId);
+                        return (
+                          <button
+                            key={item.entryId + idx}
+                            onClick={() => { setBriefingMode(false); openEmail(item.entryId); }}
+                            className="group text-left bg-white dark:bg-ink-900 rounded-xl p-4 ring-1 ring-inset ring-ink-200/80 dark:ring-ink-700/50 hover:ring-violet-300 dark:hover:ring-violet-600/50 hover:shadow-sm transition-all space-y-2.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-semibold', tc)}>
+                                {item.tag}
+                              </span>
+                              <ChevronRight className="w-3.5 h-3.5 text-ink-300 group-hover:text-violet-500 transition-colors shrink-0" />
+                            </div>
+                            <p className="text-[13px] font-semibold text-ink-900 dark:text-ink-50 leading-snug">
+                              {item.action}
+                            </p>
+                            <p className="text-[11.5px] text-ink-500 dark:text-ink-400 leading-relaxed">
+                              {item.summary}
+                            </p>
+                            {src && (
+                              <div className="pt-2.5 border-t border-ink-100 dark:border-ink-800 flex items-center justify-between gap-2">
+                                <span className="text-[10.5px] text-ink-400 dark:text-ink-500 truncate">{src.sender}</span>
+                                <span className="text-[10.5px] text-ink-400 dark:text-ink-500 shrink-0">{fmtDate(src.received)}</span>
+                              </div>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="pb-4 text-center space-y-1.5">
+                <p className="text-[11px] text-ink-400 dark:text-ink-500">
+                  {briefingItems.filter(i => i.priority === 'high').length} high ·{' '}
+                  {briefingItems.filter(i => i.priority === 'medium').length} medium ·{' '}
+                  {briefingItems.filter(i => i.priority === 'low').length} low
+                </p>
+                <button onClick={runBriefing} className="text-[11px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-300 transition-colors">
+                  Re-run briefing
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+      <div className="flex-1 flex min-h-0">
+
+        {/* ── Email list (left) ────────────────────────────────────────────── */}
+        <div ref={listPaneRef} className="shrink-0 flex flex-col border-r border-ink-200 dark:border-ink-700 bg-white dark:bg-ink-900" style={{ width: listWidth }}>
+
+          {/* Search + open-all-PDF toolbar */}
+          <div className="shrink-0 px-2 py-1.5 border-b border-ink-100 dark:border-ink-700 flex items-center gap-1.5">
+            <div className="flex-1 flex items-center gap-1.5 h-7 px-2 rounded-md bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200/70 dark:ring-ink-700/50 focus-within:ring-violet-400/60">
+              <Search className="w-3 h-3 text-ink-400 shrink-0" />
+              <input
+                type="text"
+                value={emailSearch}
+                onChange={e => setEmailSearch(e.target.value)}
+                placeholder="Search…"
+                className="flex-1 bg-transparent text-[11.5px] text-ink-700 dark:text-ink-200 placeholder:text-ink-400 outline-none min-w-0"
+              />
+              {emailSearch && (
+                <button onClick={() => setEmailSearch('')} className="text-ink-400 hover:text-ink-600 dark:hover:text-ink-200">
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={openAllPdf}
+              title="Open all emails with PDFs as tabs"
+              className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors">
+              <FolderOpen className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {loadingEmails ? (
+            <div className="flex-1 flex items-center justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-ink-300" />
+            </div>
+          ) : displayEmails.length === 0 ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
+              <Mail className="w-8 h-8 text-ink-200 dark:text-ink-700" />
+              <p className="text-[12px] text-ink-400 dark:text-ink-500">
+                {emailSearch ? 'No emails match your search' : unreadOnly ? 'No unread emails' : 'No emails found'}
+              </p>
+            </div>
+          ) : (
+            <div className="flex-1 overflow-y-auto py-1">
+              {displayEmails.map(email => (
+                <div
+                  key={email.entryId}
+                  draggable
+                  onDragStart={e => {
+                    e.dataTransfer.setData('vector/email-row', email.entryId);
+                    e.dataTransfer.effectAllowed = 'copy';
+                  }}
+                  onClick={() => openEmail(email.entryId)}
+                  onDoubleClick={() => setPopoutId(email.entryId)}
+                  className={cn(
+                    'w-full flex flex-col gap-0.5 px-3 py-2.5 text-left border-b border-ink-100 dark:border-ink-700 transition-colors cursor-pointer select-none relative group',
+                    email.entryId === selectedId
+                      ? 'bg-violet-50 dark:bg-violet-900/20 border-violet-100 dark:border-violet-800/30'
+                      : 'hover:bg-ink-50 dark:hover:bg-ink-800/40',
+                  )}>
+                  {/* Three-dot menu */}
+                  <button
+                    onClick={e => { e.stopPropagation(); setEmailMenu({ id: email.entryId, x: e.clientX, y: e.clientY }); }}
+                    className="absolute right-2 top-2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-all z-10">
+                    <MoreHorizontal className="w-3 h-3" />
+                  </button>
+                  <div className="flex items-center gap-1.5 min-w-0 pr-5">
+                    {email.unread && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />
+                    )}
+                    {starredEmails.has(email.entryId) && (
+                      <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                    )}
+                    <p className={cn(
+                      'text-[12px] truncate flex-1',
+                      email.unread ? 'font-semibold text-ink-900 dark:text-ink-50' : 'font-medium text-ink-700 dark:text-ink-300',
+                    )}>
+                      {email.subject}
+                    </p>
+                    {emailCategories[email.entryId] && (
+                      <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 truncate max-w-[64px]">
+                        {emailCategories[email.entryId]}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-ink-500 dark:text-ink-400 truncate">{email.sender}</p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10.5px] text-ink-400 dark:text-ink-500 flex-1">{fmtDate(email.received)}</span>
+                    {email.hasPdf && (
+                      <span className="inline-flex items-center gap-0.5 text-[10px] text-brand-600 dark:text-brand-400 font-medium">
+                        <FileText className="w-2.5 h-2.5" /> PDF
+                      </span>
+                    )}
+                    {email.attachments.length > 0 && !email.hasPdf && (
+                      <span className="inline-flex items-center gap-0.5 text-[10px] text-ink-400">
+                        <Paperclip className="w-2.5 h-2.5" /> {email.attachments.length}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {emails.length > 0 && (
+            <div className="shrink-0 px-3 py-2 border-t border-ink-100 dark:border-ink-700 flex items-center justify-between">
+              <p className="text-[10.5px] text-ink-400 dark:text-ink-500">
+                {sq ? `${displayEmails.length} of ${emails.length}` : (
+                  emails.filter(e => e.unread).length > 0
+                    ? `${emails.filter(e => e.unread).length} unread · ${emails.length}`
+                    : `${emails.length} emails`
+                )}
+              </p>
+              {cacheAge && (
+                <p className="text-[10px] text-ink-300 dark:text-ink-600">Updated {cacheAge}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── Resize handle ── */}
+        <div
+          className="w-1 shrink-0 cursor-col-resize hover:bg-violet-400 dark:hover:bg-violet-600 active:bg-violet-500 transition-colors"
+          onMouseDown={e => {
+            resizingRef.current = true;
+            resizeStartX.current = e.clientX;
+            resizeStartWidth.current = listPaneRef.current?.offsetWidth ?? listWidth;
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            e.preventDefault();
+          }}
+        />
+
+        {/* ── Detail pane (right) — browser-style tabs ────────────────────── */}
+        <div className="flex-1 flex flex-col min-h-0">
+
+          {/* Tab bar */}
+          {openTabs.length > 0 && (
+            <div className="shrink-0 flex items-center border-b border-ink-200 dark:border-ink-700 bg-ink-50/60 dark:bg-ink-950/40">
+              {/* Scroll-left arrow */}
+              <button
+                onClick={() => scrollTabBar('left')}
+                className="shrink-0 w-6 h-full flex items-center justify-center text-ink-400 hover:text-ink-600 dark:hover:text-ink-200 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors border-r border-ink-200/40 dark:border-ink-800/40">
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Scrollable tab strip */}
+              <div
+                ref={tabBarRef}
+                className={cn(
+                  'flex-1 flex items-center overflow-x-auto scrollbar-none transition-colors',
+                  tabBarDragOver && 'bg-violet-50/60 dark:bg-violet-900/20',
+                )}
+                onWheel={e => { e.stopPropagation(); tabBarRef.current?.scrollBy({ left: e.deltaY + e.deltaX, behavior: 'auto' }); }}
+                onDragOver={e => {
+                  if (e.dataTransfer.types.includes('vector/tab')) return;
+                  if (e.dataTransfer.types.includes('vector/email-row')) { e.preventDefault(); setTabBarDragOver(true); }
+                }}
+                onDragLeave={() => setTabBarDragOver(false)}
+                onDrop={e => {
+                  setTabBarDragOver(false);
+                  const id = e.dataTransfer.getData('vector/email-row');
+                  if (id) openEmail(id);
+                }}>
+                {openTabs.map((t, tabIdx) => (
+                  <div key={t.id}
+                    draggable
+                    onDragStart={e => {
+                      e.stopPropagation();
+                      setDragTabIdx(tabIdx);
+                      e.dataTransfer.setData('vector/tab', t.id);
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    onDragOver={e => {
+                      if (!e.dataTransfer.types.includes('vector/tab')) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (tabIdx !== dragTabIdx) setDragOverIdx(tabIdx);
+                    }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (dragTabIdx !== null && dragTabIdx !== tabIdx) {
+                        setOpenTabs(prev => {
+                          const next = [...prev];
+                          const [moved] = next.splice(dragTabIdx, 1);
+                          next.splice(tabIdx, 0, moved);
+                          return next;
+                        });
+                      }
+                      setDragTabIdx(null);
+                      setDragOverIdx(null);
+                    }}
+                    onDragEnd={() => { setDragTabIdx(null); setDragOverIdx(null); }}
+                    onClick={() => { setActiveTabId(t.id); setSelectedId(t.id); }}
+                    onContextMenu={e => { e.preventDefault(); setTabCtxMenu({ id: t.id, x: e.clientX, y: e.clientY }); }}
+                    className={cn(
+                      'group relative flex items-center gap-1.5 px-3 py-2 border-r border-ink-200/40 dark:border-ink-700/40 shrink-0 cursor-grab active:cursor-grabbing min-w-[80px] max-w-[200px] transition-colors select-none',
+                      t.id === activeTabId
+                        ? 'bg-white dark:bg-ink-900 text-ink-800 dark:text-ink-100 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-violet-500'
+                        : 'text-ink-500 dark:text-ink-400 hover:bg-white/70 dark:hover:bg-ink-900/50',
+                      dragOverIdx === tabIdx && dragTabIdx !== null && dragTabIdx !== tabIdx
+                        ? 'ring-1 ring-inset ring-violet-400 dark:ring-violet-500 bg-violet-50/60 dark:bg-violet-900/20'
+                        : '',
+                    )}>
+                    {/* Pin indicator */}
+                    {t.pinned
+                      ? <Pin className="w-2.5 h-2.5 shrink-0 text-violet-500" />
+                      : <Mail className="w-3 h-3 shrink-0 opacity-40" />}
+                    {/* Unread dot */}
+                    {t.unread && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />}
+                    <span className="text-[11px] font-medium truncate flex-1">{t.label}</span>
+                    {/* Close button — hidden for pinned tabs */}
+                    {!t.pinned && (
+                      <button
+                        onClick={e => { e.stopPropagation(); closeTab(t.id); }}
+                        title="Close tab"
+                        className="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-ink-200 dark:hover:bg-ink-700 transition-all shrink-0 ml-0.5">
+                        <X className="w-2.5 h-2.5" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Scroll-right arrow */}
+              <button
+                onClick={() => scrollTabBar('right')}
+                className="shrink-0 w-6 h-full flex items-center justify-center text-ink-400 hover:text-ink-600 dark:hover:text-ink-200 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors border-l border-ink-200/40 dark:border-ink-800/40">
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
+          {/* Tab right-click context menu */}
+          {tabCtxMenu && (
+            <>
+              <div className="fixed inset-0 z-[9990]" onClick={() => setTabCtxMenu(null)} />
+              <div
+                className="fixed z-[9991] bg-white dark:bg-ink-900 rounded-lg shadow-xl ring-1 ring-inset ring-ink-200/80 dark:ring-ink-700/50 py-1 min-w-[140px] text-[12px]"
+                style={{ top: tabCtxMenu.y, left: tabCtxMenu.x }}>
+                <button
+                  onClick={() => togglePinTab(tabCtxMenu.id)}
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
+                  {openTabs.find(t => t.id === tabCtxMenu.id)?.pinned
+                    ? <><PinOff className="w-3.5 h-3.5 text-ink-400" /> Unpin tab</>
+                    : <><Pin className="w-3.5 h-3.5 text-violet-500" /> Pin tab</>}
+                </button>
+                {!openTabs.find(t => t.id === tabCtxMenu.id)?.pinned && (
+                  <button
+                    onClick={() => { closeTab(tabCtxMenu.id); setTabCtxMenu(null); }}
+                    className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-red-600 dark:text-red-400">
+                    <X className="w-3.5 h-3.5" /> Close tab
+                  </button>
+                )}
+              </div>
+            </>
+          )}
+
+          {/* Empty state */}
+          {openTabs.length === 0 && (
+            <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
+              <div className="w-12 h-12 rounded-2xl bg-ink-100 dark:bg-ink-800 flex items-center justify-center">
+                <Mail className="w-5 h-5 text-ink-400" />
+              </div>
+              <p className="text-[13px] text-ink-500 dark:text-ink-400">Select an email to read and analyse</p>
+            </div>
+          )}
+
+          {/* One EmailDetailPanel per tab — inactive tabs hidden via display:none */}
+          {openTabs.map(t => (
+            <div key={t.id}
+              className="flex-1 min-h-0"
+              style={t.id !== activeTabId ? { display: 'none' } : undefined}>
+              <EmailDetailPanel
+                initialEntryId={t.id}
+                emailList={emails}
+                toast={toast}
+                setAppTab={setTab}
+                onMarkRead={handleMarkRead}
+                onLabelChange={label => updateTabLabel(t.id, label)}
+              />
+            </div>
+          ))}
+
+        </div>
+      </div>
+      )}
+    </div>
+  );
+}

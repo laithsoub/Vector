@@ -1,0 +1,68 @@
+# ─── Dependencies / build ────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# ─── Secrets: API keys, cookies, tokens — NEVER commit ───────────────────────
+.env
+.env.*
+!.env.example
+.session_key
+*.session_key
+/automation/config.json
+/config.json
+.cookies.enc
+**/.cookies.enc
+.graph_token
+**/.graph_token
+.copilot_token
+**/.copilot_token
+.copilot_cookies
+**/.copilot_cookies
+graph_token_cache.json
+**/graph_token_cache.json
+*.token
+*token_cache*
+
+# ─── Local databases & exports (private customer/quote data) ────────────────
+*.db
+*.db-*
+*.db.bak
+*.sqlite
+*.sqlite3
+crm_quotations.csv
+
+# ─── Logs & runtime state ────────────────────────────────────────────────────
+*.log
+retry_queue.json
+**/overlay_state.json
+
+# ─── Confidential Eaton business data (price lists, configurators, quotes) ───
+*.xlsx
+*.xlsm
+*.pdf
+*.docx
+/PDF Quotes/
+/Archive/
+/Email Drop/
+
+# ─── Python ─────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# ─── OS / editor / temp ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.idea/
+.vscode/
+
+# Claude Code local settings
+.claude/settings.local.json
