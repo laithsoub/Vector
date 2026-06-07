@@ -66,7 +66,7 @@ export function CardTitle({
     <div className={cn('flex items-start justify-between gap-4 mb-4', className)}>
       <div className="min-w-0">
         <h3 className="text-[13px] font-semibold text-ink-900 dark:text-ink-50 leading-none tracking-tight">{title}</h3>
-        {sub && <p className="text-[11.5px] text-ink-500 dark:text-ink-400 mt-1 leading-tight">{sub}</p>}
+        {sub && <p className="text-[11.5px] text-ink-500 dark:text-ink-400 mt-1.5 leading-tight">{sub}</p>}
       </div>
       {right && <div className="shrink-0 flex items-center gap-2">{right}</div>}
     </div>
@@ -154,9 +154,9 @@ export function Button({
 }
 
 // Status dot
-export function StatusDot({ status, size = 8 }: { status: 'ok' | 'err' | 'warn'; size?: number }) {
-  const map = { ok: 'bg-emerald-500', err: 'bg-red-500', warn: 'bg-amber-500' };
-  return <span className={cn('inline-block rounded-full', map[status])} style={{ width: size, height: size }} />;
+export function StatusDot({ status, size = 8 }: { status: 'ok' | 'err' | 'warn' | 'skip'; size?: number }) {
+  const map = { ok: 'bg-emerald-500', err: 'bg-red-500', warn: 'bg-amber-500', skip: 'bg-ink-300 dark:bg-ink-600' };
+  return <span className={cn('inline-block rounded-full shrink-0', map[status] || map.warn)} style={{ width: size, height: size }} />;
 }
 
 // Sparkline
@@ -237,4 +237,96 @@ export function relTime(iso: string | null | undefined) {
 export function pctChange(cur: number, prev: number) {
   if (prev === 0) return cur > 0 ? 100 : 0;
   return ((cur - prev) / prev) * 100;
+}
+// Full GBP with 2 decimals: £1,234.50 (EL Pricer line items)
+export function fmtGBP(n: number | null | undefined, cur = '£') {
+  if (n == null) return '—';
+  return `${cur}${n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// ─── v2 primitives ───────────────────────────────────────────────────────────
+
+// Vertical bar chart
+export function MiniBars({
+  data, height = 132, color = '#0044a7',
+}: {
+  data: { label: string; value: number }[];
+  height?: number;
+  color?: string;
+}) {
+  const max = Math.max(1, ...data.map(d => d.value));
+  return (
+    <div className="flex items-end gap-1.5" style={{ height }}>
+      {data.map((d, i) => {
+        const h = (d.value / max) * (height - 22);
+        return (
+          <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1.5 group min-w-0">
+            <span className="text-[9px] text-ink-400 tabular-nums opacity-0 group-hover:opacity-100 transition-opacity">{d.value}</span>
+            <div className="w-full rounded-t-[3px] transition-colors"
+              style={{ height: Math.max(2, h), background: d.value ? color : '#ececef', opacity: d.value ? 1 : 0.55 }} />
+            <span className="text-[8.5px] text-ink-400 tabular-nums truncate w-full text-center">{d.label}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// KPI stat tile
+export function KpiTile({
+  icon: IconCmp, label, value, sub, accent = 'brand',
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: React.ReactNode;
+  sub: string;
+  accent?: 'brand' | 'ok' | 'err' | 'violet' | 'amber';
+}) {
+  const tones: Record<string, string> = {
+    brand:  'text-brand-600 bg-brand-50 dark:bg-brand-900/30 dark:text-brand-300',
+    ok:     'text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-300',
+    err:    'text-red-600 bg-red-50 dark:bg-red-900/30 dark:text-red-300',
+    violet: 'text-violet-600 bg-violet-50 dark:bg-violet-900/30 dark:text-violet-300',
+    amber:  'text-amber-600 bg-amber-50 dark:bg-amber-900/30 dark:text-amber-300',
+  };
+  return (
+    <Card>
+      <div className={cn('w-7 h-7 rounded-md flex items-center justify-center', tones[accent])}>
+        <IconCmp className="w-3.5 h-3.5" strokeWidth={2} />
+      </div>
+      <p className="mt-3 text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500">{label}</p>
+      <p className="text-2xl font-semibold tracking-tight tabular-nums mt-0.5">{value}</p>
+      <p className="text-[10.5px] text-ink-500 dark:text-ink-400 mt-0.5">{sub}</p>
+    </Card>
+  );
+}
+
+// Form-field wrapper
+export function Field({
+  label, required, hint, children,
+}: {
+  label?: string;
+  required?: boolean;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      {label && (
+        <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">
+          {label} {required && <span className="text-red-500 normal-case">*</span>}
+        </label>
+      )}
+      {children}
+      {hint && <p className="text-[10px] text-ink-400 mt-2 leading-relaxed">{hint}</p>}
+    </div>
+  );
+}
+
+// Styled text input
+export function TextInput({ className = '', ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
+  return (
+    <input {...props}
+      className={cn('w-full h-8 px-2.5 rounded-md text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 focus:ring-brand-400 focus:outline-none transition-shadow', className)} />
+  );
 }
