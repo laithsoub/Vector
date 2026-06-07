@@ -4,7 +4,7 @@ import {
   LayoutDashboard, History as HistoryIcon, BarChart3,
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
   Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
-  Loader2, RefreshCw, Mail, Send, Keyboard, Users2,
+  Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
@@ -40,7 +40,7 @@ const NAV_STRUCTURE = {
       { id: 'Dashboard' as TabId, Icon: LayoutDashboard, labelKey: 'dashboard' as const },
       { id: 'Assistant' as TabId, Icon: Sparkles,         labelKey: 'assistant' as const },
       { id: 'Inbox'     as TabId, Icon: Mail,            labelKey: 'inbox'     as const },
-      { id: 'CRM'       as TabId, Icon: Users2,          labelKey: 'crm'       as const },
+      { id: 'CRM'       as TabId, Icon: Users,           labelKey: 'crm'       as const },
       { id: 'History'   as TabId, Icon: HistoryIcon,     labelKey: 'history'   as const },
       { id: 'Analytics' as TabId, Icon: BarChart3,       labelKey: 'analytics' as const },
     ],
@@ -50,7 +50,7 @@ const NAV_STRUCTURE = {
     items: [
       { id: 'PMO'        as TabId, Icon: ClipboardList, labelKey: 'pmo'        as const },
       { id: 'CBU'        as TabId, Icon: Calculator,    labelKey: 'cbuSizer'    as const },
-      { id: 'Commission' as TabId, Icon: Calculator,    labelKey: 'commission'  as const },
+      { id: 'Commission' as TabId, Icon: Gauge,          labelKey: 'commission'  as const },
       { id: 'Schematics' as TabId, Icon: Zap,           labelKey: 'schematics'  as const },
       { id: 'Docs'       as TabId, Icon: BookOpen,      labelKey: 'docPacks'   as const },
     ],
