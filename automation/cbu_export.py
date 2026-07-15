@@ -54,9 +54,70 @@ def merge_pdfs(output_path, paths):
     return True, ""
 
 
+def fill_and_convert(template, lo, outdir, idx, system, project, quote, engineer, email, phone):
+    """Fill template for one system, convert to PDF.  Returns path to PDF or raises."""
+    import openpyxl
+    from openpyxl.worksheet.page import PrintPageSetup
+    from openpyxl.worksheet.properties import WorksheetProperties, PageSetupProperties
+
+    work_file = os.path.join(outdir, f"CBU_Tech_Brief_{idx}.xlsx")
+
+    wb = openpyxl.load_workbook(template, keep_vba=True)
+
+    if "Sales Engineer Sheet" in wb.sheetnames:
+        ws = wb["Sales Engineer Sheet"]
+        ws["B5"]  = system
+        ws["C17"] = project
+        ws["C18"] = quote
+        ws["C19"] = engineer
+
+    if "CBU Tech Brief" in wb.sheetnames:
+        ws2 = wb["CBU Tech Brief"]
+        ws2["F5"] = project
+        ws2["F6"] = quote
+        ws2["F7"] = engineer
+        ws2["F8"] = email
+        ws2["F9"] = phone
+        ws2.page_setup = PrintPageSetup(
+            paperSize=9, orientation="portrait",
+            fitToWidth=1, fitToHeight=0,
+        )
+        if ws2.sheet_properties is None:
+            ws2.sheet_properties = WorksheetProperties()
+        ws2.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+
+    # HIDE every other sheet — do NOT delete them.
+    # CBU Tech Brief has XLOOKUP formulas that reference Sales Engineer Sheet;
+    # deleting it makes every lookup produce Err:504 before LibreOffice can calc.
+    for name in wb.sheetnames:
+        if name != "CBU Tech Brief":
+            wb[name].sheet_state = "hidden"
+
+    wb.active = wb["CBU Tech Brief"]
+    wb.calculation.fullCalcOnLoad = True
+    wb.save(work_file)
+
+    result = subprocess.run(
+        [lo, "--headless", "--convert-to", "pdf", "--outdir", outdir, work_file],
+        capture_output=True, text=True, timeout=90,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"LibreOffice failed: {result.stderr.strip()}")
+
+    pdf = os.path.join(outdir, f"CBU_Tech_Brief_{idx}.pdf")
+    if not os.path.exists(pdf):
+        alt = work_file.replace(".xlsx", ".pdf")
+        if os.path.exists(alt):
+            os.rename(alt, pdf)
+        else:
+            raise RuntimeError(f"PDF not found after conversion (system {idx}: {system})")
+    return pdf
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--system",   required=True)
+    # --system may be specified multiple times for multi-system exports
+    ap.add_argument("--system",   action="append", dest="systems", required=True)
     ap.add_argument("--project",  required=True)
     ap.add_argument("--quote",    required=True)
     ap.add_argument("--engineer", required=True)
@@ -79,82 +140,24 @@ def main():
         sys.exit(1)
 
     os.makedirs(args.outdir, exist_ok=True)
-    work_file = os.path.join(args.outdir, "CBU_Tech_Brief.xlsx")
 
-    # ── Fill template ─────────────────────────────────────────────────────────
-    try:
-        import openpyxl
-        from openpyxl.worksheet.page import PrintPageSetup
-        from openpyxl.worksheet.properties import WorksheetProperties, PageSetupProperties
-
-        wb = openpyxl.load_workbook(template, keep_vba=True)
-
-        if "Sales Engineer Sheet" in wb.sheetnames:
-            ws = wb["Sales Engineer Sheet"]
-            ws["B5"]  = args.system
-            ws["C17"] = args.project
-            ws["C18"] = args.quote
-            ws["C19"] = args.engineer
-
-        if "CBU Tech Brief" in wb.sheetnames:
-            ws2 = wb["CBU Tech Brief"]
-            ws2["F5"] = args.project
-            ws2["F6"] = args.quote
-            ws2["F7"] = args.engineer
-            ws2["F8"] = args.email
-            ws2["F9"] = args.phone
-            ws2.page_setup = PrintPageSetup(
-                paperSize=9, orientation="portrait",
-                fitToWidth=1, fitToHeight=0,
+    # ── Generate one brief PDF per system ─────────────────────────────────────
+    brief_pdfs = []
+    for idx, system in enumerate(args.systems, 1):
+        try:
+            pdf = fill_and_convert(
+                template, lo, args.outdir, idx, system,
+                args.project, args.quote, args.engineer, args.email, args.phone,
             )
-            if ws2.sheet_properties is None:
-                ws2.sheet_properties = WorksheetProperties()
-            ws2.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
-
-        # HIDE every other sheet — do NOT delete them.
-        # CBU Tech Brief has XLOOKUP formulas that reference Sales Engineer Sheet;
-        # deleting it makes every lookup produce Err:504 before LibreOffice can calc.
-        # LibreOffice skips hidden sheets when exporting to PDF, so only the brief appears.
-        for name in wb.sheetnames:
-            if name != "CBU Tech Brief":
-                wb[name].sheet_state = "hidden"
-
-        # Make CBU Tech Brief the active/selected sheet
-        wb.active = wb["CBU Tech Brief"]
-
-        wb.calculation.fullCalcOnLoad = True
-        wb.save(work_file)
-
-    except Exception as e:
-        print(f"__ERROR__:Failed to fill template: {e}")
-        sys.exit(1)
-
-    # ── Convert to PDF via LibreOffice ────────────────────────────────────────
-    try:
-        result = subprocess.run(
-            [lo, "--headless", "--convert-to", "pdf", "--outdir", args.outdir, work_file],
-            capture_output=True, text=True, timeout=90,
-        )
-        if result.returncode != 0:
-            print(f"__ERROR__:LibreOffice failed: {result.stderr.strip()}")
+            brief_pdfs.append(pdf)
+        except subprocess.TimeoutExpired:
+            print(f"__ERROR__:LibreOffice timed out on system {idx} ({system})")
             sys.exit(1)
-    except subprocess.TimeoutExpired:
-        print("__ERROR__:LibreOffice timed out after 90 s")
-        sys.exit(1)
-    except Exception as e:
-        print(f"__ERROR__:LibreOffice error: {e}")
-        sys.exit(1)
-
-    brief_pdf = os.path.join(args.outdir, "CBU_Tech_Brief.pdf")
-    if not os.path.exists(brief_pdf):
-        alt = work_file.replace(".xlsx", ".pdf")
-        if os.path.exists(alt):
-            os.rename(alt, brief_pdf)
-        else:
-            print("__ERROR__:PDF not found after conversion")
+        except Exception as e:
+            print(f"__ERROR__:{e}")
             sys.exit(1)
 
-    # ── Append Commissioning + T&C from docs/ folder ─────────────────────────
+    # ── Append Commissioning + T&C once at end ────────────────────────────────
     comm_pdf = find_doc(docs_dir,
         "commissioning.pdf",
         "GENERAL SERVICE & COMMISSIONING.pdf",
@@ -164,21 +167,26 @@ def main():
         "United Kingdom TCs English March 2023.pdf",
     )
 
-    if comm_pdf or tc_pdf:
-        merged = os.path.join(args.outdir, "CBU_Brief_Complete.pdf")
-        to_merge = [brief_pdf]
-        if comm_pdf:
-            to_merge.append(comm_pdf)
-        if tc_pdf:
-            to_merge.append(tc_pdf)   # T&C always last
+    final_pdf = brief_pdfs[0] if len(brief_pdfs) == 1 else None
+    to_merge = brief_pdfs[:]
+    if comm_pdf:
+        to_merge.append(comm_pdf)
+    if tc_pdf:
+        to_merge.append(tc_pdf)   # T&C always last
 
+    if len(to_merge) > 1:
+        merged = os.path.join(args.outdir, "CBU_Brief_Complete.pdf")
         ok, err = merge_pdfs(merged, to_merge)
         if ok and os.path.exists(merged):
-            brief_pdf = merged
+            final_pdf = merged
         else:
             sys.stderr.write(f"[warn] PDF merge skipped: {err}\n")
+            final_pdf = brief_pdfs[0]
+    elif final_pdf is None:
+        print("__ERROR__:No PDFs generated")
+        sys.exit(1)
 
-    print(f"__PDF__:{brief_pdf}")
+    print(f"__PDF__:{final_pdf}")
     sys.exit(0)
 
 

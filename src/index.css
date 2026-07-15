@@ -45,3 +45,26 @@
 
 /* Crisp chart text */
 svg.chart text { font-family: 'Geist', Inter, sans-serif; }
+
+/* ─── Dark-mode contrast boost ────────────────────────────────────────────────
+   Brighter, faintly-violet borders + rings, and whiter text. Overrides the
+   ink-700/800/600 border+ring tokens only inside .dark (later source order than
+   the @tailwind utilities, equal specificity → wins). Light mode untouched. */
+.dark [class*="border-ink-800"] { border-color: #322c46; }
+.dark [class*="border-ink-700"] { border-color: #3c3552; }
+.dark [class*="ring-ink-800"]   { --tw-ring-color: #322c46; }
+.dark [class*="ring-ink-700"]   { --tw-ring-color: #3c3552; }
+.dark [class*="ring-ink-600"]   { --tw-ring-color: #463e5e; }
+
+.dark .dark\:text-ink-50  { color: #ffffff; }
+.dark .dark\:text-ink-100 { color: #f2f2f6; }
+.dark .dark\:text-ink-200 { color: #e6e6ee; }
+
+/* ─── Light-mode contrast boost ───────────────────────────────────────────────
+   Darker, faintly-violet borders + rings. Scoped to html:not(.dark) so dark
+   mode (whose dark: variants have higher specificity anyway) is never touched. */
+html:not(.dark) [class*="border-ink-100"] { border-color: #d8d6e2; }
+html:not(.dark) [class*="border-ink-200"] { border-color: #c8c5d6; }
+html:not(.dark) [class*="ring-ink-100"]   { --tw-ring-color: #d8d6e2; }
+html:not(.dark) [class*="ring-ink-200"]   { --tw-ring-color: #c8c5d6; }
+html:not(.dark) [class*="ring-ink-300"]   { --tw-ring-color: #b6b2c8; }

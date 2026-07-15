@@ -1,9 +1,16 @@
 # ─── Dependencies / build ────────────────────────────────────────────────────
 node_modules/
 dist/
+dist-server/
 build/
 *.tsbuildinfo
 .vite/
+
+# ─── Tauri ───────────────────────────────────────────────────────────────────
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
+ship-automation/
 
 # ─── Secrets: API keys, cookies, tokens — NEVER commit ───────────────────────
 .env
@@ -33,6 +40,7 @@ graph_token_cache.json
 *.sqlite
 *.sqlite3
 crm_quotations.csv
+/data/
 
 # ─── Logs & runtime state ────────────────────────────────────────────────────
 *.log

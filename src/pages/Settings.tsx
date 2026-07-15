@@ -1,7 +1,7 @@
 // ─── Settings ────────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useRef } from 'react';
 import { Check, Moon, Sun, RefreshCw, Trash2, RotateCcw, AlertCircle, Eye, EyeOff } from 'lucide-react';
-import { Card, CardTitle, Button } from '../lib/ui';
+import { Card, CardTitle, Button, Field, TextInput } from '../lib/ui';
 import { useLang, LANG_LABELS, type Lang } from '../lib/i18n';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
@@ -219,8 +219,7 @@ function SecretField({ label, hint, value, onChange }: {
 
   return (
     <div>
-      <label className="block text-[11.5px] font-semibold text-ink-800 dark:text-ink-100">{label}</label>
-      <p className="text-[10.5px] text-ink-500 dark:text-ink-400 mb-1.5">{hint}</p>
+      <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">{label}</label>
       <div className="relative">
         <input
           type={show ? 'text' : 'password'}
@@ -238,6 +237,7 @@ function SecretField({ label, hint, value, onChange }: {
           {show ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
         </button>
       </div>
+      <p className="text-[10px] text-ink-400 mt-2 leading-relaxed">{hint}</p>
 
       {mode && (
         <div className="mt-2 p-2.5 rounded-md ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800/60">
@@ -299,13 +299,11 @@ export function SettingsPage({
 
   function field(key: keyof Config, label: string, hint: string) {
     return (
-      <div key={key}>
-        <label className="block text-[11.5px] font-semibold text-ink-800 dark:text-ink-100">{label}</label>
-        <p className="text-[10.5px] text-ink-500 dark:text-ink-400 mb-1.5">{hint}</p>
-        <input value={form![key]}
+      <Field key={key} label={label} hint={hint}>
+        <TextInput value={(form![key] as string) ?? ''}
           onChange={e => setForm(f => f ? { ...f, [key]: e.target.value } : f)}
-          className="w-full h-8 px-2.5 rounded-md text-[11.5px] mono ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800 focus:ring-brand-400 focus:outline-none" />
-      </div>
+          className="mono" />
+      </Field>
     );
   }
 
@@ -328,7 +326,9 @@ export function SettingsPage({
           {field('dq_store',   'D&Q Store path',         'Server-relative library path')}
           <SecretField
             label="Gemini API key"
-            hint="From console.google.com → API key — powers the Ask AI feature"
+            hint={form.gemini_key_set && !form.gemini_key
+              ? "Key is configured — leave blank to keep it, or enter a new key to replace it"
+              : "From console.google.com → API key — powers the Ask AI feature"}
             value={form.gemini_key ?? ''}
             onChange={v => setForm(f => f ? { ...f, gemini_key: v } : f)}
           />
@@ -336,7 +336,7 @@ export function SettingsPage({
 
         {/* Language */}
         <div className="mt-5 pt-4 border-t border-ink-200/70 dark:border-ink-800">
-          <label className="block text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 mb-2">{t.language}</label>
+          <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">{t.language}</label>
           <div className="flex gap-2">
             {(Object.keys(LANG_LABELS) as Lang[]).map(l => (
               <button key={l} onClick={() => setLang(l)}

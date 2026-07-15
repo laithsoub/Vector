@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '../lib/cn';
-import { Card, CardTitle, Pill, StatusDot, fmtMoney, relTime } from '../lib/ui';
+import { Card, CardTitle, Pill, StatusDot, KpiTile, fmtMoney, relTime } from '../lib/ui';
 import { MiniBars, PRODUCT_COLORS } from '../lib/charts';
 import { api, runStreamingScript } from '../lib/api';
 import type { ConflictItem } from '../lib/api';
@@ -40,7 +40,9 @@ export function DashboardPage({
   const [jobs, setJobs]         = useState<Job[]>([]);
   const [pdfs, setPdfs]         = useState<PdfFile[]>([]);
   const [archive, setArchive]   = useState<ArchiveDay[]>([]);
-  const [product, setProduct]   = useState('');
+  const [suggesting, setSuggesting] = useState(false); // detection in progress
+  const [perFile, setPerFile]   = useState<{ name: string; lang: string; suggestion: string }[]>([]);
+  const [fileLines, setFileLines] = useState<Record<string, string>>({}); // per-file manual overrides
   const [arrived, setArrived]   = useState('');
   const [step1, setStep1]       = useState<'idle' | 'running' | 'done' | 'err'>('idle');
   const [step2, setStep2]       = useState<'idle' | 'running' | 'done' | 'err'>('idle');
@@ -49,7 +51,7 @@ export function DashboardPage({
 
   // ── Conflict resolution state ─────────────────────────────────────────────
   const [conflicts, setConflicts]       = useState<ConflictItem[] | null>(null);
-  const [conflictCtx, setConflictCtx]   = useState<{ division: string; queuedNames: string[] } | null>(null);
+  const [conflictCtx, setConflictCtx]   = useState<{ queuedNames: string[] } | null>(null);
 
   // ── Inbox preview ─────────────────────────────────────────────────────────
   const [inboxEmails, setInboxEmails]   = useState<any[]>([]);
@@ -85,6 +87,44 @@ export function DashboardPage({
     const id = setInterval(refresh, 8_000);
     return () => clearInterval(id);
   }, [refresh]);
+
+  // ── Auto-suggest the product line(s) for each queued file ──────────────────
+  const pdfKey = pdfs.map(p => p.name).join('|');
+  useEffect(() => {
+    if (pdfs.length === 0) { setPerFile([]); setSuggesting(false); return; }
+    let cancelled = false;
+    setSuggesting(true);
+    api.suggestProduct()
+      .then(r => {
+        if (cancelled) return;
+        setPerFile(r.perFile || []);
+        // Drop manual overrides for files no longer queued.
+        setFileLines(prev => {
+          const live = new Set((r.perFile || []).map(f => f.name));
+          const next: Record<string, string> = {};
+          for (const k of Object.keys(prev)) if (live.has(k)) next[k] = prev[k];
+          return next;
+        });
+      })
+      .catch(() => { /* silent — dropdowns still work manually */ })
+      .finally(() => { if (!cancelled) setSuggesting(false); });
+    return () => { cancelled = true; };
+  }, [pdfKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Per-file detected line + effective line (manual override wins over detection)
+  const detectedMap: Record<string, string> = {};
+  perFile.forEach(f => { detectedMap[f.name] = f.suggestion || ''; });
+  const lineFor = (name: string) => fileLines[name] ?? detectedMap[name] ?? '';
+
+  // Breakdown of effective lines across the batch
+  const lineCounts = pdfs.reduce<Record<string, number>>((acc, p) => {
+    const k = lineFor(p.name) || 'UNKNOWN';
+    acc[k] = (acc[k] || 0) + 1;
+    return acc;
+  }, {});
+  const lineBreakdown = Object.entries(lineCounts).sort((a, b) => b[1] - a[1]);
+  const allResolved   = pdfs.length > 0 && pdfs.every(p => !!lineFor(p.name));
+  const isBulk = pdfs.length > 1;
 
   const onDrop = useCallback(async (files: File[]) => {
     for (const f of files) {
@@ -133,7 +173,9 @@ export function DashboardPage({
   ];
 
   const todayLocal = fmtD(today);
-  const step1Ready = connected && pdfs.length > 0 && !!product && !!arrived;
+  // Each file uploads with its own product line (auto-detected, editable per file).
+  // Run is allowed once every queued file has a line resolved (so none upload blank).
+  const step1Ready = connected && pdfs.length > 0 && allResolved && !!arrived;
   const step2Ready = connected && pdfs.length > 0;
 
   // ─── Run actions (SSE) ────────────────────────────────────────────────────
@@ -142,16 +184,19 @@ export function DashboardPage({
     setStep1('running');
     step1Abort.current = new AbortController();
     const queuedNames = pdfs.map(p => p.name);
+    // Per-file product line: { filename: division } for every queued file.
+    const lines: Record<string, string> = {};
+    pdfs.forEach(p => { lines[p.name] = lineFor(p.name); });
     try {
       const r = await runStreamingScript('/api/run/step1', {
-        params: { division: product, arrived, today: todayLocal },
+        params: { lines: JSON.stringify(lines), arrived, today: todayLocal },
         signal: step1Abort.current.signal,
         onLine: () => {},
       });
       if (r.conflicts?.length) {
         setStep1('idle');
         setConflicts(r.conflicts);
-        setConflictCtx({ division: product, queuedNames });
+        setConflictCtx({ queuedNames });
       } else {
         setStep1(r.ok ? 'done' : 'err');
         toast(r.ok ? 'ok' : 'err', r.ok ? 'Step 1 completed' : 'Step 1 failed');
@@ -165,7 +210,9 @@ export function DashboardPage({
     setStep1('running');
     try {
       const r = await runStreamingScript('/api/run/step1/upload', {
-        body: { decisions, division: conflictCtx?.division || '', queuedNames: conflictCtx?.queuedNames || [] },
+        // CSV (with per-file divisions) is already written by the extract phase;
+        // the upload phase just pushes it, so no division payload is needed here.
+        body: { decisions, queuedNames: conflictCtx?.queuedNames || [] },
         onLine: () => {},
       });
       setStep1(r.ok ? 'done' : 'err');
@@ -217,10 +264,10 @@ export function DashboardPage({
       )}
       {/* KPI tiles */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiTile Icon={FileUp}        label="In queue"        value={pdfs.length}      sub="awaiting Step 1"   accent="brand" />
-        <KpiTile Icon={Check}         label="Processed today" value={todayOk}          sub={`${todayJobs.length} total runs`} accent="ok" />
-        <KpiTile Icon={AlertCircle}   label="Failed today"    value={todayErr}         sub="see History"       accent="err" />
-        <KpiTile Icon={Archive}       label="Archived today"  value={archivedToday}    sub="files moved"       accent="violet" />
+        <KpiTile icon={FileUp}        label="In queue"        value={pdfs.length}      sub="awaiting Step 1"   accent="brand" />
+        <KpiTile icon={Check}         label="Processed today" value={todayOk}          sub={`${todayJobs.length} total runs`} accent="ok" />
+        <KpiTile icon={AlertCircle}   label="Failed today"    value={todayErr}         sub="see History"       accent="err" />
+        <KpiTile icon={Archive}       label="Archived today"  value={archivedToday}    sub="files moved"       accent="violet" />
       </div>
 
       <div className="grid grid-cols-12 gap-5">
@@ -236,7 +283,7 @@ export function DashboardPage({
               <div className="flex items-center gap-1.5">
                 <WfStep n={1} label="Files"   done={pdfs.length > 0} />
                 <span className="w-4 h-px bg-ink-200 dark:bg-ink-800" />
-                <WfStep n={2} label="Details" done={!!product && !!arrived} />
+                <WfStep n={2} label="Details" done={allResolved && !!arrived} />
                 <span className="w-4 h-px bg-ink-200 dark:bg-ink-800" />
                 <WfStep n={3} label="Run"     done={step1 === 'done' || step2 === 'done'} />
               </div>
@@ -278,28 +325,72 @@ export function DashboardPage({
             </Stage>
 
             {/* Stage 2 — Details */}
-            <Stage n={2} title="Details" right={!!product && !!arrived && <Pill tone="ok" dot>Ready</Pill>}>
+            <Stage n={2} title="Details" right={allResolved && !!arrived && <Pill tone="ok" dot>Ready</Pill>}>
               <div className="grid grid-cols-2 gap-5">
                 <div>
-                  <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">Product line <span className="text-red-500 normal-case">*</span></label>
-                  <div className="grid grid-cols-2 gap-1">
-                    {PRODUCT_OPTS.map(p => {
-                      const active = product === p;
-                      const color  = PRODUCT_COLORS[p] || '#65656c';
-                      return (
-                        <button key={p} onClick={() => setProduct(p)}
-                          className={cn(
-                            'flex items-center gap-2 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors text-left',
-                            active
-                              ? 'bg-brand-50 dark:bg-brand-900/30 text-brand-700 dark:text-brand-300 ring-1 ring-inset ring-brand-200 dark:ring-brand-700/50'
-                              : 'text-ink-700 dark:text-ink-200 hover:bg-ink-50 dark:hover:bg-ink-800/60',
-                          )}>
-                          <span className="w-1.5 h-4 rounded-sm shrink-0" style={{ background: color }} />
-                          <span className="truncate">{PRODUCT_LABELS[p] || p}</span>
-                        </button>
-                      );
-                    })}
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500">Product line · per quote</label>
+                    {pdfs.length > 1 && (
+                      <select value=""
+                        onChange={e => { const v = e.target.value; if (v) setFileLines(Object.fromEntries(pdfs.map(p => [p.name, v]))); }}
+                        className="shrink-0 h-6 text-[10px] rounded-md px-1.5 bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 focus:outline-none focus:ring-brand-400">
+                        <option value="">Set all…</option>
+                        {PRODUCT_OPTS.map(o => <option key={o} value={o}>{PRODUCT_LABELS[o] || o}</option>)}
+                      </select>
+                    )}
                   </div>
+
+                  {pdfs.length === 0 ? (
+                    <p className="text-[10.5px] text-ink-400">Drop files to auto-detect product lines.</p>
+                  ) : (
+                    <>
+                      {suggesting && (
+                        <p className="flex items-center gap-1.5 text-[10px] text-ink-400 mb-2">
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                          Detecting product line{isBulk ? `s · ${pdfs.length} quotes` : ''}…
+                        </p>
+                      )}
+                      <div className="space-y-1 max-h-56 overflow-y-auto pr-0.5">
+                        {pdfs.map(p => {
+                          const detected = detectedMap[p.name] || '';
+                          const cur      = lineFor(p.name);
+                          const isAuto   = !!cur && fileLines[p.name] == null;   // showing the detected value
+                          return (
+                            <div key={p.name} className={cn(
+                              'flex items-center gap-2 px-2 py-1 rounded-md',
+                              cur ? 'hover:bg-ink-50 dark:hover:bg-ink-800/60' : 'bg-amber-50/60 dark:bg-amber-900/10',
+                            )}>
+                              <span className="w-1.5 h-4 rounded-sm shrink-0" style={{ background: cur ? (PRODUCT_COLORS[cur] || '#65656c') : '#d4d4d8' }} />
+                              <span className="truncate flex-1 text-[11px] font-medium" title={p.name}>{p.name}</span>
+                              {isAuto && detected && (
+                                <span className="shrink-0 text-[8px] font-bold uppercase tracking-wide text-brand-600 dark:text-brand-400" title="Auto-detected">auto</span>
+                              )}
+                              <select value={cur}
+                                onChange={e => setFileLines(prev => ({ ...prev, [p.name]: e.target.value }))}
+                                className={cn(
+                                  'shrink-0 h-6 text-[10.5px] rounded-md px-1 ring-1 ring-inset focus:outline-none bg-white dark:bg-ink-900',
+                                  cur ? 'ring-ink-200 dark:ring-ink-700' : 'ring-amber-300 dark:ring-amber-700 text-amber-700 dark:text-amber-300',
+                                )}>
+                                <option value="">Not detected</option>
+                                {PRODUCT_OPTS.map(o => <option key={o} value={o}>{PRODUCT_LABELS[o] || o}</option>)}
+                              </select>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {isBulk && lineBreakdown.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {lineBreakdown.map(([line, n]) => (
+                            <span key={line}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9.5px] font-medium bg-ink-100 dark:bg-ink-800 text-ink-600 dark:text-ink-300">
+                              <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ background: line === 'UNKNOWN' ? '#a1a1aa' : (PRODUCT_COLORS[line] || '#65656c') }} />
+                              {line === 'UNKNOWN' ? 'Not detected' : (PRODUCT_LABELS[line] || line)} ×{n}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
                 <div>
                   <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">Quote received <span className="text-red-500 normal-case">*</span></label>
@@ -483,33 +574,6 @@ export function DashboardPage({
 }
 
 // ─── Sub-components ─────────────────────────────────────────────────────────
-function KpiTile({
-  Icon, label, value, sub, accent,
-}: {
-  Icon: typeof FileUp;
-  label: string;
-  value: number | string;
-  sub: string;
-  accent: 'brand' | 'ok' | 'err' | 'violet';
-}) {
-  const tones = {
-    brand:  'text-brand-600 bg-brand-50 dark:bg-brand-900/30 dark:text-brand-300',
-    ok:     'text-emerald-600 bg-emerald-50 dark:bg-emerald-900/30 dark:text-emerald-300',
-    err:    'text-red-600 bg-red-50 dark:bg-red-900/30 dark:text-red-300',
-    violet: 'text-violet-600 bg-violet-50 dark:bg-violet-900/30 dark:text-violet-300',
-  };
-  return (
-    <Card>
-      <div className={cn('w-7 h-7 rounded-md flex items-center justify-center', tones[accent])}>
-        <Icon className="w-3.5 h-3.5" />
-      </div>
-      <p className="mt-3 text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500">{label}</p>
-      <p className="text-2xl font-semibold tracking-tight num mt-0.5">{value}</p>
-      <p className="text-[10.5px] text-ink-500 dark:text-ink-400 mt-0.5">{sub}</p>
-    </Card>
-  );
-}
-
 function WfStep({ n, label, done }: { n: number; label: string; done: boolean }) {
   return (
     <div className="flex items-center gap-1.5 text-[11px]">

@@ -31,14 +31,19 @@ $edge = if (Test-Path 'C:\Program Files\Microsoft\Edge\Application\msedge.exe') 
 Log "edge path: $edge"
 
 # 4) Launch Edge with remote debugging
+# Edge 136+ (this machine: 150) silently ignores --remote-debugging-port when
+# launched on the DEFAULT user-data-dir — an anti-cookie-theft change. The port
+# only binds with a dedicated --user-data-dir. Log into SharePoint once in this
+# profile; cookies persist here for Connect to JOE.
+$edgeProfile = Join-Path $env:LOCALAPPDATA 'VectorEdgeDebug'
 if ($edge) {
     Start-Process $edge -ArgumentList @(
         '--remote-debugging-port=9222',
         '--no-first-run',
-        '--profile-directory=Default',
+        "--user-data-dir=`"$edgeProfile`"",
         'https://eaton.sharepoint.com/sites/QuotationFactoryEMEA'
     )
-    Log "edge launched with debugging"
+    Log "edge launched with debugging (user-data-dir=$edgeProfile)"
 }
 
 # 5) Start server as detached hidden process using node.exe directly (no PATH dependency)
@@ -69,9 +74,9 @@ for ($i = 1; $i -le 30; $i++) {
 }
 if (-not $ready) { Log "server NEVER came up after 30s" }
 
-# 7) Open app tab
+# 7) Open app tab (same profile → joins the debug instance)
 if ($edge) {
-    Start-Process $edge -ArgumentList 'http://localhost:3000'
+    Start-Process $edge -ArgumentList @("--user-data-dir=`"$edgeProfile`"", 'http://localhost:3000')
     Log "app tab opened"
 }
 

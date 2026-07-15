@@ -25,6 +25,7 @@ CTO vs DTO logic:
 """
 
 import csv
+import json
 import os
 import re
 import sys
@@ -480,55 +481,219 @@ EXTRACTORS = {}   # filled at bottom of file
 FR_LIGHTING_ONLY = ["eclairage de securite", "eclairage de sécurité"]
 
 def detect_salesman_fr(page1_text):
-    """Extract 'Votre contact commercial' name — stops at end of line."""
+    """REQUESTED FROM = 'Votre contact commercial' (the Eaton sales rep)."""
     m = re.search(r"contact commercial\s*[:\s]+([^\n]+)", page1_text, re.IGNORECASE)
     if m:
-        return m.group(1).strip()
-    # Fallback: Etabli(e) par name (before email on next token)
-    m2 = re.search(r"Etabli\(e\) par\s*[:\s]+(.+?)\s+(?:Email|$)", page1_text, re.IGNORECASE)
-    if m2:
-        return m2.group(1).strip()
+        # On two-column layouts the value can be followed by another right-column
+        # label on the same logical line — cut it off.
+        val = re.split(r"\s+(?:Tel Eaton Sales Contact|Email)\s*:", m.group(1))[0]
+        return val.strip()
     return DEFAULT_SALESMAN
+
+
+def detect_inside_sales_fr(page1_text):
+    """INSIDE SALES = 'Etabli(e) par' (the Cooper back-office author of the quote)."""
+    m = re.search(r"Etabli\(e\) par\s*:\s*([^\n]+)", page1_text, re.IGNORECASE)
+    if m:
+        # Trim trailing right-column label / email if present on the same line.
+        val = re.split(r"\s+(?:Email|Votre contact commercial)\s*:", m.group(1))[0]
+        return val.strip()
+    return ""
+
+
+def extract_customer_fr(page1_text):
+    """
+    Customer NAME only (no client number, no address).
+
+    Two FR layouts:
+      A) two-column: "Nom du client: <NAME> Etabli(e) par: ..."
+      B) single-col: "Client Final: <NAME>"  (number/address on following lines)
+    """
+    for label in (r"Nom du client", r"Client Final"):
+        m = re.search(label + r"\s*:\s*(.+)", page1_text)
+        if m:
+            val = m.group(1)
+            # Drop any right-column label that bleeds onto the same line, and never
+            # let the client number / address get captured as the name.
+            val = re.split(
+                r"\s+(?:Etabli\(e\) par|Num[ée]ro de client|N°\s*Client Final|Adresse)\s*:",
+                val,
+            )[0]
+            return val.strip()
+    return ""
 
 
 def detect_product_type_fr(page2_text):
     """
-    Scan the Summary table on page 2 for product categories.
-    If any category other than emergency lighting is present → Standard CTO.
-    Otherwise → DTO.
-    """
-    # Grab category names from the Summary section
-    # Pattern: lines like "Eclairage de sécurité", "Sécurité incendie", etc.
-    # They appear between "Summary" and the end of the table
-    summary_m = re.search(r"Summary(.+?)(?:Cooper Securite|Page\s*:|\Z)", page2_text, re.DOTALL | re.IGNORECASE)
-    if not summary_m:
-        return "DTO"
+    Scan page-2 product categories. If any category other than emergency
+    lighting is present → Standard CTO, otherwise → DTO.
 
-    summary_block = summary_m.group(1).lower()
-    # Normalise accents for comparison
+    Two layouts:
+      A) a "Summary" section listing category names ("Eclairage de sécurité", …).
+      B) a "Categorie | Subtotal | Prix total hors TVA" table whose rows hold
+         the categories ("SSI", "MISE EN SERVICE …") — variant-B quotes have no
+         Summary block, so the whole page-2 text is scanned instead.
+    """
     import unicodedata
     def strip_accents(s):
         return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
 
-    summary_norm = strip_accents(summary_block)
-    # Non-lighting category keywords (French)
+    # Prefer the Summary block when present; else fall back to the full page text
+    # so the variant-B category table is covered.
+    summary_m = re.search(r"Summary(.+?)(?:Cooper Securite|Page\s*:|\Z)", page2_text, re.DOTALL | re.IGNORECASE)
+    scan_norm = strip_accents((summary_m.group(1) if summary_m else page2_text).lower())
+
+    # Non-lighting category keywords (French). "ssi" = Système de Sécurité Incendie.
     non_lighting = [
         "securite incendie", "alarme technique", "alarme intrusion",
         "detection incendie", "controle acces", "video", "cvc",
-        "electricite", "courants forts", "courants faibles"
+        "electricite", "courants forts", "courants faibles",
     ]
     for kw in non_lighting:
-        if strip_accents(kw) in summary_norm:
+        if strip_accents(kw) in scan_norm:
             return "Standard CTO"
+    # "ssi" needs word boundaries so it doesn't match inside other words.
+    if re.search(r"\bssi\b", scan_norm):
+        return "Standard CTO"
     return "DTO"
 
 
+# Product-line (DIVISION) keyword fingerprints. Map quote content → the UI
+# "Product line" picker codes. Per-language because templates/terms differ.
+def _norm_text(*texts):
+    """Concatenate, lowercase and strip accents for keyword matching."""
+    import unicodedata
+    blob = " ".join(t or "" for t in texts)
+    return "".join(c for c in unicodedata.normalize("NFD", blob) if unicodedata.category(c) != "Mn").lower()
+
+
+def _hit(blob, subs=(), tokens=()):
+    return any(s in blob for s in subs) or any(re.search(t, blob) for t in tokens)
+
+
+# ── France: emergency lighting (EL) vs fire/SSI (FIRE) ──────────────────────
+_FR_FIRE_KW = [
+    "securite incendie", "detection incendie", "alarme incendie",
+    "declencheur manuel", "centrale de detection", "diffuseur sonore",
+    "detecteur optique", "detecteur thermo", "sirene", "cmsi", "sensea",
+]
+_FR_FIRE_TOKENS = [r"\bssi\b", r"\buga\b"]
+_FR_EL_KW = [
+    "eclairage de securite", "bloc autonome", "luminaire", "pictogramme",
+    "balisage", "evacuation", "planete",
+]
+_FR_EL_TOKENS = [r"\bbaes\b", r"\bb\.?a\.?e\.?s\b", r"\bsati\b"]
+
+# ── Germany/Austria/CH: MV switchgear vs transformer ───────────────────────
+_DE_SW_KW = [
+    # NB: no bare "mittelspannung" — it also appears in "Mittelspannungstransformator".
+    "xiria", "schaltanlage", "schaltfeld", "lasttrennschalter",
+    "leistungsschalter", "schaltraum", "ringkabel",
+    "feldrig", "magnefix", "power xpert",
+]
+_DE_SW_TOKENS = [r"\bsf6\b"]
+_DE_TR_KW = [
+    "transformator", "trafo", "giessharz", "harztransformator",
+    "oeltransformator", "olverteiltransformator", "verteiltransformator",
+]
+_DE_COMBO_KW = [
+    "kompaktstation", "ortsnetzstation", "ubergabestation",
+    "transformatorstation", "netzstation",
+]
+
+# ── Italy: emergency lighting / fire / MV switchgear ────────────────────────
+_IT_EL_KW = [
+    "cgline", "flexitech", "crystalway", "corpi illuminanti",
+    "illuminazione di emergenza", "luci di emergenza", "lampade",
+    "plafoniera", "autonomia",
+]
+_IT_FIRE_KW = [
+    "antincendio", "rivelazione incendio", "rivelatore", "rivelatori",
+    "centrale antincendio", "allarme incendio",
+]
+_IT_SW_KW = [
+    "quadri", "quadro", "scomparto", "scomparti", "media tensione",
+    "cella", "celle", "xiria",
+]
+
+
+def _division_fr(blob):
+    has_fire = _hit(blob, _FR_FIRE_KW, _FR_FIRE_TOKENS)
+    has_el   = _hit(blob, _FR_EL_KW,   _FR_EL_TOKENS)
+    if has_fire and has_el: return "EL & FIRE"
+    if has_fire: return "FIRE"
+    if has_el:   return "EL"
+    return ""
+
+
+def _division_de(blob):
+    # Combo only on explicit packaged-station terms. Switchgear wins over a stray
+    # "Transformator" (it shows up as a protection feature in switchgear quotes),
+    # so a transformer verdict requires transformer terms with no switchgear ones.
+    if _hit(blob, _DE_COMBO_KW): return "MV-COMBINATION"
+    if _hit(blob, _DE_SW_KW, _DE_SW_TOKENS): return "MV-SWITCHGEAR"
+    if _hit(blob, _DE_TR_KW): return "MV-TRANSFORMER"
+    return ""
+
+
+def _division_it(blob):
+    has_el   = _hit(blob, _IT_EL_KW)
+    has_fire = _hit(blob, _IT_FIRE_KW)
+    if has_el and has_fire: return "EL & FIRE"
+    if has_fire: return "FIRE"
+    if has_el:   return "EL"
+    if _hit(blob, _IT_SW_KW): return "MV-SWITCHGEAR"
+    return ""
+
+
+def detect_division(lang, *texts):
+    """Suggest the UI Product-line code from a quote's text, by language.
+
+    FR/IT → EL / FIRE / EL & FIRE (lighting & fire-safety quotes).
+    IT     → also MV-SWITCHGEAR (quadri / media tensione).
+    DE     → MV-SWITCHGEAR / MV-TRANSFORMER / MV-COMBINATION.
+    Returns '' when nothing recognisable (UI leaves the picker to the user).
+    """
+    blob = _norm_text(*texts)
+    if lang == "FR": return _division_fr(blob)
+    if lang == "DE": return _division_de(blob)
+    if lang == "IT": return _division_it(blob)
+    return ""
+
+
+# Back-compat alias (FR-only callers).
+def detect_division_fr(*texts):
+    return _division_fr(_norm_text(*texts))
+
+
+def _fr_to_float(raw):
+    """French number string '18.746,00' / '3 000 000,00' → float."""
+    return float(raw.strip().replace(" ", "").replace(".", "").replace(",", "."))
+
+
 def extract_total_price_fr(page2_text):
-    """Extract 'Valeur totale (hors alternatives produits)' from French quote page 2."""
+    """
+    Discounted total (HT) from French quote page 2.
+
+    Variant A (single line): "Valeur totale (hors alternatives produits) 650,18 €".
+    Variant B (no 'Valeur totale'): a Summary category table with columns
+        'Categorie | Subtotal | Prix total hors TVA'
+    where the discounted price is the SUM of the 'Prix total hors TVA' column
+    (2nd € amount on each category row), e.g. 18.746 + 1.500 + 1.800 = 22.046.
+    """
     m = re.search(r"Valeur totale.*?([\d\s\.]+,\d{2})\s*€", page2_text, re.IGNORECASE | re.DOTALL)
     if m:
-        raw = m.group(1).strip().replace(" ", "").replace(".", "").replace(",", ".")
-        return raw
+        return f"{_fr_to_float(m.group(1)):.2f}"
+
+    # Variant B — sum the second € amount (Prix total hors TVA) of each table row.
+    total, found = 0.0, False
+    for line in page2_text.splitlines():
+        amounts = re.findall(r"€\s*([\d\.\s]+,\d{2})", line)
+        if len(amounts) >= 2:
+            total += _fr_to_float(amounts[1])
+            found = True
+    if found:
+        return f"{total:.2f}"
     return ""
 
 
@@ -548,11 +713,13 @@ def process_pdf_fr(pdf_path, arrived_date="", division="", today="", lang="FR"):
     # Project name
     quotation_name = extract_field(page1_text, r"Votre demande\s*[:\s]+(.+)")
 
-    # Customer name — stops before "Etabli(e) par" which appears on the same line (two-column PDF)
-    customer = extract_field(page1_text, r"Nom du client\s*[:\s]+(.+?)\s+Etabli\(e\) par")
+    # Customer NAME only (handles "Nom du client" and "Client Final", strips address)
+    customer = extract_customer_fr(page1_text)
 
-    # Salesman = Votre contact commercial
-    salesman = detect_salesman_fr(page1_text)
+    # INSIDE SALES = Etabli(e) par (Cooper back-office author)
+    # REQUESTED FROM = Votre contact commercial (Eaton sales rep)
+    inside_sales = detect_inside_sales_fr(page1_text)
+    requested_from = detect_salesman_fr(page1_text)
 
     # Issue date
     raw_date = extract_field(page1_text, r"Date\s*[:\s]+([\d/]+)")
@@ -576,9 +743,9 @@ def process_pdf_fr(pdf_path, arrived_date="", division="", today="", lang="FR"):
     arrival = arrived_date if arrived_date else issue_date
 
     row = {
-        "INSIDE SALES"                      : salesman,
+        "INSIDE SALES"                      : inside_sales,
         "SALESFORCE ID"                     : "",
-        "REQUESTED FROM EATON (INTERNAL)"   : salesman,
+        "REQUESTED FROM EATON (INTERNAL)"   : requested_from,
         "COUNTRY"                           : COUNTRY_NAMES.get(lang, lang),
         "ARRIVED ON"                        : arrival,
         "ON-HOLD date"                      : arrival,
@@ -598,7 +765,8 @@ def process_pdf_fr(pdf_path, arrived_date="", division="", today="", lang="FR"):
     print(f"    Quote Code  : {quotation_code}")
     print(f"    Quote Name  : {quotation_name}")
     print(f"    Customer    : {customer}")
-    print(f"    Salesman    : {salesman}")
+    print(f"    Inside Sales: {inside_sales}")
+    print(f"    Requested   : {requested_from}")
     print(f"    Arrived     : {arrival}")
     print(f"    Processed   : {today_str}")
     print(f"    Valid To    : {valid_to}")
@@ -1249,10 +1417,64 @@ EXTRACTORS["IT"] = process_pdf_it
 #  MAIN
 # ─────────────────────────────────────────────
 
+def run_suggest_division():
+    """Lightweight pass over the queued files: detect each file's language and,
+    for French quotes, suggest a Product-line (DIVISION) code. Prints JSON and
+    does NOT write the CSV. Used by the UI to pre-fill the product picker."""
+    input_files, _tmp_dir = collect_input_files(PDF_FOLDER)
+    per_file = []
+    try:
+        for pdf_path, orig_name, _was_conv, _x, _orig in input_files:
+            lang, suggestion = "", ""
+            try:
+                with pdfplumber.open(pdf_path) as _pdf:
+                    p1 = _pdf.pages[0].extract_text() or ""
+                    # a few pages are enough to fingerprint the product line
+                    blob = "\n".join((_pdf.pages[i].extract_text() or "") for i in range(min(6, len(_pdf.pages))))
+                lang = detect_language(p1, filename=orig_name or "")
+                suggestion = detect_division(lang, blob)
+            except Exception:
+                pass
+            per_file.append({"name": orig_name, "lang": lang, "suggestion": suggestion})
+    finally:
+        try:
+            if _tmp_dir and os.path.exists(_tmp_dir):
+                shutil.rmtree(_tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    # Aggregate to one batch suggestion: any FIRE+EL mix → "EL & FIRE",
+    # otherwise the single distinct non-empty value, else "".
+    vals = {f["suggestion"] for f in per_file if f["suggestion"]}
+    flat = set()
+    for v in vals:
+        flat.update(v.split(" & "))
+    if {"EL", "FIRE"}.issubset(flat):
+        agg = "EL & FIRE"
+    elif len(vals) == 1:
+        agg = next(iter(vals))
+    elif len(flat) == 1:
+        agg = next(iter(flat))
+    else:
+        agg = ""
+    print("__SUGGEST__:" + json.dumps({"suggestion": agg, "perFile": per_file}))
+
+
 if __name__ == "__main__":
+    if "--suggest" in sys.argv:
+        run_suggest_division()
+        sys.exit(0)
+
     MAGIC_ARRIVED  = os.environ.get("MAGIC_ARRIVED",  "").strip()
     MAGIC_DIVISION = os.environ.get("MAGIC_DIVISION", "").strip()
     MAGIC_TODAY    = os.environ.get("MAGIC_TODAY",    "").strip()  # DD/MM/YYYY from browser
+    # Per-file product line overrides from the UI: {filename: division}
+    try:
+        MAGIC_DIVISION_MAP = json.loads(os.environ.get("MAGIC_DIVISION_MAP", "") or "{}")
+        if not isinstance(MAGIC_DIVISION_MAP, dict):
+            MAGIC_DIVISION_MAP = {}
+    except Exception:
+        MAGIC_DIVISION_MAP = {}
 
     # Check LibreOffice availability upfront — needed for Word/Excel conversion
     if find_libreoffice():
@@ -1338,6 +1560,27 @@ if __name__ == "__main__":
                     row = extractor(pdf_path, arrived_date=MAGIC_ARRIVED, division=MAGIC_DIVISION, today=MAGIC_TODAY)
                     if lang != "UK":
                         row["COUNTRY"] = country
+
+            # ── Per-file PRODUCT LINE (DIVISION) ──────────────────────────────
+            # Precedence: explicit per-file override from the UI (MAGIC_DIVISION_MAP,
+            # keyed by filename) > batch force-all (MAGIC_DIVISION) > auto-detect.
+            # So a bulk of mixed quotes uploads each with its own correct line, and
+            # the user can fix any mis-read/undetected line from the dropdown.
+            file_override = MAGIC_DIVISION_MAP.get(orig_name) or MAGIC_DIVISION_MAP.get(display_name)
+            if file_override:
+                row["DIVISION"] = file_override
+                print(f"    Division    : {file_override} (user-set)")
+            elif not MAGIC_DIVISION and lang in ("FR", "DE", "IT"):
+                try:
+                    with pdfplumber.open(pdf_path) as _pdf:
+                        _blob = "\n".join((_pdf.pages[i].extract_text() or "")
+                                          for i in range(min(6, len(_pdf.pages))))
+                    auto_div = detect_division(lang, _blob)
+                    if auto_div:
+                        row["DIVISION"] = auto_div
+                        print(f"    Division    : {auto_div} (auto-detected)")
+                except Exception:
+                    pass
 
             rows.append(row)
             print(f"    [OK]\n")

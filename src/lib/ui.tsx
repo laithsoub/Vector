@@ -47,7 +47,7 @@ export function Card({
 }) {
   return (
     <div className={cn(
-      'bg-white dark:bg-ink-900 ring-1 ring-ink-200/70 dark:ring-ink-800 rounded-xl',
+      'bg-white dark:bg-ink-900 ring-1 ring-ink-200 dark:ring-ink-700 rounded-xl',
       padded && 'p-5',
       className,
     )}>{children}</div>

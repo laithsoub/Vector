@@ -733,7 +733,9 @@ if __name__ == "__main__":
 
         safe_proj = re.sub(r'[\/:*?"<>|]', '', qdata.get("project_name",""))[:50].strip()
         safe_ref  = re.sub(r'[\/:*?"<>|]', '', qdata.get("dwo_ref",""))
-        filename  = f"PMO {cbu}-{safe_ref}-{safe_proj}.docx"
+        # cbu may be the "CBU?????" placeholder when the PMO log is unavailable;
+        # strip Windows-illegal chars from the whole name so the file can be written.
+        filename  = re.sub(r'[\/:*?"<>|]', '', f"PMO {cbu}-{safe_ref}-{safe_proj}") + ".docx"
         out_path  = os.path.join(os.environ.get("MAGIC_PMO_OUTDIR", tempfile.gettempdir()), filename)
 
         fill_template(cbu, qdata, items, out_path)

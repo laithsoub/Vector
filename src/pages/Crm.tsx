@@ -5,7 +5,7 @@
 // opportunities, AI facts/warnings and D&Q documents are all derived live.
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
-  Building2, Plus, Search, Mail, Phone, Trash2, Pencil, ArrowLeft,
+  Plus, Search, Mail, Phone, Trash2, Pencil, ArrowLeft,
   Star, Check, X, RefreshCw, Loader2, UserPlus, GitMerge, AlertTriangle,
   Sparkles, FileText, ExternalLink, Pin, CheckSquare, Square, Database, Filter,
 } from 'lucide-react';
@@ -154,10 +154,6 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
     setMerging(false);
   }
 
-  if (selectedId != null) {
-    return <CompanyDetail id={selectedId} toast={toast} onBack={() => { setSelected(null); refresh(); }} />;
-  }
-
   const targetName = companies.find(c => c.id === targetId)?.name;
 
   return (
@@ -263,6 +259,8 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
           }} />
       )}
 
+      <div className="grid grid-cols-12 gap-5 items-start">
+      <div className="col-span-12 lg:col-span-4 space-y-5">
       {(() => {
         if (loading) return <div className="flex items-center justify-center py-20 text-ink-400"><Loader2 className="w-5 h-5 animate-spin" /></div>;
         if (companies.length === 0) return (
@@ -275,6 +273,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
           <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
             {list.map(c => (
               <AccountCard key={c.id} c={c} mergeMode={mergeMode} picked={picked.has(c.id)}
+                selected={selectedId === c.id}
                 onClick={() => mergeMode ? togglePick(c.id) : setSelected(c.id)} />
             ))}
           </div>
@@ -332,25 +331,40 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
           </div>
         );
       })()}
+      </div>
+
+      <div className="col-span-12 lg:col-span-8 lg:border-l-2 lg:border-l-violet-300 dark:lg:border-l-violet-500/40 lg:pl-5">
+        {selectedId != null ? (
+          <CompanyDetail id={selectedId} toast={toast} onBack={() => { setSelected(null); refresh(); }} />
+        ) : (
+          <div className="rounded-xl ring-1 ring-ink-200/70 dark:ring-ink-800 bg-white dark:bg-ink-900 py-24 px-6 flex flex-col items-center justify-center text-center">
+            <Database className="w-8 h-8 text-ink-300 dark:text-ink-600 mb-3" />
+            <p className="text-[13px] font-medium text-ink-500 dark:text-ink-400">Select an account</p>
+            <p className="text-[11.5px] text-ink-400 mt-1">Pick a card on the left to see contacts, quotes, facts and documents.</p>
+          </div>
+        )}
+      </div>
+      </div>
     </div>
   );
 }
 
 // ─── Account card ────────────────────────────────────────────────────────────
-function AccountCard({ c, mergeMode, picked, onClick }: { c: CrmCompanyCard; mergeMode: boolean; picked: boolean; onClick: () => void }) {
+function AccountCard({ c, mergeMode, picked, selected, onClick }: { c: CrmCompanyCard; mergeMode: boolean; picked: boolean; selected?: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick}
       className={cn(
-        'text-left bg-white dark:bg-ink-900 ring-1 rounded-xl p-4 transition-all',
-        mergeMode && picked ? 'ring-brand-500 dark:ring-brand-400 shadow-sm'
-          : 'ring-ink-200/70 dark:ring-ink-800 hover:ring-brand-300 dark:hover:ring-brand-700 hover:shadow-sm')}>
+        'w-full text-left ring-1 rounded-xl p-4 transition-all',
+        mergeMode && picked ? 'bg-white dark:bg-ink-900 ring-2 ring-brand-500 dark:ring-brand-400 shadow-sm'
+          : selected ? 'ring-2 ring-violet-500 dark:ring-violet-400 bg-ink-100 dark:bg-ink-800 shadow-md'
+          : 'bg-white dark:bg-ink-900 ring-ink-200/70 dark:ring-ink-800 hover:ring-brand-300 dark:hover:ring-brand-700 hover:shadow-sm')}>
       <div className="flex items-start gap-2.5 mb-3">
         {mergeMode ? (
           picked ? <CheckSquare className="w-5 h-5 text-brand-600 dark:text-brand-300 shrink-0" />
                  : <Square className="w-5 h-5 text-ink-300 dark:text-ink-600 shrink-0" />
         ) : (
-          <div className="w-8 h-8 rounded-lg bg-brand-50 dark:bg-brand-900/30 grid place-items-center shrink-0">
-            <Building2 className="w-4 h-4 text-brand-600 dark:text-brand-300" />
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 grid place-items-center text-[12px] font-bold text-white shrink-0">
+            {c.name.slice(0, 2).toUpperCase()}
           </div>
         )}
         <div className="min-w-0 flex-1">
@@ -458,6 +472,22 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
     try { await api.crmQuoteState(q.key, state); load(); }
     catch (e: any) { toast('err', e.message); }
   }
+  // Open a quote's PDF — local archive if this machine processed it, else the
+  // D&Q Store copy on SharePoint. Open the tab synchronously (inside the click)
+  // so the browser doesn't block the popup, then point it at the resolved URL.
+  async function openPdf(q: CrmQuote) {
+    const w = window.open('', '_blank');
+    try {
+      const res = await fetch(`/api/crm/quote/${q.id}/pdf`);
+      const j = await res.json().catch(() => ({} as any));
+      if (!res.ok || !j.url) {
+        w?.close();
+        toast('warn', j.error || 'PDF not found for this quote.');
+        return;
+      }
+      if (w) w.location.href = j.url; else window.open(j.url, '_blank');
+    } catch (e: any) { w?.close(); toast('err', e.message); }
+  }
   const totalIssued = quotes.reduce((s, q) => s + (q.price || 0), 0);
 
   return (
@@ -483,10 +513,10 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
       )}
 
       {/* Header */}
-      <Card>
+      <Card className="animate-fade-up">
         <div className="flex items-start gap-3">
-          <div className="w-11 h-11 rounded-xl bg-brand-50 dark:bg-brand-900/30 grid place-items-center shrink-0">
-            <Building2 className="w-5 h-5 text-brand-600 dark:text-brand-300" />
+          <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 grid place-items-center text-[18px] font-bold text-white shrink-0">
+            {company.name.slice(0, 2).toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
@@ -614,7 +644,11 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                   <tr key={q.id} className="border-b border-ink-50 dark:border-ink-800/60">
                     <td className="px-5 py-2 font-mono text-[10.5px] text-ink-500 dark:text-ink-400 whitespace-nowrap">{q.ref || '—'}</td>
                     <td className="px-3 py-2 text-ink-800 dark:text-ink-100">
-                      {q.name || '—'}
+                      <button onClick={() => openPdf(q)} title="Open archived PDF"
+                        className="inline-flex items-center gap-1 text-left hover:text-brand-600 dark:hover:text-brand-300 hover:underline">
+                        <FileText className="w-3 h-3 shrink-0 opacity-60" />
+                        {q.name || '—'}
+                      </button>
                       {q.status && <span className="ml-1.5 text-[10px] text-ink-400">· {q.status}</span>}
                     </td>
                     <td className="px-3 py-2 text-ink-600 dark:text-ink-300">{q.salesman || '—'}</td>

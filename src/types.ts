@@ -32,7 +32,8 @@ export interface Config {
   sp_site:     string;
   sp_list:     string;
   dq_store:    string;
-  gemini_key?: string;
+  gemini_key?:     string;
+  gemini_key_set?: boolean;
 }
 
 export interface PdfFile    { name: string; size: number; modified: string; }

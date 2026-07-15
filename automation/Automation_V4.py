@@ -21,6 +21,7 @@ HOW TO REFRESH COOKIES:
 import csv
 import json
 import os
+import re
 import shutil
 import io
 import sys
@@ -214,14 +215,130 @@ def convert_date(val):
 
 
 
-def get_user_id(session, name):
-    """Get SharePoint User ID by display name."""
-    url = f"{SITE_URL}/_api/web/siteusers?=Id,Title&=200"
+# Cache: name(lower) -> SharePoint user Id, resolved once per run
+_USER_ID_CACHE = {}
+
+
+def _norm_tokens(s):
+    """Lowercase, accent-stripped, punctuation-free token SET of a name.
+
+    'Régis GRANDAUD' and 'Grandaud, Regis' both -> {'grandaud', 'regis'}.
+    """
+    import unicodedata
+    s = unicodedata.normalize("NFD", s or "")
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")  # drop accents
+    s = re.sub(r"[^a-zA-Z0-9 ]", " ", s).lower()
+    return {t for t in s.split() if t}
+
+
+def _pp_queries(name):
+    """Query strings to feed the people-picker, surname-only first.
+
+    The Eaton directory stores 'Lastname, Firstname' and does NOT match two
+    free-text tokens (e.g. 'Omar Labbas' -> 0 hits), but a single surname token
+    resolves cleanly. So we try each token alone, then the full string.
+    """
+    name = name.strip()
+    parts = name.split()
+    seen, out = set(), []
+    # individual tokens, longest first (surname usually longest / most distinctive)
+    for tok in sorted(parts, key=len, reverse=True):
+        if tok.lower() not in seen:
+            seen.add(tok.lower()); out.append(tok)
+    if name.lower() not in seen:
+        out.append(name)
+    return out
+
+
+def _resolve_via_siteusers(session, name):
+    """Exact display-name match against users already in the site collection."""
+    url = f"{SITE_URL}/_api/web/siteusers?$select=Id,Title&$top=500"
     r = session.get(url, timeout=TIMEOUT)
-    for u in r.json()["d"]["results"]:
-        if u["Title"].strip().lower() == name.strip().lower():
-            print(f"  [OK] Resolved user '{name}' -> ID {u['Id']}")
+    target = _norm_tokens(name)
+    for u in r.json().get("d", {}).get("results", []):
+        if _norm_tokens(u.get("Title")) == target:
             return u["Id"]
+    return None
+
+
+def _resolve_via_peoplepicker(session, name, digest):
+    """Search the directory via the people-picker, confirm the candidate's name
+    tokens match (so a multi-hit surname can't grab the wrong person), then
+    ensureuser() to obtain a usable site User Id."""
+    if not digest:
+        return None
+    headers = {
+        "Accept":          "application/json;odata=verbose",
+        "Content-Type":    "application/json;odata=verbose",
+        "X-RequestDigest": digest,
+    }
+    search_url = (f"{SITE_URL}/_api/SP.UI.ApplicationPages."
+                  "ClientPeoplePickerWebServiceInterface.ClientPeoplePickerSearchUser")
+    want = _norm_tokens(name)
+    matches = {}  # login -> display, deduped across queries
+    for query in _pp_queries(name):
+        params = {"queryParams": {
+            "__metadata": {"type": "SP.UI.ApplicationPages.ClientPeoplePickerQueryParameters"},
+            "AllowEmailAddresses":      True,
+            "AllowMultipleEntities":    False,
+            "MaximumEntitySuggestions": 20,
+            "PrincipalSource":          15,   # All sources (UserInfo + Windows + AD)
+            "PrincipalType":            1,    # User only
+            "QueryString":              query,
+        }}
+        try:
+            r = session.post(search_url, json=params, headers=headers, timeout=TIMEOUT)
+            raw = r.json().get("d", {}).get("ClientPeoplePickerSearchUser")
+            if not raw:
+                continue
+            for e in json.loads(raw):
+                if not e.get("IsResolved"):
+                    continue
+                login = e.get("Key")
+                ed = e.get("EntityData") or {}
+                # Match on the full name token-set; emails are reliable too.
+                cand = _norm_tokens(e.get("DisplayText")) | _norm_tokens(ed.get("Email"))
+                if login and want and want.issubset(cand):
+                    matches[login] = e.get("DisplayText")
+        except (requests.exceptions.RequestException, ValueError, KeyError):
+            continue
+        if len(matches) == 1:  # unambiguous hit — stop early
+            break
+
+    if len(matches) != 1:
+        if len(matches) > 1:
+            print(f"  [!] Ambiguous people-picker match for '{name}': {list(matches.values())}")
+        return None
+    login = next(iter(matches))
+    try:
+        er = session.post(f"{SITE_URL}/_api/web/ensureuser",
+                          json={"logonName": login}, headers=headers, timeout=TIMEOUT)
+        if er.status_code in (200, 201):
+            return er.json()["d"]["Id"]
+        print(f"  [!] ensureuser failed for '{login}': HTTP {er.status_code}")
+    except (requests.exceptions.RequestException, ValueError, KeyError) as e:
+        print(f"  [!] ensureuser error for '{login}': {e}")
+    return None
+
+
+def get_user_id(session, name, digest=None):
+    """Resolve a people-picker (REQUESTED FROM) name to a SharePoint User Id.
+
+    Tries: cache -> existing siteusers -> people-picker directory search.
+    Handles AD users not yet in the site, reversed 'LAST FIRST' quote names,
+    and the directory's 'Lastname, Firstname' display format.
+    """
+    key = name.strip().lower()
+    if not key:
+        return None
+    if key in _USER_ID_CACHE:
+        return _USER_ID_CACHE[key]
+
+    uid = _resolve_via_siteusers(session, name) or _resolve_via_peoplepicker(session, name, digest)
+    if uid:
+        print(f"  [OK] Resolved user '{name}' -> ID {uid}")
+        _USER_ID_CACHE[key] = uid
+        return uid
     print(f"  [!] User not found: {name}")
     return None
 
@@ -401,7 +518,7 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
                 payload["INSIDE_x0020_SALES0Id"] = is_id
         internal_requester = row.get("REQUESTED FROM EATON (INTERNAL)", "")
         if internal_requester:
-            uid = get_user_id(session, internal_requester)
+            uid = get_user_id(session, internal_requester, digest)
             if uid:
                 payload["REQUESTEDFROM_x0028_INTERNAL_x00Id"] = uid
 
