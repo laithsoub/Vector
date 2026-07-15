@@ -1,5 +1,4 @@
 import express, { Request, Response } from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -7,8 +6,9 @@ import {
   readdirSync, statSync, unlinkSync, mkdirSync, rmdirSync, createReadStream
 } from 'fs';
 import os from 'os';
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import { request as httpsRequest } from 'https';
+import { createServer as netCreateServer } from 'net';
 import { AsyncLocalStorage } from 'async_hooks';
 import { randomUUID, randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'crypto';
 import initSqlJs from 'sql.js';
@@ -21,13 +21,20 @@ dotenv.config();
 // SharePoint calls use rejectUnauthorized:false. Applies to native fetch too.
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-const DB_PATH    = path.join(__dirname, 'eaton_automation.db');
+const __filename   = fileURLToPath(import.meta.url);
+const __dirname    = path.dirname(__filename);
+// In Tauri sidecar mode Rust passes RESOURCE_DIR + DATA_DIR; fall back to __dirname for local dev.
+const RESOURCE_DIR = process.env.RESOURCE_DIR ?? __dirname;
+const DATA_DIR     = process.env.DATA_DIR     ?? __dirname;
+const DB_PATH      = path.join(DATA_DIR, 'eaton_automation.db');
 // All Python scripts + their assets (config.json, el_pricelist.xlsx, docs/, …)
 // live together under automation/ so each script's __file__-relative lookups work.
-const PY_DIR     = path.join(__dirname, 'automation');
-const pyFile     = (name: string) => path.join(PY_DIR, name);
+const PY_DIR       = path.join(RESOURCE_DIR, 'automation');
+const pyFile       = (name: string) => path.join(PY_DIR, name);
+// Writable config: DATA_DIR/config.json in sidecar, automation/config.json in dev.
+const APP_CFG_PATH = process.env.DATA_DIR
+  ? path.join(DATA_DIR, 'config.json')
+  : path.join(PY_DIR, 'config.json');
 
 // ── Product → colour map (shared with /api/analytics + frontend) ───────────
 const PRODUCT_META: Record<string, { label: string; color: string }> = {
@@ -51,23 +58,24 @@ let sessionStartedAt: string | null = null;
 // ── Config ─────────────────────────────────────────────────────────────────
 function loadPyCfg(): Record<string, string> {
   const defaults: Record<string, string> = {
-    base:     path.join(__dirname, 'data'),
+    base:     path.join(DATA_DIR, 'data'),
     initials: 'LS',
     sp_site:  'https://eaton.sharepoint.com/sites/ELTechsupport',
     sp_list:  'https://eaton.sharepoint.com/sites/QuotationFactoryEMEA',
     dq_store: 'Shared Documents/D&Q Store',
   };
-  try {
-    const cfgPath = pyFile('config.json');
-    if (existsSync(cfgPath))
-      return { ...defaults, ...JSON.parse(readFileSync(cfgPath, 'utf8')) };
-  } catch {}
+  for (const cfgPath of [APP_CFG_PATH, pyFile('config.json')]) {
+    try {
+      if (existsSync(cfgPath))
+        return { ...defaults, ...JSON.parse(readFileSync(cfgPath, 'utf8')) };
+    } catch {}
+  }
   return defaults;
 }
 
-// ── sql.js ─────────────────────────────────────────────────────────────────
-const SQL = await initSqlJs();
-let db: InstanceType<typeof SQL.Database>;
+// ── sql.js — initialized inside startServer() to avoid top-level await ────────
+let SQL: Awaited<ReturnType<typeof initSqlJs>>;
+let db: any;
 
 function loadDb() {
   db = existsSync(DB_PATH)
@@ -90,6 +98,18 @@ function loadDb() {
     draftReply TEXT,
     finalReply TEXT,
     feedbackType TEXT NOT NULL
+  );`);
+  // ── In-app user feedback (team rollout) ──────────────────────────────────────
+  db.run(`CREATE TABLE IF NOT EXISTS app_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    category TEXT,
+    message TEXT NOT NULL,
+    page TEXT,
+    userName TEXT,
+    userEmail TEXT,
+    appVersion TEXT,
+    emailed INTEGER DEFAULT 0
   );`);
   // ── Mini CRM (multi-tenant: every row scoped by the SharePoint user's id) ────
   db.run(`CREATE TABLE IF NOT EXISTS crm_company (
@@ -280,10 +300,8 @@ function insertJob(j: {
   );
 }
 
-loadDb();
-
 // ── Log file ───────────────────────────────────────────────────────────────
-const LOG_PATH     = path.join(__dirname, 'vector.log');
+const LOG_PATH     = path.join(DATA_DIR, 'vector.log');
 const LOG_MAX_LINES = 2000;
 
 function appendLog(line: string) {
@@ -305,7 +323,7 @@ interface RetryItem {
   id: string; timestamp: string; script: 'step2';
   attempts: number; maxAttempts: number; lastError: string;
 }
-const RETRY_PATH = path.join(__dirname, 'retry_queue.json');
+const RETRY_PATH = path.join(DATA_DIR, 'retry_queue.json');
 
 function loadRetryQueue(): RetryItem[] {
   try { if (existsSync(RETRY_PATH)) return JSON.parse(readFileSync(RETRY_PATH, 'utf8')); } catch {}
@@ -328,7 +346,7 @@ function runSilent(scriptPath: string): Promise<{ ok: boolean; output: string }>
   return new Promise(resolve => {
     if (!existsSync(scriptPath)) { resolve({ ok: false, output: 'Script not found' }); return; }
     const [cmd, args] = pyArgs(scriptPath);
-    const py = spawn(cmd, args, { cwd: __dirname, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    const py = spawn(cmd, args, { cwd: PY_DIR, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
     let out = '';
     py.stdout.on('data', (d: Buffer) => { out += d.toString(); });
     py.stderr.on('data', (d: Buffer) => { out += d.toString(); });
@@ -375,12 +393,44 @@ const _aiCache   = new Map<string, { answer: string; ts: number }>();
 const AI_TTL     = 3 * 60 * 1000;   // 3 min
 
 // ── Python launcher ────────────────────────────────────────────────────────
+// Windows ships an App-Execution-Alias stub at
+//   %LOCALAPPDATA%\Microsoft\WindowsApps\python.exe
+// that silently no-ops (prints nothing, exits 0) when its stdout is piped by a
+// non-interactive parent like Node's spawn — which surfaces as "No output" for
+// every Python feature. Resolve a CONCRETE python.exe once (via the `py`
+// launcher, which is a real launcher, not a stub) and reuse it everywhere.
+let _pythonCmd: string | null = null;
+const _isAliasStub = (p: string) => /[\\/]WindowsApps[\\/]/i.test(p);
+
+function resolvePythonCmd(): string {
+  if (_pythonCmd) return _pythonCmd;
+
+  const env = process.env.PYTHON;
+  if (env && !_isAliasStub(env)) { _pythonCmd = env; return env; }
+
+  // Ask the py launcher for the concrete interpreter path (never the stub).
+  for (const args of [['-3'], []] as string[][]) {
+    try {
+      const exe = execFileSync('py', [...args, '-c', 'import sys;print(sys.executable)'],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 8000 }).trim();
+      if (exe && !_isAliasStub(exe) && existsSync(exe)) { _pythonCmd = exe; return exe; }
+    } catch { /* py not present — fall through */ }
+  }
+
+  _pythonCmd = env || 'python';
+  return _pythonCmd;
+}
+
 function pyArgs(scriptPath: string): [string, string[]] {
-  return [process.env.PYTHON || 'python', [scriptPath]];
+  return [resolvePythonCmd(), [scriptPath]];
 }
 
 // ── SSE: run a Python script and stream its output ─────────────────────────
-function runPyScript(res: Response, scriptPath: string, onDone: (ok: boolean, durationSec: number) => void) {
+function runPyScript(
+  res: Response, scriptPath: string,
+  onDone: (ok: boolean, durationSec: number) => void,
+  req?: Request,
+) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -399,9 +449,11 @@ function runPyScript(res: Response, scriptPath: string, onDone: (ok: boolean, du
 
   const [cmd, args] = pyArgs(scriptPath);
   const py = spawn(cmd, args, {
-    cwd: __dirname,
+    cwd: PY_DIR,
     env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
   });
+
+  req?.on('close', () => { try { py.kill(); } catch {} });
 
   py.stdout.on('data', d =>
     String(d).split('\n').filter(l => l.trim()).forEach(send));
@@ -505,7 +557,8 @@ function getSpCookies(): SpCookies | null {
 function sessionKey(): Buffer {
   const env = process.env.VECTOR_SECRET;
   if (env) return scryptSync(env, 'vector-session-v1', 32);
-  const kp = path.join(__dirname, '.session_key');
+  // Must match cookie_crypto.py's _KEYFILE (automation/../.session_key = RESOURCE_DIR).
+  const kp = path.join(RESOURCE_DIR, '.session_key');
   try { if (existsSync(kp)) return Buffer.from(readFileSync(kp, 'utf8').trim(), 'hex'); } catch {}
   const k = randomBytes(32);
   try { writeFileSync(kp, k.toString('hex'), { mode: 0o600 }); } catch {}
@@ -520,7 +573,7 @@ function encSecret(plain: string): string {
 }
 function decSecret(blob: string): string | null {
   if (!blob) return null;
-  if (!blob.startsWith('v1:')) return blob; // tolerate legacy plaintext rows
+  if (!blob.startsWith('v1:')) { console.warn('[security] decSecret: returning legacy plaintext token — re-save session to encrypt'); return blob; }
   try {
     const raw = Buffer.from(blob.slice(3), 'base64');
     const d = createDecipheriv('aes-256-gcm', SESSION_KEY, raw.subarray(0, 12));
@@ -560,7 +613,7 @@ function migrateCookieFile() {
   try {
     const enc = pyFile('.cookies.enc');
     const v4  = pyFile('Automation_V4.py');
-    const cfgPath = pyFile('config.json');
+    const cfgPath = APP_CFG_PATH;
     if (!existsSync(enc)) {
       // Source legacy plaintext cookies from the script file, else config.json.
       let fed: string | undefined, rt: string | undefined;
@@ -925,6 +978,19 @@ async function spCurrentUser(cookieStr: string, cfg: Record<string, string>): Pr
   return null;
 }
 
+// Display name of whoever is currently connected to JOE, cached 5 min. Used to
+// stamp the salesman on quotes and personalise inbox AI prompts, so the app
+// follows the logged-in Eaton employee instead of a hardcoded owner.
+let _connectedUser: { name: string; ts: number } | null = null;
+async function connectedUserName(): Promise<string | null> {
+  if (_connectedUser && Date.now() - _connectedUser.ts < 5 * 60_000) return _connectedUser.name || null;
+  const cookies = getSpCookies();
+  if (!cookies) return null;
+  const me = await spCurrentUser(`FedAuth=${cookies.fed}; rtFa=${cookies.rt}`, loadPyCfg());
+  if (me?.title) { _connectedUser = { name: me.title, ts: Date.now() }; return me.title; }
+  return null;
+}
+
 // ─── Scan the Quotations List via the LIST REST API, scoped to one author ─────
 // The search API does NOT return the list's custom columns and isn't list-scoped,
 // so we page the list itself (real CUSTOMER/PRICE/SALESFORCEID/salesman) and keep
@@ -1033,9 +1099,75 @@ function jobToCard(j: any): any {
 }
 
 
+function findFreePort(start: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = netCreateServer();
+    srv.listen(start, '127.0.0.1', () => {
+      const addr = srv.address() as { port: number };
+      srv.close(() => resolve(addr.port));
+    });
+    srv.on('error', () => findFreePort(start + 1).then(resolve).catch(reject));
+  });
+}
+
 async function startServer() {
-  const app  = express();
-  const PORT = 3000;
+  // Initialize sql.js here (avoids top-level await, required for esbuild CJS bundling).
+  // In the SEA sidecar, DATA_DIR holds sql-wasm.wasm (copied by Rust on first run).
+  // In dev (tsx server.ts), no locateFile — sql.js finds its own wasm in node_modules.
+  SQL = await initSqlJs(
+    process.env.TAURI_SIDECAR
+      ? { locateFile: (file: string) => path.join(DATA_DIR, file) }
+      : undefined,
+  );
+  loadDb();
+
+  const isSidecar = !!process.env.TAURI_SIDECAR;
+  const PORT      = isSidecar ? await findFreePort(7331) : 3000;
+  const app       = express();
+
+  // ── Security: only accept requests addressed to localhost ──────────────────
+  // The server binds 127.0.0.1, but a malicious website can still reach it via
+  // DNS rebinding (a domain that resolves to 127.0.0.1 — the browser then sends
+  // requests with a foreign Host header). Rejecting non-local Host kills that.
+  app.use((req, res, next) => {
+    const host = String(req.headers.host || '').toLowerCase().replace(/:\d+$/, '');
+    if (host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    // Browser-originated cross-site requests carry an Origin header; same-origin
+    // GETs and non-browser clients (curl, Python) don't. Block foreign origins.
+    const origin = req.headers.origin;
+    if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(origin)) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    next();
+  });
+
+  // ── Stripped ship build: gate AI + unreleased tools server-side ────────────
+  // The UI hides these behind "Coming Soon", but the endpoints must also refuse,
+  // otherwise anyone can drive them with curl against the sidecar port.
+  if (isSidecar) {
+    const SHIP_BLOCKED = [
+      '/api/ai', '/api/search', '/api/schematics', '/api/pmo',
+      '/api/docs', '/api/docs-xlsx',
+      '/api/run/cbu', '/api/run/commission', '/api/run/pmo',
+      '/api/outlook/analyze', '/api/outlook/draft-reply', '/api/outlook/chat',
+      '/api/outlook/briefing', '/api/outlook/attachment-price',
+      '/api/crm/command',
+    ];
+    app.use((req, res, next) => {
+      if (SHIP_BLOCKED.some(p => req.path === p || req.path.startsWith(p + '/'))) {
+        res.status(403).json({ error: 'This feature is not available in this build.' });
+        return;
+      }
+      next();
+    });
+  }
+
   app.use(express.json());
 
   // ── Session binding ─────────────────────────────────────────────────────────
@@ -1864,6 +1996,87 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  // Locate a quote's PDF in the local archive. CRM quotes come from the
+  // SharePoint snapshot (crm_quote) or local jobs. When THIS machine processed a
+  // quote, its PDF lives under base/Archive/<date>/ or the base/PDF Quotes/ queue,
+  // with filenames embedding the quote/Salesforce code. Match on normalised tokens.
+  function findQuotePdfFile(id: number): string | null {
+    const oid  = ownerId();
+    const norm = (s: any) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const tokens: string[] = [];
+    let exactName: string | null = null;
+    const q = queryAll('SELECT title, sfId, quoteName FROM crm_quote WHERE id = ? AND ownerId = ?', [id, oid])[0] as any;
+    if (q) {
+      if (q.title) { tokens.push(norm(q.title), norm(String(q.title).replace(/-\d+$/, ''))); }
+      if (q.sfId)  tokens.push(norm(q.sfId));
+    } else {
+      const j = queryAll('SELECT pdfName, sfId FROM jobs WHERE id = ?', [id])[0] as any;
+      if (j) { if (j.pdfName) exactName = j.pdfName; if (j.sfId) tokens.push(norm(j.sfId)); }
+    }
+    const keys = tokens.filter(t => t.length >= 6);
+    if (!keys.length && !exactName) return null;
+
+    const base  = loadPyCfg().base;
+    const isPdf = (f: string) => /\.pdf$/i.test(f);
+    const dirs: string[] = [];
+    const archDir = path.join(base, 'Archive');
+    try { if (existsSync(archDir)) for (const d of readdirSync(archDir)) { const p = path.join(archDir, d); if (statSync(p).isDirectory()) dirs.push(p); } } catch {}
+    dirs.push(path.join(base, 'PDF Quotes'));
+
+    let best: { path: string; score: number } | null = null;
+    for (const dir of dirs) {
+      let files: string[] = [];
+      try { if (existsSync(dir)) files = readdirSync(dir).filter(isPdf); } catch { continue; }
+      for (const f of files) {
+        if (exactName && f === exactName) return path.join(dir, f);
+        const nf = norm(f);
+        for (const k of keys) if (nf.includes(k) && (!best || k.length > best.score)) best = { path: path.join(dir, f), score: k.length };
+      }
+    }
+    return best?.path ?? null;
+  }
+
+  // GET /api/crm/quote/:id/pdf — resolve where to open a quote's PDF.
+  // 1) Local archive (quotes processed on this machine). 2) D&Q Store on
+  // SharePoint, searched by the quote number / name (most synced JOE quotes were
+  // never processed locally — their PDF lives only in the D&Q Store).
+  app.get('/api/crm/quote/:id/pdf', async (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (!id) { res.status(400).json({ error: 'bad id' }); return; }
+
+    const local = findQuotePdfFile(id);
+    if (local) { res.json({ url: `/api/crm/quote/${id}/file`, source: 'local', name: path.basename(local) }); return; }
+
+    // No local copy — try the D&Q Store (needs a live JOE session).
+    const q = queryAll('SELECT title, quoteName, customer FROM crm_quote WHERE id = ? AND ownerId = ?', [id, ownerId()])[0] as any;
+    const cookies = getSpCookies();
+    if (!cookies) {
+      res.status(404).json({ error: 'No local PDF. Click "Connect to JOE" to open it from the D&Q Store.' }); return;
+    }
+    const cfg = loadPyCfg();
+    const cookieStr = `FedAuth=${cookies.fed}; rtFa=${cookies.rt}`;
+    const terms = [q?.title, q?.quoteName, q?.customer].map(s => String(s || '').trim()).filter(t => t.length >= 3);
+    try {
+      for (const term of terms) {
+        const { results } = await dqFullTextSearch(term, false, cookieStr, cfg);
+        const pdf = results.find((r: any) => r.ext === 'pdf') || results[0];
+        if (pdf?.url) { res.json({ url: pdf.url, source: 'sharepoint', name: pdf.filename }); return; }
+      }
+      res.status(404).json({ error: 'No PDF found locally or in the D&Q Store for this quote.' });
+    } catch (e: any) {
+      res.status(502).json({ error: 'D&Q Store search failed: ' + e.message });
+    }
+  });
+
+  // GET /api/crm/quote/:id/file — stream the locally-archived PDF bytes.
+  app.get('/api/crm/quote/:id/file', (req, res) => {
+    const file = findQuotePdfFile(parseInt(req.params.id, 10));
+    if (!file) { res.status(404).json({ error: 'PDF not found on this machine.' }); return; }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${path.basename(file)}"`);
+    res.sendFile(file);
+  });
+
   // GET /api/crm/company/:id/insights — AI-generated facts & warnings from the
   // account's full run history (not persisted unless the user pins one).
   const _crmInsightCache = new Map<number, { ts: number; items: any[] }>();
@@ -2219,13 +2432,20 @@ async function startServer() {
   });
 
   // ── Config ─────────────────────────────────────────────────────────────────
-  app.get('/api/config', (_req, res) => res.json(loadPyCfg()));
+  app.get('/api/config', (_req, res) => {
+    const { gemini_key, ...safe } = loadPyCfg() as any;
+    res.json({ ...safe, gemini_key_set: !!gemini_key });
+  });
   app.post('/api/config', (req, res) => {
     try {
-      const beforeKey = String((loadPyCfg() as any).gemini_key || '');
-      const nextCfg = { ...loadPyCfg(), ...req.body };
-      writeFileSync(pyFile('config.json'), JSON.stringify(nextCfg, null, 2));
-      if (String((nextCfg as any).gemini_key || '') !== beforeKey) {
+      const current  = loadPyCfg() as any;
+      const incoming = req.body as any;
+      // Preserve existing gemini_key if client sends empty/absent value
+      if (!incoming.gemini_key) incoming.gemini_key = current.gemini_key || '';
+      const beforeKey = String(current.gemini_key || '');
+      const nextCfg = { ...current, ...incoming };
+      writeFileSync(APP_CFG_PATH, JSON.stringify(nextCfg, null, 2));
+      if (String(nextCfg.gemini_key || '') !== beforeKey) {
         _gemini = null;
         _geminiKey = '';
       }
@@ -2657,7 +2877,7 @@ async function startServer() {
 
   app.get('/api/outlook/emails', async (req, res) => {
     const storeId = String(req.query.storeId || 'default');
-    const limit   = String(Math.min(50, parseInt(String(req.query.limit || '30'), 10) || 30));
+    const limit   = String(Math.min(500, parseInt(String(req.query.limit || '30'), 10) || 30));
     const unread  = String(req.query.unread) === 'true' ? '1' : '0';
     try { res.json(await runOutlookPy(['--action', 'emails', '--store', storeId, '--limit', limit, '--unread', unread])); }
     catch (e: any) { res.json({ emails: [], error: e.message }); }
@@ -2747,9 +2967,10 @@ async function startServer() {
     const ai = getGemini();
     if (!ai) { res.json({ analysis: null, error: 'No Gemini API key — add it in Settings' }); return; }
 
+    const me = await connectedUserName();
     const attList = attachments?.map(a => a.name).join(', ') || 'none';
     const prompt = [
-      `Analyze this email for an Eaton quote engineer (Laith Al-Soub, Budapest) using Vector.`,
+      `Analyze this email for ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest using Vector.`,
       ``,
       `**From:** ${sender} <${senderEmail}>`,
       `**Subject:** ${subject}`,
@@ -2802,6 +3023,9 @@ async function startServer() {
     const ai = getGemini();
     if (!ai) { res.json({ draft: null, error: 'No Gemini API key — add it in Settings' }); return; }
 
+    const me = await connectedUserName();
+    const firstName = me ? me.split(' ')[0] : '';
+
     // Fetch last 5 accepted/sent replies for style context
     const pastReplies = queryAll(
       `SELECT subject, finalReply FROM email_feedback WHERE feedbackType IN ('sent','edited_sent') ORDER BY id DESC LIMIT 5`
@@ -2813,7 +3037,7 @@ async function startServer() {
       : '';
 
     const prompt = [
-      `You are drafting a professional email reply on behalf of an Eaton quote engineer (Laith Al-Soub, Budapest).`,
+      `You are drafting a professional email reply on behalf of ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest.`,
       ``,
       `**Original email:**`,
       `From: ${sender} <${senderEmail}>`,
@@ -2825,10 +3049,10 @@ async function startServer() {
       examplesBlock,
       ``,
       `Write a professional, concise reply in the same language as the original email.`,
-      `- Be direct and actionable. Use Laith's tone (professional, friendly, efficient).`,
+      `- Be direct and actionable. Use ${firstName ? firstName + "'s" : 'a'} tone (professional, friendly, efficient).`,
       `- If quoting timelines or next steps, be specific.`,
       `- Do NOT include a subject line or "Re:" prefix — just the reply body.`,
-      `- Do NOT add placeholder text like "[Your Name]" — sign off as "Laith / Eaton Budapest".`,
+      `- Do NOT add placeholder text like "[Your Name]" — sign off as "${firstName ? firstName + ' / Eaton Budapest' : 'Eaton Budapest'}".`,
     ].join('\n');
 
     try {
@@ -2877,8 +3101,9 @@ async function startServer() {
     const ai = getGemini();
     if (!ai) { res.json({ answer: null, error: 'No Gemini API key — add it in Settings' }); return; }
 
+    const me = await connectedUserName();
     const systemCtx = [
-      `You are an AI assistant helping an Eaton quote engineer (Laith Al-Soub, Budapest) handle emails.`,
+      `You are an AI assistant helping ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest handle emails.`,
       `Answer questions about the current email concisely and directly.`,
       ``,
       `Eaton LoadStar-PS CBU list prices (3hr autonomy, ex VAT):`,
@@ -2927,6 +3152,8 @@ async function startServer() {
     if (!ai) { res.json({ briefing: null, error: 'No Gemini API key — add it in Settings' }); return; }
     if (!emails || emails.length === 0) { res.json({ briefing: [] }); return; }
 
+    const me = await connectedUserName();
+
     // Use short numeric ids in the prompt to avoid 140-char entryIds blowing the token budget
     const idMap = emails.map((e, i) => ({ idx: i + 1, entryId: e.entryId }));
     const emailList = emails.map((e, i) =>
@@ -2934,7 +3161,7 @@ async function startServer() {
     ).join('\n\n');
 
     const prompt =
-`You are helping Laith Al-Soub, an Eaton quote engineer in Budapest, triage his inbox.
+`You are helping ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest triage the inbox.
 
 For each email, output one JSON object with:
 - "id": the email number (integer, 1-${emails.length})
@@ -3100,6 +3327,48 @@ ${emailList}`;
         '--att-sources', JSON.stringify(attSources || []),
       ]));
     } catch (e: any) { res.json({ error: e.message }); }
+  });
+
+  // ── In-app feedback: store locally + best-effort email to the maintainer ──────
+  const FEEDBACK_TO  = 'laith.soub90@gmail.com';
+  const APP_VERSION  = process.env.APP_VERSION || '2.0';
+  app.post('/api/feedback', async (req, res) => {
+    const { message, category, page, userName, userEmail } = req.body as {
+      message?: string; category?: string; page?: string; userName?: string; userEmail?: string;
+    };
+    const msg = String(message || '').trim();
+    if (!msg) { res.status(400).json({ error: 'message required' }); return; }
+
+    const ts = new Date().toISOString();
+    let emailed = 0;
+
+    // Best-effort send via Outlook COM (team is on Eaton Outlook). Never blocks save.
+    try {
+      const subject = `Vector Feedback${category ? ` [${category}]` : ''} — ${userName || userEmail || 'user'}`;
+      const body = [
+        msg, '',
+        '──────────────',
+        `From:    ${userName || '—'} <${userEmail || '—'}>`,
+        `Page:    ${page || '—'}`,
+        `Version: ${APP_VERSION}`,
+        `Time:    ${ts}`,
+      ].join('\n');
+      const r = await runOutlookPy(['--action', 'send-new', '--to', FEEDBACK_TO,
+        '--subject', subject, '--body', body, '--att-sources', '[]']);
+      if (r && r.ok) emailed = 1;
+    } catch { /* stored locally regardless */ }
+
+    try {
+      db.run(`INSERT INTO app_feedback
+              (timestamp, category, message, page, userName, userEmail, appVersion, emailed)
+              VALUES (?,?,?,?,?,?,?,?)`,
+        [ts, category || '', msg, page || '', userName || '', userEmail || '', APP_VERSION, emailed]);
+      saveDb();
+    } catch (e: any) {
+      res.json({ ok: emailed === 1, stored: false, emailed: !!emailed, error: e.message });
+      return;
+    }
+    res.json({ ok: true, stored: true, emailed: !!emailed });
   });
 
   app.get('/api/search', async (req, res) => {
@@ -3307,7 +3576,7 @@ ${emailList}`;
     }
     const [cmd, args] = pyArgs(script);
     const py = spawn(cmd, args, {
-      cwd: __dirname,
+      cwd: PY_DIR,
       env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     });
     const lines: string[] = [];
@@ -3331,10 +3600,11 @@ ${emailList}`;
   });
 
   // ── Step 1 — now records product + duration ───────────────────────────────
-  app.get('/api/run/step1', (req, res) => {
+  app.get('/api/run/step1', async (req, res) => {
     const pdfScript = pyFile('pdf_to_csv.py');
     const upScript  = pyFile('Automation_V4.py');
     const division  = String(req.query.division || '').toUpperCase();
+    const lines     = String(req.query.lines    || '');   // JSON {filename: division} per-file
     const arrived   = String(req.query.arrived  || '');
     const today     = String(req.query.today    || '');
     const t0        = Date.now();
@@ -3361,18 +3631,27 @@ ${emailList}`;
         .filter(f => ['.pdf','.xlsx','.xls','.xlsm','.docx','.doc','.dotm','.dotx'].some(e => f.toLowerCase().endsWith(e)));
     } catch {}
 
+    // Kill active child process if client disconnects mid-run
+    let activeProc: ReturnType<typeof spawn> | null = null;
+    req.on('close', () => { try { activeProc?.kill(); } catch {} });
+
     if (division) send(`[*] Division: ${division}`);
     if (arrived)  send(`[*] Arrival date: ${arrived}`);
     send(`[*] PDF folder: ${pdfFolder}`);
     send('[*] Phase 1 — Extracting PDFs to CSV...');
     const [c1, a1] = pyArgs(pdfScript);
+    // Stamp the salesman with the connected JOE user, not a hardcoded owner.
+    const salesman = await connectedUserName();
     const pyEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
                     MAGIC_PDF_FOLDER: pdfFolder,
                     MAGIC_CSV_FOLDER: csvFolder,
+                    ...(salesman ? { MAGIC_INSIDE_SALES: salesman } : {}),
                     ...(division ? { MAGIC_DIVISION: division } : {}),
+                    ...(lines    ? { MAGIC_DIVISION_MAP: lines } : {}),
                     ...(arrived  ? { MAGIC_ARRIVED:  arrived  } : {}),
                     ...(today    ? { MAGIC_TODAY:    today    } : {}) };
-    const p1 = spawn(c1, a1, { cwd: __dirname, env: pyEnv });
+    activeProc = spawn(c1, a1, { cwd: PY_DIR, env: pyEnv });
+    const p1 = activeProc;
     p1.stdout.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(send));
     p1.stderr.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(l => send(`[WARN] ${l}`)));
     p1.on('error', err => fail(`[ERR] Could not start Python: ${err.message}`));
@@ -3392,7 +3671,8 @@ ${emailList}`;
       // Phase 1.5 — duplicate check before upload
       send('[*] Checking for duplicates...');
       const [cc, ac] = pyArgs(upScript);
-      const pCheck = spawn(cc, [...ac, '--check'], { cwd: __dirname, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      activeProc = spawn(cc, [...ac, '--check'], { cwd: PY_DIR, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      const pCheck = activeProc;
       let conflictsJson = '';
       pCheck.stdout.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(l => {
         if (l.startsWith('__CONFLICTS__:')) { conflictsJson = l.slice('__CONFLICTS__:'.length); }
@@ -3406,7 +3686,7 @@ ${emailList}`;
           res.end();
           return;
         }
-        runStep1Upload(res, upScript, {}, t0, queuedNames, division, send);
+        runStep1Upload(res, upScript, {}, t0, queuedNames, division, send, req);
       });
     });
   });
@@ -3415,6 +3695,7 @@ ${emailList}`;
     res: Response, upScript: string, decisions: Record<string, unknown>,
     t0: number, queuedNames: string[], division: string,
     send: (l: string) => void,
+    req?: Request,
   ) {
     send('[*] Phase 2 — Uploading to Quotation List...');
     const [c2, a2] = pyArgs(upScript);
@@ -3423,12 +3704,21 @@ ${emailList}`;
       PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
       ...(Object.keys(decisions).length ? { CONFLICT_DECISIONS: JSON.stringify(decisions) } : {}),
     };
-    const p2 = spawn(c2, a2, { cwd: __dirname, env: env2 });
+    const p2 = spawn(c2, a2, { cwd: PY_DIR, env: env2 });
+    // Kill the child only on a genuine client disconnect. We listen on `res`
+    // (not `req`): on a POST the request body is already fully consumed by
+    // express.json() before we get here, so `req` 'close' fires immediately and
+    // would kill Python the instant it spawns. `res` 'close' fires when the
+    // SSE response actually ends — either we finished (guarded below) or the
+    // client really went away.
+    let finished = false;
+    res.on('close', () => { if (!finished) { try { p2.kill(); } catch {} } });
     let items = 0;
     p2.stdout.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(l => { send(l); if (l.includes('[OK]')) items++; }));
     p2.stderr.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(l => send(`[WARN] ${l}`)));
-    p2.on('error', err => { send(`[ERR] Could not start Python: ${err.message}`); res.write(`data: __DONE__:false\n\n`); res.end(); });
+    p2.on('error', err => { finished = true; send(`[ERR] Could not start Python: ${err.message}`); res.write(`data: __DONE__:false\n\n`); res.end(); });
     p2.on('close', code2 => {
+      finished = true;
       const ok = code2 === 0;
       const dur = Math.round((Date.now() - t0) / 1000);
       res.write(`data: __DONE__:${ok}\n\n`); res.end();
@@ -3470,7 +3760,29 @@ ${emailList}`;
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
     const send = (line: string) => res.write(`data: ${JSON.stringify(line)}\n\n`);
-    runStep1Upload(res, upScript, decisions, t0, queuedNames, division, send);
+    runStep1Upload(res, upScript, decisions, t0, queuedNames, division, send, req);
+  });
+
+  // ── Auto product-line suggestion (reads queued files, no CSV write) ─────────
+  app.get('/api/suggest-product', (req, res) => {
+    const pdfScript = pyFile('pdf_to_csv.py');
+    if (!existsSync(pdfScript)) { res.json({ suggestion: '', perFile: [] }); return; }
+    const cfg       = loadPyCfg();
+    const pdfFolder = path.join(cfg.base, 'PDF Quotes');
+    const [cmd, baseArgs] = pyArgs(pdfScript);
+    const proc = spawn(cmd, [...baseArgs, '--suggest'], {
+      cwd: PY_DIR,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1', MAGIC_PDF_FOLDER: pdfFolder },
+    });
+    let out = '';
+    proc.stdout.on('data', d => { out += String(d); });
+    proc.on('error', () => res.json({ suggestion: '', perFile: [] }));
+    proc.on('close', () => {
+      const line = out.split('\n').find(l => l.startsWith('__SUGGEST__:'));
+      if (!line) { res.json({ suggestion: '', perFile: [] }); return; }
+      try { res.json(JSON.parse(line.slice('__SUGGEST__:'.length))); }
+      catch { res.json({ suggestion: '', perFile: [] }); }
+    });
   });
 
   // ── Step 2 ─────────────────────────────────────────────────────────────────
@@ -3483,7 +3795,7 @@ ${emailList}`;
         durationSec: dur,
       });
       if (!ok) addToRetryQueue('step2', 'D&Q Store upload failed — will auto-retry when reconnected');
-    });
+    }, req);
   });
 
   // ── PMO ────────────────────────────────────────────────────────────────────
@@ -3526,7 +3838,7 @@ ${emailList}`;
   app.get('/api/docs/:id', (req, res) => {
     const doc = DOCS[req.params.id];
     if (!doc) { res.status(404).json({ error: 'Not found' }); return; }
-    const filePath = path.join(__dirname, 'docs', doc.file);
+    const filePath = path.join(PY_DIR, 'docs', doc.file);
     if (!existsSync(filePath)) { res.status(404).json({ error: 'File missing' }); return; }
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${doc.name}"`);
@@ -3536,11 +3848,73 @@ ${emailList}`;
   app.get('/api/docs-xlsx/:id', (req, res) => {
     const doc = DOCS_XLSX[req.params.id];
     if (!doc) { res.status(404).json({ error: 'Not found' }); return; }
-    const filePath = path.join(__dirname, 'docs', doc.file);
+    const filePath = path.join(PY_DIR, 'docs', doc.file);
     if (!existsSync(filePath)) { res.status(404).json({ error: 'File missing' }); return; }
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${doc.name}"`);
     createReadStream(filePath).pipe(res);
+  });
+
+  // ── User-added Doc Packs (uploaded, persisted to docs/user) ────────────────
+  const userDocsDir   = path.join(PY_DIR, 'docs', 'user');
+  const userDocsIndex = path.join(userDocsDir, '_index.json');
+  type UserDoc = { id: string; title: string; category: string; file: string; origName: string; ext: string; size: number; date: string };
+  const loadUserDocs = (): UserDoc[] => {
+    try { return existsSync(userDocsIndex) ? JSON.parse(readFileSync(userDocsIndex, 'utf8')) : []; }
+    catch { return []; }
+  };
+  const saveUserDocs = (list: UserDoc[]) => {
+    mkdirSync(userDocsDir, { recursive: true });
+    writeFileSync(userDocsIndex, JSON.stringify(list, null, 2));
+  };
+  const DOC_MIME: Record<string, string> = {
+    pdf: 'application/pdf',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xls:  'application/vnd.ms-excel',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc:  'application/msword',
+  };
+
+  app.get('/api/docs/user', (_req, res) => { res.json(loadUserDocs()); });
+
+  app.post('/api/docs/user/upload', express.raw({ type: '*/*', limit: '50mb' }), (req, res) => {
+    try {
+      const origName = decodeURIComponent((req.headers['x-filename'] as string) || 'document');
+      const title    = decodeURIComponent((req.headers['x-title']    as string) || origName.replace(/\.[^.]+$/, ''));
+      const category = decodeURIComponent((req.headers['x-category'] as string) || 'Custom');
+      const ext = (origName.match(/\.([^.]+)$/)?.[1] || 'bin').toLowerCase();
+      const id  = `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+      const body = req.body as Buffer;
+      if (!body || !body.length) { res.status(400).json({ ok: false, error: 'Empty upload' }); return; }
+      mkdirSync(userDocsDir, { recursive: true });
+      const file = `${id}.${ext}`;
+      writeFileSync(path.join(userDocsDir, file), body);
+      const doc: UserDoc = { id, title, category, file, origName: path.basename(origName), ext, size: body.length, date: new Date().toISOString() };
+      const list = loadUserDocs(); list.unshift(doc); saveUserDocs(list);
+      res.json({ ok: true, doc });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  app.get('/api/docs/user/:id', (req, res) => {
+    const doc = loadUserDocs().find(d => d.id === req.params.id);
+    if (!doc) { res.status(404).json({ error: 'Not found' }); return; }
+    const filePath = path.join(userDocsDir, doc.file);
+    if (!existsSync(filePath)) { res.status(404).json({ error: 'File missing' }); return; }
+    const viewable = doc.ext === 'pdf' || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(doc.ext);
+    res.setHeader('Content-Type', DOC_MIME[doc.ext] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `${viewable ? 'inline' : 'attachment'}; filename="${doc.origName}"`);
+    createReadStream(filePath).pipe(res);
+  });
+
+  app.delete('/api/docs/user/:id', (req, res) => {
+    try {
+      const list = loadUserDocs();
+      const doc  = list.find(d => d.id === req.params.id);
+      if (doc) { try { unlinkSync(path.join(userDocsDir, doc.file)); } catch {} }
+      saveUserDocs(list.filter(d => d.id !== req.params.id));
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
   });
 
   // ── CBU Tech Brief export ──────────────────────────────────────────────────
@@ -3564,16 +3938,21 @@ ${emailList}`;
 
   app.post('/api/run/cbu', express.json(), (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    const { system, project, quote, engineer, email, phone } = req.body || {};
-    if (!system || !project || !quote || !engineer || !email || !phone) {
+    const { system, systems: systemsRaw, project, quote, engineer, email, phone } = req.body || {};
+    // Accept either systems[] array or legacy system string
+    const systems: string[] = Array.isArray(systemsRaw) ? systemsRaw : (system ? [system] : []);
+    if (!systems.length || !project || !quote || !engineer || !email || !phone) {
       res.status(400).json({ error: 'Missing fields' }); return;
     }
     const tmpDir = path.join(os.tmpdir(), `cbu_${Date.now()}`);
     const script = pyFile('cbu_export.py');
     const [py, base] = pyArgs(script);
+    // --system may appear multiple times (one per system)
+    const systemArgs = systems.flatMap((s: string) => ['--system', s]);
     const child = spawn(py, [
       ...base,
-      '--system',   system, '--project',  project,
+      ...systemArgs,
+      '--project',  project,
       '--quote',    quote,  '--engineer', engineer,
       '--email',    email,  '--phone',    phone,
       '--outdir',   tmpDir,
@@ -3607,7 +3986,7 @@ ${emailList}`;
       const errLine = lines.find((l: string) => l.startsWith('__ERROR__:'));
       if (pdfLine) {
         const filePath = pdfLine.slice('__PDF__:'.length).trim();
-        const dlId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const dlId = randomUUID();
         cbuDownloads.set(dlId, { filePath, tmpDir });
         setTimeout(() => cbuDownloads.delete(dlId), 10 * 60 * 1000);
         if (!res.headersSent) res.json({ id: dlId });
@@ -3675,7 +4054,7 @@ ${emailList}`;
       const errLine = lines.find((l: string) => l.startsWith('__ERROR__:'));
       if (pdfLine) {
         const filePath = pdfLine.slice('__PDF__:'.length).trim();
-        const dlId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const dlId = randomUUID();
         commDownloads.set(dlId, { filePath, tmpDir });
         setTimeout(() => commDownloads.delete(dlId), 10 * 60 * 1000);
         if (!res.headersSent) res.json({ id: dlId });
@@ -3761,22 +4140,25 @@ ${emailList}`;
 
     send(`[*] Files received — starting extraction…`);
 
-    const cmd    = process.platform === 'win32' ? 'python' : 'python3';
-    const script = pyFile('pmo_raise.py');
+    const [pmoCmd, pmoArgs] = pyArgs(pyFile('pmo_raise.py'));
 
     const pyEnv = {
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
-      MAGIC_PMO_QUOTE_PDF:  quotePdfPath,
-      MAGIC_PMO_PO_PDF:     poPdfPath,
+      MAGIC_PMO_QUOTE_PDF:     quotePdfPath,
+      MAGIC_PMO_PO_PDF:        poPdfPath,
       ...(seqOverride ? { MAGIC_PMO_SEQ: seqOverride } : {}),
-      MAGIC_PMO_DOCU_PDFS:  docuPdfPaths.join('|'),
-      MAGIC_PMO_OUTDIR:     tmpDir,
+      MAGIC_PMO_DOCU_PDFS:     docuPdfPaths.join('|'),
+      MAGIC_PMO_OUTDIR:        tmpDir,
+      // Only set when configured — an empty string would override the script's
+      // own defaults (e.g. the Z:\ PMO log path) and force the CBU placeholder.
+      ...(loadPyCfg().pmo_log           ? { MAGIC_PMO_LOG:           loadPyCfg().pmo_log }           : {}),
+      ...(loadPyCfg().pmo_sales_contact ? { MAGIC_PMO_SALES_CONTACT: loadPyCfg().pmo_sales_contact } : {}),
     };
 
     let docxPath = '';
-    const py = spawn(cmd, [script], { cwd: __dirname, env: pyEnv });
+    const py = spawn(pmoCmd, pmoArgs, { cwd: PY_DIR, env: pyEnv });
 
     py.stdout.on('data', d => {
       d.toString().split('\n').filter(Boolean).forEach((l: string) => {
@@ -3791,7 +4173,7 @@ ${emailList}`;
 
     py.on('close', code => {
       if (code === 0 && docxPath && existsSync(docxPath)) {
-        const dlId = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        const dlId = randomUUID();
         const filename = path.basename(docxPath);
         pmoDownloads.set(dlId, { filePath: docxPath, filename, tmpDir });
         setTimeout(() => {
@@ -3863,12 +4245,14 @@ ${emailList}`;
       }
 
       // Split into text field + file attachments
-      let textVal = '';
-      const files: { path: string; kind: 'pdf' | 'image'; name: string }[] = [];
+      let textVal    = '';
+      let streamReq  = false;
+      const files: { path: string; kind: 'pdf' | 'image' | 'excel'; name: string }[] = [];
 
       for (const p of parts) {
         const isFile = !!p.filename || /^(application\/pdf|image\/)/i.test(p.contentType || '');
         if (!isFile) {
+          if (p.name === 'stream') { streamReq = p.body.toString('utf-8').trim() === '1'; continue; }
           // Treat any non-file part as text (commonly name="text" or name="description")
           if (p.name === 'text' || p.name === 'description' || textVal === '') {
             textVal = (textVal ? textVal + '\n' : '') + p.body.toString('utf-8');
@@ -3878,10 +4262,13 @@ ${emailList}`;
         if (p.body.length === 0) continue;
 
         const ctLower = (p.contentType || '').toLowerCase();
-        let kind: 'pdf' | 'image' = 'pdf';
+        let kind: 'pdf' | 'image' | 'excel' = 'pdf';
         let ext = 'bin';
         if (/^application\/pdf/.test(ctLower) || /\.pdf$/i.test(p.filename || '')) {
           kind = 'pdf'; ext = 'pdf';
+        } else if (/spreadsheet|excel|ms-excel|csv/.test(ctLower) || /\.(xlsx?|xlsm|csv)$/i.test(p.filename || '')) {
+          kind = 'excel';
+          ext = ((p.filename || '').match(/\.(xlsx?|xlsm|csv)$/i)?.[1] || 'xlsx').toLowerCase();
         } else if (/^image\//.test(ctLower) || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(p.filename || '')) {
           kind = 'image';
           const mt = ctLower.split('/')[1] || (p.filename || '').split('.').pop() || 'png';
@@ -3898,6 +4285,63 @@ ${emailList}`;
       if (!textVal.trim() && files.length === 0) {
         cleanup();
         res.json({ error: 'Enter a description, cat numbers, or attach a PDF/image' });
+        return;
+      }
+
+      // ── Streaming path: NDJSON per-item progress ───────────────────────────
+      // Forwards a live read-out so the UI shows items as they're priced instead
+      // of a frozen spinner. Text-only → list mode; attachments → unified mode
+      // (extract, then stream pricing of every extracted row).
+      if (streamReq && (textVal.trim() || files.length > 0)) {
+        const streamTmps: string[] = [];
+        let streamArgs: string[];
+        if (files.length > 0) {
+          const manifestPath = path.join(os.tmpdir(), `mu_el_smanifest_${Date.now()}.json`);
+          writeFileSync(manifestPath, JSON.stringify({ text: textVal, files }), 'utf-8');
+          streamTmps.push(manifestPath, ...tmpPaths);   // clean up uploaded files too
+          streamArgs = ['--mode', 'unified', '--stream', '--input', manifestPath];
+        } else {
+          const tmp = path.join(os.tmpdir(), `mu_el_stream_${Date.now()}.txt`);
+          writeFileSync(tmp, textVal, 'utf-8');
+          streamTmps.push(tmp);
+          streamArgs = ['--mode', 'list', '--stream', '--input', tmp];
+        }
+        const [py, base] = pyArgs(pyScript);
+        const proc = spawn(py, [...base, ...streamArgs], {
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        });
+        const cleanStream = () => { for (const p of streamTmps) { try { if (existsSync(p)) unlinkSync(p); } catch {} } };
+        res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('X-Accel-Buffering', 'no');
+        if (typeof (res as any).flushHeaders === 'function') (res as any).flushHeaders();
+
+        // Kill the child only if the client actually disconnects mid-stream —
+        // NOT when express.raw finishes reading the POST body (req 'close' fires
+        // early for consumed request bodies and would abort pricing instantly).
+        res.on('close', () => { if (!res.writableEnded) { try { proc.kill(); } catch {} } });
+
+        let buf = '';
+        proc.stdout.on('data', (d: Buffer) => {
+          buf += d.toString('utf-8');
+          let nl;
+          while ((nl = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (line) res.write(line + '\n');   // forward each complete NDJSON event
+          }
+        });
+        proc.stderr.on('data', (d: Buffer) => process.stderr.write(d));
+        proc.on('error', (e: any) => {
+          try { res.write(JSON.stringify({ t: 'error', error: e.message }) + '\n'); } catch {}
+          cleanStream();
+          res.end();
+        });
+        proc.on('close', () => {
+          if (buf.trim()) res.write(buf.trim() + '\n');
+          cleanStream();
+          res.end();
+        });
         return;
       }
 
@@ -3991,8 +4435,15 @@ ${emailList}`;
     }
   });
 
-  // ── Vite ───────────────────────────────────────────────────────────────────
-  if (process.env.NODE_ENV !== 'production') {
+  // ── Static frontend ───────────────────────────────────────────────────────
+  // Sidecar serves the built frontend so the Tauri window loads same-origin
+  // (no CORS, session cookie persists). FRONTEND_DIR is set by the Rust host.
+  if (isSidecar) {
+    const frontendDir = process.env.FRONTEND_DIR || path.join(__dirname, 'dist');
+    app.use(express.static(frontendDir));
+    app.get('*', (_req, res) => res.sendFile(path.join(frontendDir, 'index.html')));
+  } else if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
@@ -4000,11 +4451,13 @@ ${emailList}`;
     app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n  Vector v2  →  http://localhost:${PORT}\n`);
-    console.log(`  /api/analytics      — NEW`);
-    console.log(`  /api/search         — enriched with CUSTOMER, DIVISION, REQUESTED_x0020_BY`);
-    console.log(`  /api/quote-ask      — smart in-chat quote search (classify + D&Q + metadata)\n`);
+  app.listen(PORT, '127.0.0.1', () => {
+    if (isSidecar) {
+      // Tauri reads this line from stdout to get the API port
+      process.stdout.write(`VECTOR_PORT:${PORT}\n`);
+    } else {
+      console.log(`\n  Vector v2  →  http://localhost:${PORT}\n`);
+    }
   });
 }
 

@@ -1,10 +1,18 @@
 // ─── Axios API wrappers ──────────────────────────────────────────────────────
+// axios.defaults.baseURL is set once in main.tsx, after the sidecar port resolves
+// and before any component renders. In browser dev it stays unset (relative paths).
 import axios from 'axios';
+
 import type {
   Job, DashboardStats, Config, PdfFile, ArchiveDay,
   AnalyticsResponse, SearchResult, DqDoc,
   CrmCompanyCard, CrmCompanyDetail, CrmInsight,
 } from '../types';
+
+export interface UserDoc {
+  id: string; title: string; category: string;
+  file: string; origName: string; ext: string; size: number; date: string;
+}
 
 export const api = {
   // Stats / Jobs
@@ -27,6 +35,7 @@ export const api = {
 
   // PDFs
   pdfs:      () => axios.get<PdfFile[]>('/api/pdfs').then(r => r.data),
+  suggestProduct: () => axios.get<{ suggestion: string; perFile: { name: string; lang: string; suggestion: string }[] }>('/api/suggest-product').then(r => r.data),
   deletePdf: (name: string) => axios.delete(`/api/pdfs/${encodeURIComponent(name)}`).then(r => r.data),
   uploadPdf: async (file: File) => {
     await fetch('/api/pdfs/upload', {
@@ -35,6 +44,23 @@ export const api = {
       body: await file.arrayBuffer(),
     });
   },
+
+  // Doc Packs (user-uploaded, persisted)
+  docsUser:       () => axios.get<UserDoc[]>('/api/docs/user').then(r => r.data),
+  docsUserUpload: async (file: File, title: string, category: string) => {
+    const r = await fetch('/api/docs/user/upload', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Filename': encodeURIComponent(file.name),
+        'X-Title':    encodeURIComponent(title),
+        'X-Category': encodeURIComponent(category),
+      },
+      body: await file.arrayBuffer(),
+    });
+    return r.json() as Promise<{ ok: boolean; doc?: UserDoc; error?: string }>;
+  },
+  docsUserDelete: (id: string) => axios.delete<{ ok: boolean }>(`/api/docs/user/${id}`).then(r => r.data),
 
   // Search & Copilot
   search:        (q: string) => axios.get<{ results: SearchResult[]; error?: string }>('/api/search', { params: { q } }).then(r => r.data),
@@ -56,16 +82,18 @@ export const api = {
   outlookGraphConnect: () => axios.post<{ ok: boolean; name?: string; email?: string; error?: string }>('/api/outlook/graph-connect', {}, { timeout: 120_000 }).then(r => r.data),
   outlookImapConfig:  (email: string, password: string) => axios.post<{ ok: boolean; email?: string; error?: string }>('/api/outlook/imap-config', { email, password }, { timeout: 30_000 }).then(r => r.data),
   outlookMailboxes:   () => axios.get<{ mailboxes: any[]; error?: string }>('/api/outlook/mailboxes', { timeout: 20_000 }).then(r => r.data),
-  outlookEmails:      (storeId: string, limit = 30, unread = false) =>
-                        axios.get<{ emails: any[]; error?: string }>('/api/outlook/emails', { params: { storeId, limit, unread }, timeout: 30_000 }).then(r => r.data),
-  outlookEmail:       (id: string) => axios.get<any>(`/api/outlook/email/${encodeURIComponent(id)}`, { timeout: 15_000 }).then(r => r.data),
-  outlookAnalyze:        (email: any) => axios.post<{ analysis: string | null; error?: string }>('/api/outlook/analyze', email, { timeout: 60_000 }).then(r => r.data),
+  outlookEmails:      (storeId: string, limit = 30, unread = false, signal?: AbortSignal) =>
+                        axios.get<{ emails: any[]; error?: string }>('/api/outlook/emails', { params: { storeId, limit, unread }, timeout: 60_000, signal }).then(r => r.data),
+  outlookEmail:       (id: string, signal?: AbortSignal) => axios.get<any>(`/api/outlook/email/${encodeURIComponent(id)}`, { timeout: 15_000, signal }).then(r => r.data),
+  outlookAnalyze:        (email: any, signal?: AbortSignal) => axios.post<{ analysis: string | null; error?: string }>('/api/outlook/analyze', email, { timeout: 60_000, signal }).then(r => r.data),
   outlookSaveAttachment: (entryId: string) => axios.post<{ saved: any[]; count: number; error?: string }>('/api/outlook/save-attachment', { entryId }, { timeout: 30_000 }).then(r => r.data),
-  outlookDraftReply:     (payload: any) => axios.post<{ draft: string | null; error?: string }>('/api/outlook/draft-reply', payload, { timeout: 60_000 }).then(r => r.data),
+  outlookDraftReply:     (payload: any, signal?: AbortSignal) => axios.post<{ draft: string | null; error?: string }>('/api/outlook/draft-reply', payload, { timeout: 60_000, signal }).then(r => r.data),
   outlookSendReply:      (entryId: string, body: string) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/send-reply', { entryId, body }, { timeout: 30_000 }).then(r => r.data),
   outlookFeedback:       (payload: any) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/feedback', payload, { timeout: 10_000 }).then(r => r.data),
-  outlookChat:           (payload: any) => axios.post<{ answer: string | null; error?: string }>('/api/outlook/chat', payload, { timeout: 60_000 }).then(r => r.data),
-  outlookBriefing:       (emails: any[]) => axios.post<{ briefing: any[] | null; error?: string }>('/api/outlook/briefing', { emails }, { timeout: 120_000 }).then(r => r.data),
+  feedback:              (payload: { message: string; category?: string; page?: string; userName?: string | null; userEmail?: string | null }) =>
+                           axios.post<{ ok?: boolean; stored?: boolean; emailed?: boolean; error?: string }>('/api/feedback', payload, { timeout: 30_000 }).then(r => r.data),
+  outlookChat:           (payload: any, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/outlook/chat', payload, { timeout: 60_000, signal }).then(r => r.data),
+  outlookBriefing:       (emails: any[], signal?: AbortSignal) => axios.post<{ briefing: any[] | null; error?: string }>('/api/outlook/briefing', { emails }, { timeout: 120_000, signal }).then(r => r.data),
   outlookFlag:           (entryId: string, flagged: boolean) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/flag', { entryId, flagged }, { timeout: 15_000 }).then(r => r.data),
   outlookMarkUnread:     (entryId: string) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/mark-unread', { entryId }, { timeout: 15_000 }).then(r => r.data),
   outlookDelete:         (entryId: string) => axios.delete<{ ok?: boolean; error?: string }>(`/api/outlook/email/${encodeURIComponent(entryId)}`, { timeout: 15_000 }).then(r => r.data),
@@ -165,7 +193,10 @@ export async function runStreamingScript(
     signal?: AbortSignal;
   } = {},
 ): Promise<{ ok: boolean; conflicts?: ConflictItem[] }> {
-  const url = new URL(endpoint, location.origin);
+  const _apiBase = (window as any).__VECTOR_PORT__
+    ? `http://localhost:${(window as any).__VECTOR_PORT__}`
+    : location.origin;
+  const url = new URL(endpoint, _apiBase);
   if (!opts.body) {
     Object.entries(opts.params || {}).forEach(([k, v]) => v && url.searchParams.set(k, v));
   }

@@ -2,15 +2,20 @@
 import React, { useState, useEffect, useCallback, useRef, KeyboardEvent } from 'react';
 import {
   Mail, RefreshCw, Paperclip, FileText, Sparkles, Loader2,
-  Filter, Users, ChevronRight, Download,
+  Filter, Users, ChevronRight, ChevronDown, Download,
   CheckCircle2, Inbox as InboxIcon,
   ThumbsUp, ThumbsDown, Send, Edit3, Trash2, RotateCcw,
   Play, ArrowLeft, Zap, Eye, X, Image as ImageIcon, ChevronLeft,
   Pin, PinOff, Search, FolderOpen, MoreHorizontal, Star, ExternalLink,
-  Forward, MessageSquare, PenLine, Plus, GripVertical,
+  Forward, MessageSquare, PenLine, Plus, GripVertical, Battery, Lock,
 } from 'lucide-react';
+import { runTask, isCancel } from '../lib/tasks';
 
 // ─── Module-level state — survives tab switches / component remounts ─────────
+// Locked behind a "Coming Soon" wall in the stripped ship build (personal API
+// keys / tooling not ready for team rollout), full locally — same gate as App.tsx.
+const STRIPPED = import.meta.env.PROD;
+
 const CACHE_TTL = 15 * 60 * 1000;
 const BRIEFING_TTL = 4 * 60 * 60 * 1000;
 interface CacheEntry { emails: EmailSummary[]; ts: number; }
@@ -39,6 +44,7 @@ let _selectedId = '';
 let _detail: EmailDetail | null = null;
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
+import { fmtGBP } from '../lib/ui';
 import type { ToastFn } from '../App';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -229,12 +235,19 @@ function ImageLightbox({ src, name, onClose }: { src: string; name: string; onCl
 // ─── HTML email renderer (iframe, sandboxed, Outlook-matched fonts) ──────────
 function wrapEmailHtml(html: string): string {
   const t = html.trim();
+  const dark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
+  const bg   = dark ? '#1a1a1f' : '#fff';
+  const fg   = dark ? '#e6e6ee' : '#1f1f1f';
+  const link = dark ? '#8ab4ff' : '#0563C1';
   const injectStyle = [
     `<style>`,
     `* { max-width: 100%; box-sizing: border-box; }`,
     `img { max-width: 100%; height: auto; }`,
-    `body { font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: #1f1f1f; margin: 16px 20px; line-height: 1.5; background: #fff; word-wrap: break-word; }`,
-    `a { color: #0563C1; }`,
+    `body { font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: ${fg}; margin: 16px 20px; line-height: 1.5; background: ${bg}; word-wrap: break-word; }`,
+    // Force sender's hardcoded near-white/near-black text to inherit so it stays
+    // readable on the dark canvas (covers most inline-styled marketing emails).
+    dark ? `body, body * { color: ${fg} !important; background-color: transparent !important; }` : ``,
+    `a { color: ${link}${dark ? ' !important' : ''}; }`,
     `p { margin: 0 0 8px; }`,
     `pre, code { white-space: pre-wrap; word-break: break-all; }`,
     `</style>`,
@@ -292,8 +305,6 @@ interface MiniCandidate {
 interface ScheduleEntry { source: string; items: MiniPricedItem[]; total_ntp: number; }
 let _pricerSchedule: ScheduleEntry[] = [];
 
-function fmtGbp(n: number) { return '£' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
-
 function extractMaterialHints(body: string): string {
   const hits: string[] = [];
   const catalogRe = /\b(MP2[A-Z0-9\-]*|NXL[A-Z0-9\-]*|LUM[A-Z0-9\-]*|AT-S[A-Z0-9\-]*|LP-STAR[A-Z0-9\-]*|I-P65[A-Z0-9 \-]*|IP65[A-Z0-9\-]*|CGS[A-Z0-9\-]*|CG-S[A-Z0-9\-]*|CGLine[A-Z0-9\-]*|CrystalWay[A-Z0-9\-]*|RoundTech[A-Z0-9\-]*|NexiLite[A-Z0-9\-]*|ExLin[A-Z0-9\-]*|LHID[A-Z0-9\-]*|EMP[A-Z0-9\-]*|CEAG[A-Z0-9\-]*)\b/i;
@@ -304,6 +315,216 @@ function extractMaterialHints(body: string): string {
     if (catalogRe.test(t) || qtyLineRe.test(t)) hits.push(t);
   }
   return hits.join('\n');
+}
+
+// ─── CBU Tech Sheet Generator ─────────────────────────────────────────────────
+const CBU_SYSTEMS = [
+  '1PH- 0.5KVA','1PH- 1KVA','1PH- 2KVA','1PH- 4KVA','1PH- 5KVA',
+  '1PH- 8KVA','1PH- 10KVA','1PH- 12KVA','1PH- 15KVA','1PH- 16KVA','1PH- 20KVA',
+  '3PH- 6KVA','3PH- 8KVA','3PH- 10KVA','3PH- 12KVA','3PH- 14KVA',
+  '3PH- 16KVA','3PH- 18KVA','3PH- 20KVA','3PH- 24KVA','3PH- 28KVA',
+  '3PH- 30KVA','3PH- 32KVA','3PH- 36KVA','3PH- 40KVA','3PH- 42KVA',
+  '3PH- 48KVA','3PH- 54KVA','3PH- 56KVA','3PH- 60KVA',
+];
+
+const CBU_SALESMEN = [
+  { name: 'Blair McDonald',  email: 'blairgmcdonald@eaton.com',  phone: '07890954552' },
+  { name: 'Craig Donaldson', email: 'craigdonaldson@eaton.com',  phone: '07811692079' },
+  { name: 'Joe Bayley',      email: 'joebayley@eaton.com',       phone: '07713325534' },
+  { name: 'Mark Fenton',     email: 'MarkAFenton@Eaton.com',     phone: '07713325528' },
+  { name: 'Ollie Bailey',    email: 'olliejbailey@eaton.com',    phone: '07866893068' },
+  { name: 'Ryan Houston',    email: 'ryanhouston@eaton.com',     phone: '07773949386' },
+];
+
+// Known CBU system capacities in kVA — used to validate watt-to-kVA conversions
+const CBU_KNOWN_KVA = [0.5,1,2,4,5,6,8,10,12,14,15,16,18,20,24,28,30,32,36,40,42,48,54,56,60];
+function isNearKnownCBU(kva: number) {
+  return CBU_KNOWN_KVA.some(k => Math.abs(k - kva) / k <= 0.15);
+}
+
+function extractCBUHints(body: string): { detected: boolean; detectedSystems: Array<{ kva: number; phase: '1PH' | '3PH' }> } {
+  const detected = /\bcbu\b|central battery unit|loadstar(?:-ps)?/i.test(body) ||
+    (/\bups\b/i.test(body) && /\bkva\b/i.test(body));
+  if (!detected) return { detected: false, detectedSystems: [] };
+
+  const kvaVals: number[] = [];
+  // explicit kVA mentions
+  const kvaRe = /(\d+(?:\.\d+)?)\s*[kK][vV][aA]/g;
+  let m: RegExpExecArray | null;
+  while ((m = kvaRe.exec(body)) !== null) kvaVals.push(parseFloat(m[1]));
+  // watt mentions — only accept if within 15% of a known CBU system capacity
+  // (prevents heat dissipation / current draw values triggering false extra systems)
+  const wRe = /(\d+(?:\.\d+)?)\s*[wW](?:att(?:s)?)?\b/g;
+  while ((m = wRe.exec(body)) !== null) {
+    const kva = Math.round((parseFloat(m[1]) / 1000) * 10) / 10;
+    if (isNearKnownCBU(kva)) kvaVals.push(kva);
+  }
+
+  const phase3 = /three.?phase|3.?ph\b/i.test(body);
+  const phase1 = /single.?phase|1.?ph\b/i.test(body);
+
+  // deduplicate, snap each to nearest CBU system key
+  const seen = new Set<string>();
+  const detectedSystems: Array<{ kva: number; phase: '1PH' | '3PH' }> = [];
+  for (const kva of kvaVals) {
+    const phase: '1PH' | '3PH' = phase3 ? '3PH' : phase1 ? '1PH' : kva >= 6 ? '3PH' : '1PH';
+    const key = pickCBUSystem(kva, phase);
+    if (!seen.has(key)) { seen.add(key); detectedSystems.push({ kva, phase }); }
+  }
+  return { detected, detectedSystems };
+}
+
+function pickCBUSystem(kva: number | null, phase: '1PH' | '3PH' | null): string {
+  const pool = phase ? CBU_SYSTEMS.filter(k => k.startsWith(phase)) : CBU_SYSTEMS;
+  const candidates = pool.length ? pool : CBU_SYSTEMS;
+  if (!kva) return candidates[0];
+  let best = candidates[0]; let bestDiff = Infinity;
+  for (const k of candidates) {
+    const m = k.match(/(\d+(?:\.\d+)?)\s*KVA/i);
+    if (m) { const d = Math.abs(parseFloat(m[1]) - kva); if (d < bestDiff) { bestDiff = d; best = k; } }
+  }
+  return best;
+}
+
+function CBUSystemSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <select value={value} onChange={e => onChange(e.target.value)}
+      className="flex-1 h-7 px-2 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 focus:outline-none focus:ring-blue-400">
+      <optgroup label="Single Phase">
+        {CBU_SYSTEMS.filter(s => s.startsWith('1PH')).map(s => <option key={s} value={s}>{s}</option>)}
+      </optgroup>
+      <optgroup label="Three Phase">
+        {CBU_SYSTEMS.filter(s => s.startsWith('3PH')).map(s => <option key={s} value={s}>{s}</option>)}
+      </optgroup>
+    </select>
+  );
+}
+
+function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: string; emailBody: string; toast: ToastFn }) {
+  const hints = extractCBUHints(emailBody);
+  const cleanSubject = emailSubject.replace(/^(RE:|FW:|Fwd:)\s*/gi, '').replace(/SR00[A-Z0-9]+\s*/gi, '').trim();
+
+  const [systems,  setSystems]  = useState<string[]>(() => {
+    if (hints.detectedSystems.length > 0)
+      return hints.detectedSystems.map(h => pickCBUSystem(h.kva, h.phase));
+    return [CBU_SYSTEMS[0]];
+  });
+  const [project, setProject] = useState(cleanSubject);
+  const [quote,   setQuote]   = useState('');
+  const [smIdx,   setSmIdx]   = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [dlId,    setDlId]    = useState<string | null>(null);
+
+  const sm = smIdx !== null ? CBU_SALESMEN[smIdx] : null;
+  const ok = systems.length > 0 && !!project.trim() && !!quote.trim() && sm !== null;
+
+  function updateSystem(i: number, v: string) {
+    setSystems(prev => prev.map((s, idx) => idx === i ? v : s));
+  }
+  function removeSystem(i: number) {
+    setSystems(prev => prev.filter((_, idx) => idx !== i));
+  }
+  function addSystem() {
+    setSystems(prev => [...prev, CBU_SYSTEMS[0]]);
+  }
+
+  async function generate() {
+    if (!ok || !sm) return;
+    setLoading(true); setDlId(null);
+    try {
+      const res = await fetch('/api/run/cbu', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ systems, project: project.trim(), quote: quote.trim(), engineer: sm.name, email: sm.email, phone: sm.phone }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Server error');
+      setDlId(json.id);
+      toast('ok', `CBU Tech Sheet ready (${systems.length} system${systems.length > 1 ? 's' : ''})`);
+    } catch (e: any) { toast('err', e.message); }
+    setLoading(false);
+  }
+
+  async function download() {
+    if (!dlId) return;
+    const dl = await fetch(`/api/download/cbu/${dlId}`);
+    const blob = await dl.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `CBU_Tech_Brief_${quote.trim()}.pdf`; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Battery className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+        <p className="text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 flex-1">CBU Tech Sheet Generator</p>
+        {hints.detectedSystems.length > 0 && (
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 ring-1 ring-inset ring-blue-200 dark:ring-blue-700">
+            {hints.detectedSystems.map(h => `${h.kva}kVA`).join(' + ')} detected
+          </span>
+        )}
+      </div>
+
+      {/* Systems list */}
+      <div className="space-y-1.5">
+        <div className="flex items-center gap-2">
+          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide flex-1">Systems</label>
+          <button onClick={addSystem}
+            className="inline-flex items-center gap-1 h-5 px-2 rounded text-[10px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
+            <Plus className="w-2.5 h-2.5" />Add
+          </button>
+        </div>
+        {systems.map((sys, i) => (
+          <div key={i} className="flex items-center gap-1.5">
+            <span className="text-[10px] text-ink-400 w-4 text-right shrink-0">{i + 1}</span>
+            <CBUSystemSelect value={sys} onChange={v => updateSystem(i, v)} />
+            {systems.length > 1 && (
+              <button onClick={() => removeSystem(i)}
+                className="w-5 h-5 rounded flex items-center justify-center text-ink-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0">
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Project Name</label>
+          <input value={project} onChange={e => setProject(e.target.value)} placeholder="Project name…"
+            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-blue-400" />
+        </div>
+        <div>
+          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Quote Ref</label>
+          <input value={quote} onChange={e => setQuote(e.target.value)} placeholder="Q-XXXX…"
+            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-blue-400" />
+        </div>
+        <div className="col-span-2">
+          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Sales Engineer</label>
+          <select value={smIdx ?? ''} onChange={e => setSmIdx(e.target.value === '' ? null : Number(e.target.value))}
+            className="mt-1 w-full h-7 px-2 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 focus:outline-none focus:ring-blue-400">
+            <option value="">Select salesman…</option>
+            {CBU_SALESMEN.map((s, i) => <option key={i} value={i}>{s.name}</option>)}
+          </select>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        <button onClick={generate} disabled={!ok || loading}
+          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 transition-colors">
+          {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Battery className="w-3 h-3" />}
+          Generate {systems.length > 1 ? `${systems.length} Sheets` : 'Tech Sheet'}
+        </button>
+        {dlId && (
+          <button onClick={download}
+            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors">
+            <Download className="w-3 h-3" />Download PDF
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function InlineELPricer({
@@ -441,12 +662,12 @@ function InlineELPricer({
       if (schedule.length > 1) lines.push(`  [${entry.source}]`);
       for (const i of entry.items) {
         lines.push(
-          `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmtGbp(i.ntp).padStart(10)} ${fmtGbp(i.line_ntp).padStart(10)}`
+          `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmtGBP(i.ntp).padStart(10)} ${fmtGBP(i.line_ntp).padStart(10)}`
         );
       }
     }
     lines.push('─'.repeat(70));
-    lines.push(`${'TOTAL NTP'.padEnd(68)} ${fmtGbp(grandTotal).padStart(10)}`);
+    lines.push(`${'TOTAL NTP'.padEnd(68)} ${fmtGBP(grandTotal).padStart(10)}`);
     lines.push('');
     lines.push('Prices: Eaton EL Global Price List July 2026 (valid from 1 July 2026). Ex VAT. Subject to confirmation.');
     navigator.clipboard.writeText(lines.join('\n'));
@@ -465,7 +686,7 @@ function InlineELPricer({
       `${'Ref'.padEnd(8)} ${'Catalogue No'.padEnd(18)} ${'Description'.padEnd(36)} ${'Qty'.padStart(4)} ${'NTP/Unit'.padStart(10)}`,
       `${'─'.repeat(70)}`,
       ...matched.map(i =>
-        `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmtGbp(i.ntp).padStart(10)}`
+        `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmtGBP(i.ntp).padStart(10)}`
       ),
       `${'─'.repeat(70)}`,
       '',
@@ -633,7 +854,7 @@ function InlineELPricer({
                     {c.matched && c.ntp != null && (
                       <div className="text-right shrink-0">
                         <p className="text-[9px] uppercase text-ink-400">NTP</p>
-                        <p className="text-[12.5px] font-semibold tabular-nums">{fmtGbp(c.ntp)}</p>
+                        <p className="text-[12.5px] font-semibold tabular-nums">{fmtGBP(c.ntp)}</p>
                       </div>
                     )}
                   </div>
@@ -684,7 +905,7 @@ function InlineELPricer({
                   </td>
                   <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300 max-w-[200px] truncate">{item.description}</td>
                   <td className="px-3 py-1.5 text-right text-ink-600 dark:text-ink-300">{item.qty}</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-ink-800 dark:text-ink-100">{fmtGbp(item.ntp)}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-ink-800 dark:text-ink-100">{fmtGBP(item.ntp)}</td>
                 </tr>
               ))}
             </tbody>
@@ -717,7 +938,7 @@ function InlineELPricer({
                     <div key={j} className="flex items-center gap-2 text-[10px]">
                       <span className="font-mono text-brand-600 dark:text-brand-400">{m.cat_no}</span>
                       <span className="text-ink-500 dark:text-ink-400 truncate flex-1">{m.description}</span>
-                      {m.ntp > 0 && <span className="font-mono text-ink-600 dark:text-ink-300 shrink-0">{fmtGbp(m.ntp)}</span>}
+                      {m.ntp > 0 && <span className="font-mono text-ink-600 dark:text-ink-300 shrink-0">{fmtGBP(m.ntp)}</span>}
                     </div>
                   ))}
                 </div>
@@ -732,7 +953,7 @@ function InlineELPricer({
         <div className="rounded-lg ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/40 overflow-hidden">
           <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-900/20">
             <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide flex-1">
-              Schedule · {schedule.reduce((s, e) => s + e.items.length, 0)} items · {fmtGbp(schedule.reduce((s, e) => s + e.total_ntp, 0))} NTP
+              Schedule · {schedule.reduce((s, e) => s + e.items.length, 0)} items · {fmtGBP(schedule.reduce((s, e) => s + e.total_ntp, 0))} NTP
             </p>
             <button
               onClick={copyFullSchedule}
@@ -756,7 +977,7 @@ function InlineELPricer({
                   <span className="font-mono text-brand-700 dark:text-brand-400 shrink-0">{item.cat_no}</span>
                   <span className="text-ink-500 dark:text-ink-400 flex-1 truncate">{item.description}</span>
                   <span className="text-ink-500 dark:text-ink-400 shrink-0">×{item.qty}</span>
-                  <span className="font-mono text-ink-700 dark:text-ink-200 shrink-0">{fmtGbp(item.line_ntp)}</span>
+                  <span className="font-mono text-ink-700 dark:text-ink-200 shrink-0">{fmtGBP(item.line_ntp)}</span>
                 </div>
               ))}
             </div>
@@ -917,7 +1138,7 @@ function EmailDetailPanel({
   const [chatMessages, setChatMessages]             = useState<Array<{ role: 'user' | 'ai'; text: string }>>([]);
   const [chatInput, setChatInput]                   = useState('');
   const [chatLoading, setChatLoading]               = useState(false);
-  const [activePanel, setActivePanel]               = useState<'analyze' | 'reply' | 'reply-attach' | 'pricer' | 'chat' | null>(null);
+  const [activePanel, setActivePanel]               = useState<'analyze' | 'reply' | 'reply-attach' | 'pricer' | 'chat' | 'cbu' | null>(null);
   const [attachSuggestions, setAttachSuggestions]   = useState<AttachSuggestion[]>([]);
   const [loadingSugg, setLoadingSugg]               = useState(false);
   const [selectedAtts, setSelectedAtts]             = useState<AttachSuggestion[]>([]);
@@ -1024,15 +1245,15 @@ function EmailDetailPanel({
     if (analyzing) return;
     setAnalyzing(true);
     try {
-      const r = await api.outlookAnalyze({
+      const r = await runTask('Analyzing email…', s => api.outlookAnalyze({
         subject: emailData.subject, sender: emailData.sender,
         senderEmail: emailData.senderEmail, received: emailData.received,
         body: emailData.body, attachments: emailData.attachments,
-      });
+      }, s));
       const text = r.analysis || r.error || 'No analysis returned.';
       setAnalysis(text);
       _analysisCache[emailData.entryId] = text;
-    } catch (e: any) { setAnalysis(`Error: ${e.message}`); }
+    } catch (e: any) { if (!isCancel(e)) setAnalysis(`Error: ${e.message}`); }
     setAnalyzing(false);
   }
 
@@ -1040,14 +1261,14 @@ function EmailDetailPanel({
     setDraftingReply(true);
     setDraft(''); setReplyText(''); setEditingReply(false); setReplySent(false);
     try {
-      const r = await api.outlookDraftReply({
+      const r = await runTask('Drafting reply…', s => api.outlookDraftReply({
         subject: emailData.subject, sender: emailData.sender,
         senderEmail: emailData.senderEmail, received: emailData.received,
         body: emailData.body, analysis,
-      });
+      }, s));
       if (r.error) { toast('warn', r.error); }
       else { setDraft(r.draft || ''); setReplyText(r.draft || ''); }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { if (!isCancel(e)) toast('err', e.message); }
     setDraftingReply(false);
   }
 
@@ -1109,13 +1330,13 @@ function EmailDetailPanel({
     setChatLoading(true);
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     try {
-      const r = await api.outlookChat({
+      const r = await runTask('Assistant thinking…', s => api.outlookChat({
         subject: detail.subject, sender: detail.sender, senderEmail: detail.senderEmail,
         body: detail.body, analysis, history: chatMessages, question,
-      });
+      }, s));
       setChatMessages(prev => [...prev, { role: 'ai', text: r.answer || r.error || 'No response.' }]);
     } catch (e: any) {
-      setChatMessages(prev => [...prev, { role: 'ai', text: 'Error: ' + e.message }]);
+      if (!isCancel(e)) setChatMessages(prev => [...prev, { role: 'ai', text: 'Error: ' + e.message }]);
     }
     setChatLoading(false);
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
@@ -1162,8 +1383,18 @@ function EmailDetailPanel({
     }
   }
 
-  function ABtn({ panel, icon: Icon, label, color }: { panel: NonNullable<typeof activePanel>; icon: React.ComponentType<{className?: string}>; label: string; color?: string }) {
+  function ABtn({ panel, icon: Icon, label, color, locked }: { panel: NonNullable<typeof activePanel>; icon: React.ComponentType<{className?: string}>; label: string; color?: string; locked?: boolean }) {
     const active = activePanel === panel;
+    if (locked) {
+      return (
+        <button onClick={() => toast('info', `${label} — coming soon`)} title="Coming soon"
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors text-ink-400 dark:text-ink-600 ring-ink-200/60 dark:ring-ink-700/50 hover:bg-ink-50 dark:hover:bg-ink-800/50 cursor-default">
+          <Icon className="w-3 h-3 shrink-0 opacity-60" />
+          {label}
+          <Lock className="w-2.5 h-2.5 shrink-0 opacity-60" />
+        </button>
+      );
+    }
     return (
       <button onClick={() => togglePanel(panel)}
         className={cn(
@@ -1208,6 +1439,9 @@ function EmailDetailPanel({
 
             {/* Meta row */}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-ink-500 dark:text-ink-400">
+              <span className="w-6 h-6 rounded-full bg-gradient-to-br from-ink-300 to-ink-500 dark:from-ink-600 dark:to-ink-800 flex items-center justify-center text-[9px] font-bold text-white shrink-0">
+                {detail.sender.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
+              </span>
               <span className="font-medium text-ink-700 dark:text-ink-200">{detail.sender}</span>
               <span className="text-ink-400 dark:text-ink-500">&lt;{detail.senderEmail}&gt;</span>
               {detail.to && <span>→ {detail.to}</span>}
@@ -1263,7 +1497,7 @@ function EmailDetailPanel({
                     document.body.style.userSelect = 'none';
                     e.preventDefault();
                   }}>
-                  <div className="w-6 h-0.5 rounded-full bg-ink-200 dark:bg-ink-700 group-hover:bg-ink-400 dark:group-hover:bg-ink-500 transition-colors" />
+                  <div className="w-6 h-0.5 rounded-full bg-ink-200 dark:bg-ink-700 group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
                 </div>
               </div>
             )}
@@ -1285,7 +1519,7 @@ function EmailDetailPanel({
               <>
                 {/* ── Resize handle — OUTSIDE the scroll container so drag works ── */}
                 <div
-                  className="flex items-center h-5 border-b border-ink-100 dark:border-ink-800 select-none bg-ink-50 dark:bg-ink-900/80 hover:bg-ink-100 dark:hover:bg-ink-800/60 transition-colors"
+                  className="group flex items-center h-5 border-b border-ink-100 dark:border-ink-800 select-none bg-ink-50 dark:bg-ink-900/80 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
                   style={{ cursor: 'row-resize' }}
                   onMouseDown={e => {
                     if ((e.target as HTMLElement).closest('button')) return;
@@ -1297,7 +1531,7 @@ function EmailDetailPanel({
                     e.preventDefault();
                   }}>
                   <div className="flex-1 flex items-center justify-center pointer-events-none">
-                    <div className="w-8 h-0.5 rounded-full bg-ink-300 dark:bg-ink-600" />
+                    <div className="w-8 h-0.5 rounded-full bg-ink-300 dark:bg-ink-600 group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
                   </div>
                   <div className="flex items-center gap-0.5 pr-1.5">
                     <button
@@ -1485,17 +1719,25 @@ function EmailDetailPanel({
                     <InlineELPricer emailBody={detail.body || ''} entryId={detail.entryId} attachments={detail.attachments} toast={toast} />
                   </div>
                 )}
+
+                {/* ── CBU Tech Sheet panel ── */}
+                {activePanel === 'cbu' && (
+                  <div className="px-5 py-3">
+                    <InlineCBUGenerator emailSubject={detail.subject} emailBody={detail.body || ''} toast={toast} />
+                  </div>
+                )}
                 </div>
               </>
             )}
 
             {/* Action bar */}
             <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
-              <ABtn panel="analyze"      icon={Sparkles}      label="Analyse"   color="violet" />
-              <ABtn panel="reply"        icon={Edit3}         label="Reply"     color="ink" />
-              <ABtn panel="reply-attach" icon={Paperclip}     label="+ Attach"  color="brand" />
-              <ABtn panel="pricer"       icon={Zap}           label="EL Pricer" color="amber" />
-              <ABtn panel="chat"         icon={MessageSquare} label="Chat"      color="violet" />
+              <ABtn panel="analyze"      icon={Sparkles}      label="Analyse"   color="violet" locked={STRIPPED} />
+              <ABtn panel="reply"        icon={Edit3}         label="Reply"     color="ink"    locked={STRIPPED} />
+              <ABtn panel="reply-attach" icon={Paperclip}     label="+ Attach"  color="brand"  locked={STRIPPED} />
+              <ABtn panel="pricer"       icon={Zap}           label="EL Pricer" color="amber"  locked={STRIPPED} />
+              <ABtn panel="cbu"         icon={Battery}       label="CBU Sheet" color="blue"   locked={STRIPPED} />
+              <ABtn panel="chat"         icon={MessageSquare} label="Chat"      color="violet" locked={STRIPPED} />
             </div>
           </div>
         </>
@@ -1691,6 +1933,9 @@ export function InboxPage({
   const [unreadOnly, setUnreadOnly]     = useState(() => localStorage.getItem('inbox_unreadOnly') === 'true');
   const [loadingEmails, setLoadingEmails] = useState(false);
   const [cacheAge, setCacheAge]         = useState('');
+  const [emailLimit, setEmailLimit]     = useState(50);
+  const [loadingMore, setLoadingMore]   = useState(false);
+  const [hasMoreEmails, setHasMoreEmails] = useState(true);
 
   const [briefingMode, _setBriefingMode]      = useState(_briefingMode);
   const setBriefingMode = (v: boolean) => { _briefingMode = v; _setBriefingMode(v); };
@@ -1838,8 +2083,8 @@ export function InboxPage({
     } catch {}
   }, []);
 
-  const loadEmails = useCallback(async (sid = storeId, uread = unreadOnly, force = false, silent = false) => {
-    const key = `${sid}:${uread}`;
+  const loadEmails = useCallback(async (sid = storeId, uread = unreadOnly, force = false, silent = false, limit = emailLimit) => {
+    const key = `${sid}:${uread}:${limit}`;
     const cached = emailCache.get(key);
     if (!force && cached && Date.now() - cached.ts < CACHE_TTL) {
       setEmails(cached.emails);
@@ -1849,17 +2094,30 @@ export function InboxPage({
     }
     if (!silent) setLoadingEmails(true);
     try {
-      const r = await api.outlookEmails(sid, 50, uread);
+      const r = silent
+        ? await api.outlookEmails(sid, limit, uread)
+        : await runTask(`Fetching ${limit} emails…`, s => api.outlookEmails(sid, limit, uread, s));
       if (r.error && !silent) toast('warn', r.error);
       const list = r.emails || [];
       emailCache.set(key, { emails: list, ts: Date.now() });
       setEmails(list);
+      // Fewer returned than asked → no more to fetch
+      setHasMoreEmails(list.length >= limit);
       if (!silent) setCacheAge('just now');
     } catch (e: any) {
-      if (!silent) toast('err', e.message);
+      if (!silent && !isCancel(e)) toast('err', e.message);
     }
     if (!silent) setLoadingEmails(false);
-  }, [storeId, unreadOnly, toast]);
+  }, [storeId, unreadOnly, toast, emailLimit]);
+
+  // Fetch the next window of older emails (+25 each click).
+  const loadMoreEmails = useCallback(async () => {
+    const next = emailLimit + 25;
+    setEmailLimit(next);
+    setLoadingMore(true);
+    await loadEmails(storeId, unreadOnly, true, false, next);
+    setLoadingMore(false);
+  }, [emailLimit, storeId, unreadOnly, loadEmails]);
 
   // Load emails when store or unread filter changes
   useEffect(() => {
@@ -1930,11 +2188,11 @@ export function InboxPage({
     setBriefingLoading(true);
     setBriefingItems([]);
     try {
-      const r = await api.outlookBriefing(emails.slice(0, 30));
+      const r = await runTask('Building morning briefing…', s => api.outlookBriefing(emails.slice(0, 30), s));
       if (r.error) toast('err', r.error);
       else if (!r.briefing) toast('err', 'Briefing returned no data');
       setBriefingItems(r.briefing || []);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { if (!isCancel(e)) toast('err', e.message); }
     setBriefingLoading(false);
   }
 
@@ -2203,24 +2461,26 @@ export function InboxPage({
           Unread
         </button>
 
-        {/* Briefing */}
-        <button
-          onClick={briefingMode ? () => { setBriefingMode(false); setBriefingItems([]); } : runBriefing}
-          disabled={briefingLoading}
-          title="Morning Briefing — AI-prioritised action list"
-          className={cn(
-            'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors',
-            briefingMode
-              ? 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 ring-amber-200 dark:ring-amber-700/40'
-              : 'text-ink-500 ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800',
-          )}>
-          {briefingLoading
-            ? <Loader2 className="w-3 h-3 animate-spin" />
-            : briefingMode
-              ? <ArrowLeft className="w-3 h-3" />
-              : <Play className="w-3 h-3" />}
-          {briefingMode ? 'Back' : 'Briefing'}
-        </button>
+        {/* Briefing — AI feature, locked in the stripped ship, full locally */}
+        {STRIPPED ? (
+          <button
+            onClick={() => toast('info', 'Briefing — coming soon')}
+            title="Coming soon"
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors text-ink-400 dark:text-ink-600 ring-ink-200/60 dark:ring-ink-700/50 hover:bg-ink-50 dark:hover:bg-ink-800/50 cursor-default">
+            <Play className="w-3 h-3 opacity-60" />
+            Briefing
+            <Lock className="w-2.5 h-2.5 opacity-60" />
+          </button>
+        ) : (
+          <button
+            onClick={runBriefing}
+            disabled={briefingLoading || emails.length === 0}
+            title="AI morning briefing"
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-40">
+            <Play className="w-3 h-3" />
+            Briefing
+          </button>
+        )}
 
         {/* Compose */}
         <button
@@ -2380,7 +2640,7 @@ export function InboxPage({
                   className={cn(
                     'w-full flex flex-col gap-0.5 px-3 py-2.5 text-left border-b border-ink-100 dark:border-ink-700 transition-colors cursor-pointer select-none relative group',
                     email.entryId === selectedId
-                      ? 'bg-violet-50 dark:bg-violet-900/20 border-violet-100 dark:border-violet-800/30'
+                      ? 'bg-ink-100 dark:bg-ink-800 border-l-2 border-l-violet-500 dark:border-l-violet-400 pl-[10px]'
                       : 'hover:bg-ink-50 dark:hover:bg-ink-800/40',
                   )}>
                   {/* Three-dot menu */}
@@ -2424,6 +2684,16 @@ export function InboxPage({
                   </div>
                 </div>
               ))}
+              {!sq && hasMoreEmails && (
+                <button
+                  onClick={loadMoreEmails}
+                  disabled={loadingMore}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/15 disabled:opacity-50 transition-colors">
+                  {loadingMore
+                    ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</>
+                    : <><ChevronDown className="w-3.5 h-3.5" /> Load more</>}
+                </button>
+              )}
             </div>
           )}
           {emails.length > 0 && (
@@ -2442,9 +2712,12 @@ export function InboxPage({
           )}
         </div>
 
-        {/* ── Resize handle ── */}
+        {/* ── Resize handle — wide hit area, visible grip on hover ── */}
         <div
-          className="w-1 shrink-0 cursor-col-resize hover:bg-violet-400 dark:hover:bg-violet-600 active:bg-violet-500 transition-colors"
+          role="separator"
+          aria-orientation="vertical"
+          title="Drag to resize"
+          className="group relative w-2 shrink-0 cursor-col-resize flex items-center justify-center bg-ink-100/60 dark:bg-ink-800/60 hover:bg-violet-100 dark:hover:bg-violet-900/30 transition-colors"
           onMouseDown={e => {
             resizingRef.current = true;
             resizeStartX.current = e.clientX;
@@ -2453,7 +2726,15 @@ export function InboxPage({
             document.body.style.userSelect = 'none';
             e.preventDefault();
           }}
-        />
+          onDoubleClick={() => { setListWidth(288); localStorage.setItem('inbox_list_width', '288'); if (listPaneRef.current) listPaneRef.current.style.width = '288px'; }}
+        >
+          <span className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-ink-200 dark:bg-ink-700 group-hover:bg-violet-400 dark:group-hover:bg-violet-500" />
+          <span className="relative flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
+            <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
+            <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
+          </span>
+        </div>
 
         {/* ── Detail pane (right) — browser-style tabs ────────────────────── */}
         <div className="flex-1 flex flex-col min-h-0">

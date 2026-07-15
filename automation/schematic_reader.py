@@ -311,7 +311,11 @@ def extract_from_image(image_path: str, api_key: str) -> list[dict]:
                 {'text': prompt}
             ]
         }],
-        'generationConfig': {'maxOutputTokens': 4096, 'temperature': 0.1}
+        'generationConfig': {
+            'maxOutputTokens': 16384,   # long lists (40+ rows) truncated at 4096
+            'temperature':     0.1,
+            'thinkingConfig':  {'thinkingBudget': 0},
+        }
     }).encode('utf-8')
 
     url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}'
@@ -320,8 +324,10 @@ def extract_from_image(image_path: str, api_key: str) -> list[dict]:
     try:
         with urllib.request.urlopen(req, timeout=120, context=_SSL_CTX) as r:
             resp = json.loads(r.read())
-        text = resp['candidates'][0]['content']['parts'][0]['text'].strip()
-        sys.stderr.write(f'[image] Gemini response: {text[:200]}\n')
+        cand = resp.get('candidates', [{}])[0]
+        parts_out = cand.get('content', {}).get('parts', []) or []
+        text = ''.join(p.get('text', '') for p in parts_out).strip()
+        sys.stderr.write(f'[image] finish={cand.get("finishReason","")} items_len={len(text)}\n')
         return parse_gemini_items(text)
     except urllib.error.HTTPError as e:
         body = e.read().decode()
@@ -966,8 +972,9 @@ def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
             ]
         }],
         'generationConfig': {
-            'maxOutputTokens': 4096,
-            'temperature': 0.1,
+            'maxOutputTokens': 16384,   # long BOMs (40+ rows) truncated at 4096
+            'temperature':     0.1,
+            'thinkingConfig':  {'thinkingBudget': 0},
         }
     }).encode('utf-8')
 
@@ -978,8 +985,10 @@ def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
     try:
         with urllib.request.urlopen(req, timeout=120, context=_SSL_CTX) as r:
             resp = json.loads(r.read())
-        text = resp['candidates'][0]['content']['parts'][0]['text'].strip()
-        sys.stderr.write(f'[pdf] Gemini response: {text[:200]}\n')
+        cand = resp.get('candidates', [{}])[0]
+        parts_out = cand.get('content', {}).get('parts', []) or []
+        text = ''.join(p.get('text', '') for p in parts_out).strip()
+        sys.stderr.write(f'[pdf] finish={cand.get("finishReason","")} items_len={len(text)}\n')
 
         return parse_gemini_items(text)
 
@@ -990,6 +999,103 @@ def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
     except Exception as e:
         sys.stderr.write(f'[pdf] extraction error: {e}\n')
         raise RuntimeError(f'PDF extraction failed: {e}')
+
+
+def extract_from_excel(path: str) -> list[dict]:
+    """Parse an Excel/CSV material list into raw items — no AI, instant.
+
+    Tries to detect a header row (Part / Cat / Description / Qty columns) and map
+    columns by name. Falls back to a per-row heuristic (any catalogue-looking
+    token + nearest quantity) when there's no recognisable header.
+    """
+    import pandas as pd
+    sys.stderr.write(f'[excel] reading {os.path.basename(path)}\n')
+
+    def sheets():
+        if re.search(r'\.csv$', path, re.I):
+            try:
+                yield '(csv)', pd.read_csv(path, header=None, dtype=str, keep_default_na=False)
+            except Exception as e:
+                sys.stderr.write(f'[excel] csv read error: {e}\n')
+            return
+        try:
+            xls = pd.ExcelFile(path)
+        except Exception as e:
+            sys.stderr.write(f'[excel] open error: {e}\n')
+            return
+        for sh in xls.sheet_names:
+            try:
+                yield sh, xls.parse(sh, header=None, dtype=str)
+            except Exception as e:
+                sys.stderr.write(f'[excel] sheet {sh} parse error: {e}\n')
+
+    CAT_HDR = ('part', 'cat', 'catalog', 'catalogue', 'model', 'article', 'item no', 'order')
+    QTY_HDR = ('qty', 'quantity', 'pcs', 'pieces', 'nr.', 'amount', 'count')
+    DSC_HDR = ('desc', 'description', 'designation', 'text', 'product')
+    REF_HDR = ('ref', 'reference', 'tag', 'circuit', 'position', 'pos')
+
+    def cell(v):
+        s = str(v).strip()
+        return '' if s.lower() == 'nan' else s
+
+    out: list[dict] = []
+    for _sheet, df in sheets():
+        if df is None or df.empty:
+            continue
+
+        hdr_idx, cols = None, {}
+        for i in range(min(20, len(df))):
+            row = [cell(x).lower() for x in df.iloc[i].tolist()]
+            joined = ' '.join(row)
+            if any(k in joined for k in CAT_HDR) and any(k in joined for k in (*QTY_HDR, *DSC_HDR)):
+                hdr_idx = i
+                for j, name in enumerate(row):
+                    if not name:
+                        continue
+                    if 'cat_no' not in cols and any(k in name for k in CAT_HDR): cols['cat_no'] = j
+                    elif 'desc'  not in cols and any(k in name for k in DSC_HDR): cols['desc']  = j
+                    elif 'qty'   not in cols and any(k in name for k in QTY_HDR): cols['qty']   = j
+                    elif 'ref'   not in cols and any(k in name for k in REF_HDR): cols['ref']   = j
+                break
+
+        if hdr_idx is not None and cols:
+            for _, row in df.iloc[hdr_idx + 1:].iterrows():
+                vals = row.tolist()
+                def g(k):
+                    j = cols.get(k)
+                    return cell(vals[j]) if (j is not None and j < len(vals)) else ''
+                cat, desc, ref, qraw = g('cat_no'), g('desc'), g('ref'), g('qty')
+                try:
+                    qty = max(1, int(float(qraw))) if qraw else 1
+                except Exception:
+                    qty = 1
+                if cat or desc:
+                    out.append({'cat_no': cat, 'description': desc, 'qty': qty, 'ref': ref})
+        else:
+            # No header → keep only rows with a catalogue-looking token (skip noise)
+            for _, row in df.iterrows():
+                cells = [cell(c) for c in row.tolist() if cell(c)]
+                if not cells:
+                    continue
+                cat = next((c for c in cells
+                            if re.match(r'^[A-Za-z0-9][A-Za-z0-9\-\./]{3,}$', c)
+                            and not c.replace('.', '').replace(',', '').isdigit()), '')
+                if not cat:
+                    continue
+                qty = 1
+                for c in cells:
+                    try:
+                        v = int(float(c))
+                        if 1 <= v <= 9999 and c != cat:
+                            qty = v
+                            break
+                    except Exception:
+                        pass
+                desc = ' '.join(c for c in cells if c != cat)
+                out.append({'cat_no': cat, 'description': desc, 'qty': qty, 'ref': ''})
+
+    sys.stderr.write(f'[excel] extracted {len(out)} rows\n')
+    return out
 
 
 def verify_unmatched_items(unmatched_raw: list[dict], lookup: dict, api_key: str) -> list[dict]:
@@ -1244,6 +1350,7 @@ def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -
 
     pdf_paths   = [str(f['path']) for f in files if f.get('kind') == 'pdf'   and os.path.exists(str(f.get('path', '')))]
     image_paths = [str(f['path']) for f in files if f.get('kind') == 'image' and os.path.exists(str(f.get('path', '')))]
+    excel_paths = [str(f['path']) for f in files if f.get('kind') == 'excel' and os.path.exists(str(f.get('path', '')))]
 
     # ── Stage 1: extract explicit items from every signal ──────────────────────
     raw_items: list[dict] = []
@@ -1255,6 +1362,13 @@ def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -
             raw_items.extend(parse_material_list(text))
         except Exception as e:
             sys.stderr.write(f'[unified] text parse error: {e}\n')
+
+    # 1a-bis — Excel / CSV spreadsheets (no AI needed)
+    for p in excel_paths:
+        try:
+            raw_items.extend(extract_from_excel(p))
+        except Exception as e:
+            sys.stderr.write(f'[unified] excel extract failed for {p}: {e}\n')
 
     # 1b — PDFs
     for p in pdf_paths:
@@ -1415,10 +1529,244 @@ def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -
     return result
 
 
+def emit(obj: dict) -> None:
+    """Write one NDJSON progress event and flush immediately so the Node
+    server can forward it to the browser the moment it's produced."""
+    sys.stdout.write(json.dumps(obj) + '\n')
+    sys.stdout.flush()
+
+
+def run_list_stream(text: str, lookup: dict, entries: list, api_key: str) -> None:
+    """Stream a pasted material list item-by-item as NDJSON.
+
+    Every non-blank line is treated as one item and streamed as it's read —
+    whether it's an explicit catalogue number OR a plain-language description.
+    Local matching (cat-no + description) is instant; only lines that still
+    don't match trigger a per-line grounded AI search, each streamed on its own
+    so the live count keeps moving instead of freezing on one big call.
+
+    Events:
+      {"t":"start","total":N}
+      {"t":"item","i":idx,"n":N,"item":{...priced...}}   # one per line, as read
+      {"t":"phase","label":"..."}                          # long step announce
+      {"t":"update","i":idx,"item":{...}}                  # line resolved by AI
+      {"t":"done", ...full PriceResult...}
+    """
+    text = (text or '').strip()
+
+    # ── Enumerate one item per non-blank line — NEVER drop a line ─────────────
+    # parse_material_list() silently discards lines it can't find a catalogue
+    # token in (e.g. plain-language descriptions), which is why long lists used
+    # to "only read 5-6". Here every line becomes an item; description-only
+    # lines carry the whole line as their description.
+    lines = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith('#')]
+    raw_items: list[dict] = []
+    for line in lines:
+        parsed = parse_material_list(line)
+        if parsed:
+            raw_items.append(parsed[0])
+            continue
+        parts = [p.strip() for p in re.split(r'[\t,;|]', line) if p.strip()]
+        qty, dparts = 1, parts
+        if parts and parts[-1].isdigit():
+            qty, dparts = max(1, int(parts[-1])), parts[:-1]
+        elif parts and parts[0].isdigit():
+            qty, dparts = max(1, int(parts[0])), parts[1:]
+        raw_items.append({'cat_no': '', 'description': ' '.join(dparts) or line, 'qty': qty, 'ref': ''})
+
+    _stream_price_items(
+        raw_items, lookup, entries, api_key,
+        source='list',
+        inputs={'has_text': True, 'pdf_count': 0, 'image_count': 0,
+                'qty_hint': parse_quantity_from_text(text)},
+    )
+
+
+def _stream_price_items(
+    raw_items: list, lookup: dict, entries: list, api_key: str,
+    source: str, inputs: dict,
+    allow_candidate_fallback: bool = False, cand_text: str = '', cand_images: 'list | None' = None,
+) -> None:
+    """Shared streaming core: price every raw item locally (instant), stream each
+    row, then AI-resolve the unmatched ones one at a time so the live count keeps
+    moving. Emits start → item(s) → phase/update(s) → done.
+
+    When `allow_candidate_fallback` and nothing was extracted (e.g. a product
+    photo rather than a list), falls back to one grounded candidate search so the
+    UI still gets suggestions.
+    """
+    total = len(raw_items)
+    emit({'t': 'start', 'total': total})
+
+    priced:        list[dict] = []
+    unmatched_idx: list[int]  = []
+    total_ntp = 0.0
+
+    # ── Pass 1: locally price every item, streaming each row as it's read ─────
+    for idx, raw in enumerate(raw_items):
+        cat_no = str(raw.get('cat_no', '')).strip()
+        desc   = str(raw.get('description', '')).strip()
+        qty    = max(1, int(raw.get('qty') or 1))
+        ref    = str(raw.get('ref', '') or '')
+
+        match, mtype = (match_item_with_type(cat_no, lookup) if cat_no else (None, ''))
+        if not match:   # cat-no miss OR description-only row → try the sheet text
+            match, mtype = match_by_description((cat_no + ' ' + desc).strip(), entries)
+
+        if match:
+            line_ntp   = round(match['ntp'] * qty, 4)
+            total_ntp += line_ntp
+            pi = {
+                'ref': ref, 'cat_no': match['cat_no'], 'description': match['description'],
+                'family': match['family'], 'qty': qty, 'list_price': match['list_price'],
+                'ntp': match['ntp'], 'line_ntp': line_ntp, 'status': match['status'],
+                'matched': True, 'match_type': mtype,
+                'original_input': (cat_no or desc) if mtype != 'exact' else '',
+            }
+        else:
+            pi = {
+                'ref': ref, 'cat_no': cat_no or desc[:40], 'description': desc, 'family': '',
+                'qty': qty, 'list_price': 0.0, 'ntp': 0.0, 'line_ntp': 0.0, 'status': 'Not found',
+                'matched': False, 'match_type': '', 'original_input': cat_no or desc,
+                'closest_matches': [],
+            }
+            unmatched_idx.append(idx)
+        priced.append(pi)
+        emit({'t': 'item', 'i': idx, 'n': total, 'item': pi})
+
+    # ── Pass 2: AI-resolve each unmatched row, one call at a time ──────────────
+    if api_key and unmatched_idx:
+        for done_n, idx in enumerate(unmatched_idx):
+            pi = priced[idx]
+            emit({'t': 'phase', 'label': f'Searching online — {done_n + 1} of {len(unmatched_idx)}…'})
+            query = ' '.join([pi.get('original_input', ''), pi.get('description', '')]).strip() \
+                    or pi.get('cat_no', '')
+            try:
+                cands = rerank_pricelist_candidates(query, [], entries, api_key)
+            except Exception as e:
+                sys.stderr.write(f'[stream] per-row search failed: {e}\n')
+                cands = []
+            best = next((c for c in cands if c.get('ntp') is not None), None)
+            if best:
+                qty      = pi['qty']
+                line_ntp = round(best['ntp'] * qty, 4)
+                pi.update({
+                    'cat_no':      best['cat_no'],
+                    'description': best.get('description', ''),
+                    'family':      best.get('family', ''),
+                    'list_price':  best.get('list_price') or 0.0,
+                    'ntp':         best['ntp'],
+                    'line_ntp':    line_ntp,
+                    'status':      best.get('status') or '',
+                    'matched':     True,
+                    'match_type':  'description',
+                    'search_note': best.get('reasoning', ''),
+                    'closest_matches': [{
+                        'cat_no':      c['cat_no'],
+                        'description': c.get('description', ''),
+                        'family':      c.get('family', ''),
+                        'ntp':         c.get('ntp') or 0.0,
+                        'list_price':  c.get('list_price') or 0.0,
+                    } for c in cands[1:5]],
+                })
+                total_ntp += line_ntp
+            emit({'t': 'update', 'i': idx, 'item': pi})
+
+    # ── Fallback: nothing extractable (product photo / pure description) ──────
+    candidates: list[dict] = []
+    if allow_candidate_fallback and total == 0 and api_key:
+        emit({'t': 'phase', 'label': 'Searching Eaton catalogue…'})
+        try:
+            raw_candidates = rerank_pricelist_candidates(cand_text, cand_images or [], entries, api_key)
+        except Exception as e:
+            sys.stderr.write(f'[stream] candidate fallback failed: {e}\n')
+            raw_candidates = []
+        desc_qty = parse_quantity_from_text(cand_text) if cand_text else 1
+        candidates = [{
+            'cat_no': c['cat_no'], 'family': c.get('family', ''), 'description': c.get('description', ''),
+            'confidence': c.get('confidence', 'medium'), 'reasoning': c.get('reasoning', ''),
+            'source_url': c.get('source_url', ''), 'matched': True,
+            'list_price': c.get('list_price'), 'ntp': c.get('ntp'), 'status': c.get('status'),
+            'suggested_qty': desc_qty,
+        } for c in raw_candidates]
+
+    unmatched = [pi['cat_no'] for pi in priced if not pi['matched']]
+    emit({'t': 'done', 'items': priced, 'unmatched': unmatched,
+          'total_ntp': round(total_ntp, 2), 'candidates': candidates, 'queries': [],
+          'source': source, 'extracted_count': total, 'inputs': inputs})
+
+
+def run_unified_stream(manifest_path: str, lookup: dict, entries: list, api_key: str) -> None:
+    """Streaming version of run_unified: extract items from text + attachments
+    (PDF/image), then stream pricing per item with a live count. A screenshot of
+    a 40-row material list therefore lists all 40 and prices them progressively
+    instead of freezing on one buffered mega-request.
+    """
+    try:
+        manifest = json.loads(open(manifest_path, encoding='utf-8').read())
+    except Exception as e:
+        emit({'t': 'done', 'error': f'Could not read manifest: {e}', 'items': [], 'unmatched': [],
+              'total_ntp': 0, 'candidates': [], 'source': 'unified', 'extracted_count': 0})
+        return
+
+    text  = str(manifest.get('text') or '').strip()
+    files = manifest.get('files') or []
+    pdf_paths   = [str(f['path']) for f in files if f.get('kind') == 'pdf'   and os.path.exists(str(f.get('path', '')))]
+    image_paths = [str(f['path']) for f in files if f.get('kind') == 'image' and os.path.exists(str(f.get('path', '')))]
+    excel_paths = [str(f['path']) for f in files if f.get('kind') == 'excel' and os.path.exists(str(f.get('path', '')))]
+
+    # ── Extract explicit items from every signal (this is the one unavoidable
+    #    blocking step — one vision call per attachment) ───────────────────────
+    emit({'t': 'phase', 'label': 'Reading items from your upload…'})
+    raw_items: list[dict] = []
+
+    if text and looks_like_cat_no(text):
+        try:
+            raw_items.extend(parse_material_list(text))
+        except Exception as e:
+            sys.stderr.write(f'[unified-stream] text parse error: {e}\n')
+
+    for p in excel_paths:
+        emit({'t': 'phase', 'label': f'Reading {os.path.basename(p)}…'})
+        try:
+            raw_items.extend(extract_from_excel(p))
+        except Exception as e:
+            sys.stderr.write(f'[unified-stream] excel extract failed for {p}: {e}\n')
+
+    for p in pdf_paths:
+        if not api_key:
+            break
+        emit({'t': 'phase', 'label': f'Reading {os.path.basename(p)}…'})
+        try:
+            raw_items.extend(extract_from_pdf(p, api_key))
+        except Exception as e:
+            sys.stderr.write(f'[unified-stream] PDF extract failed for {p}: {e}\n')
+
+    for p in image_paths:
+        if not api_key:
+            break
+        emit({'t': 'phase', 'label': f'Reading {os.path.basename(p)}…'})
+        try:
+            raw_items.extend(extract_from_image(p, api_key))
+        except Exception as e:
+            sys.stderr.write(f'[unified-stream] image extract failed for {p}: {e}\n')
+
+    _stream_price_items(
+        raw_items, lookup, entries, api_key,
+        source='unified',
+        inputs={'has_text': bool(text), 'pdf_count': len(pdf_paths), 'image_count': len(image_paths),
+                'qty_hint': parse_quantity_from_text(text) if text else 1},
+        allow_candidate_fallback=True,
+        cand_text=text,
+        cand_images=image_paths,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=['pdf', 'list', 'image', 'unified'], required=True)
     parser.add_argument('--input', required=True, help='Path for pdf/image/list-text/unified-manifest')
+    parser.add_argument('--stream', action='store_true', help='Emit NDJSON per-item progress (list mode)')
     args = parser.parse_args()
 
     lookup, entries = load_pricelist()
@@ -1428,6 +1776,15 @@ def main():
 
     cfg     = load_config()
     api_key = cfg.get('gemini_key') or os.environ.get('GEMINI_API_KEY', '')
+
+    # ── Streaming modes: NDJSON per-item progress ─────────────────────────────
+    if args.stream and args.mode == 'list':
+        text = open(args.input, encoding='utf-8').read() if os.path.exists(args.input) else args.input
+        run_list_stream(text, lookup, entries, api_key)
+        return
+    if args.stream and args.mode == 'unified':
+        run_unified_stream(args.input, lookup, entries, api_key)
+        return
 
     # ── Unified mode: single JSON manifest combining text + N attachments ─────
     if args.mode == 'unified':

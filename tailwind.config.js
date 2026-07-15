@@ -47,10 +47,16 @@ export default {
           from: { opacity: '0', transform: 'translateY(8px)' },
           to:   { opacity: '1', transform: 'none' },
         },
+        // Low-key breathing glow for the row currently being read.
+        softPulse: {
+          '0%, 100%': { opacity: '1' },
+          '50%':      { opacity: '0.55' },
+        },
       },
       animation: {
-        'fade-in': 'fadeIn 0.18s ease-out both',
-        'fade-up': 'fadeUp 0.28s cubic-bezier(0.16,1,0.3,1) both',
+        'fade-in':    'fadeIn 0.18s ease-out both',
+        'fade-up':    'fadeUp 0.28s cubic-bezier(0.16,1,0.3,1) both',
+        'soft-pulse': 'softPulse 1.4s ease-in-out infinite',
       },
     },
   },

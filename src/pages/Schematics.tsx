@@ -1,8 +1,9 @@
 // ─── Schematics — Eaton EL Material Pricer (unified input) ───────────────────
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Upload, FileText, Sparkles, Copy, AlertTriangle, X, Loader2, ChevronDown, ChevronUp, RotateCcw, ClipboardList, History, Trash2, Image as ImageIcon, MoreHorizontal, Check, RefreshCw, Paperclip, Plus } from 'lucide-react';
-import { Card, CardTitle, Button } from '../lib/ui';
+import { Upload, FileText, Sparkles, Copy, AlertTriangle, X, Loader2, ChevronDown, ChevronUp, RotateCcw, ClipboardList, History, Trash2, Image as ImageIcon, FileSpreadsheet, MoreHorizontal, Check, RefreshCw, Paperclip, Plus } from 'lucide-react';
+import { Card, CardTitle, Button, fmtGBP } from '../lib/ui';
 import { cn } from '../lib/cn';
+import { runTask, isCancel } from '../lib/tasks';
 
 interface PricedItem {
   ref:            string;
@@ -47,7 +48,7 @@ interface PriceResult {
 interface Attachment {
   id:        string;
   file:      File;
-  kind:      'pdf' | 'image';
+  kind:      'pdf' | 'image' | 'excel';
   name:      string;
   size:      number;
   previewUrl?: string;   // for images only
@@ -64,10 +65,6 @@ interface RunEntry {
   result:         PriceResult;
 }
 
-function fmt(n: number) {
-  return '£' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-}
-
 function round(n: number, d: number) { return Math.round(n * Math.pow(10, d)) / Math.pow(10, d); }
 
 function loadCorrections(): Record<string, string> {
@@ -77,8 +74,9 @@ function saveCorrections(c: Record<string, string>) {
   localStorage.setItem('el_corrections', JSON.stringify(c));
 }
 
-function classifyAttachment(file: File): 'pdf' | 'image' | null {
+function classifyAttachment(file: File): 'pdf' | 'image' | 'excel' | null {
   if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) return 'pdf';
+  if (/spreadsheet|excel|ms-excel|csv/i.test(file.type) || /\.(xlsx?|xlsm|csv)$/i.test(file.name)) return 'excel';
   if (file.type.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(file.name)) return 'image';
   return null;
 }
@@ -175,7 +173,7 @@ function buildEmailText(result: PriceResult, projectName: string): string {
     `${'Ref'.padEnd(8)} ${'Catalogue No'.padEnd(18)} ${'Description'.padEnd(36)} ${'Qty'.padStart(4)} ${'NTP/Unit'.padStart(10)}`,
     `${'─'.repeat(70)}`,
     ...matched.map(i =>
-      `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmt(i.ntp).padStart(10)}`
+      `${(i.ref || '').padEnd(8)} ${i.cat_no.padEnd(18)} ${i.description.slice(0, 35).padEnd(36)} ${String(i.qty).padStart(4)} ${fmtGBP(i.ntp).padStart(10)}`
     ),
     `${'─'.repeat(70)}`,
   ];
@@ -193,6 +191,37 @@ function buildEmailText(result: PriceResult, projectName: string): string {
   return lines.join('\n');
 }
 
+// One line in the live read-out: item number → catalogue + description → price.
+// The row fades up; the price fades in a beat later; the in-flight row breathes.
+function ProgressRow({ idx, item, active }: { idx: number; item: PricedItem; active?: boolean }) {
+  return (
+    <div className={cn(
+      'flex items-center gap-3 px-3 py-2 rounded-lg animate-fade-up',
+      active
+        ? 'bg-brand-50/60 dark:bg-brand-900/10 ring-1 ring-inset ring-brand-200/60 dark:ring-brand-700/30 animate-soft-pulse'
+        : 'bg-ink-50/50 dark:bg-ink-900/30',
+    )}>
+      <span className="w-6 shrink-0 text-right font-mono text-[11px] text-ink-400 tabular-nums">{idx}</span>
+      <div className="min-w-0 flex-1">
+        <p className="font-mono text-[11.5px] font-semibold text-brand-700 dark:text-brand-400 truncate">
+          {item.cat_no || '—'}
+        </p>
+        <p className="text-[11px] text-ink-500 dark:text-ink-400 truncate">
+          {item.description || (item.matched ? '' : 'not found in price list')}
+        </p>
+      </div>
+      {item.qty > 1 && (
+        <span className="shrink-0 text-[10.5px] text-ink-400 tabular-nums">×{item.qty}</span>
+      )}
+      <div className="shrink-0 text-right animate-fade-in" style={{ animationDelay: '120ms' }}>
+        {item.matched
+          ? <span className="font-mono text-[12px] font-semibold text-ink-800 dark:text-ink-100 tabular-nums">{fmtGBP(item.ntp)}</span>
+          : <span className="text-[10.5px] text-amber-500">no price</span>}
+      </div>
+    </div>
+  );
+}
+
 export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg: string) => void }) {
   const [text, setText]                     = useState('');
   const [attachments, setAttachments]       = useState<Attachment[]>([]);
@@ -205,6 +234,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
     catch { return []; }
   });
   const [activeRunId, setActiveRunId]       = useState<string | null>(null);
+  // Live streaming read-out (pasted lists)
+  const [streaming, setStreaming]           = useState(false);
+  const [progress, setProgress]             = useState<PricedItem[]>([]);
+  const [progressTotal, setProgressTotal]   = useState(0);
+  const [phase, setPhase]                   = useState('');
   const fileRef    = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -221,7 +255,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
     for (const f of Array.from(files)) {
       const kind = classifyAttachment(f);
       if (!kind) {
-        toast('warn', `${f.name}: unsupported file type — PDF or image only`);
+        toast('warn', `${f.name}: unsupported file type — PDF, image, or Excel/CSV only`);
         continue;
       }
       const att: Attachment = {
@@ -280,6 +314,47 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
     setResult(null);
     setProjectName('');
     setActiveRunId(null);
+    setStreaming(false);
+    setProgress([]);
+    setProgressTotal(0);
+    setPhase('');
+  }
+
+  // Shared: turn a finished PriceResult into UI state, a toast, and a saved run.
+  function finalizeResult(data: PriceResult) {
+    if (data.error) {
+      toast('err', data.error);
+      setResult(data);
+      return;
+    }
+    setResult(data);
+    const matched = data.items.filter(i => i.matched).length;
+    const cands   = data.candidates?.length || 0;
+    if (matched > 0) {
+      toast('ok', `Priced ${matched} item${matched === 1 ? '' : 's'}${cands ? ` · ${cands} suggestion${cands === 1 ? '' : 's'}` : ''}`);
+    } else if (cands > 0) {
+      toast('ok', `Found ${cands} candidate match${cands === 1 ? '' : 'es'} — pick one to add`);
+    } else {
+      toast('warn', 'No matches or candidates found — try a more specific description');
+    }
+    const entry: RunEntry = {
+      id: Date.now().toString(),
+      ts: Date.now(),
+      source: 'unified',
+      filename:
+        attachments.length > 0
+          ? attachments.map(a => a.name).slice(0, 2).join(', ') + (attachments.length > 2 ? ` +${attachments.length - 2}` : '')
+          : (text.trim().slice(0, 40) + (text.length > 40 ? '…' : '')),
+      matchedCount:   data.items.filter(i => i.matched).length,
+      unmatchedCount: data.items.filter(i => !i.matched).length,
+      totalNtp:       data.total_ntp,
+      result:         data,
+    };
+    setSavedRuns(prev => {
+      const next = [entry, ...prev].slice(0, 20);
+      localStorage.setItem('mu_el_runs', JSON.stringify(next));
+      return next;
+    });
   }
 
   async function run() {
@@ -289,51 +364,69 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
     }
     setLoading(true);
     setResult(null);
+    // Everything streams — pasted lists AND uploads (images/PDFs) — so items
+    // appear with a live count instead of a frozen spinner.
+    await runStream();
+    setLoading(false);
+  }
+
+  // Streaming read-out: parse NDJSON progress events and fill the list live.
+  async function runStream() {
+    setStreaming(true);
+    setProgress([]);
+    setProgressTotal(0);
+    setPhase(attachments.length > 0 ? 'Reading your upload…' : 'Reading list…');
     try {
       const fd = new FormData();
       if (text.trim()) fd.append('text', text);
-      for (const a of attachments) {
-        fd.append('files', a.file, a.name);
-      }
-      const resp = await fetch('/api/schematics/price', { method: 'POST', body: fd });
-      const data: PriceResult = await resp.json();
-      if (data.error) {
-        toast('err', data.error);
-        setResult(data);
-      } else {
-        setResult(data);
-        const matched = data.items.filter(i => i.matched).length;
-        const cands   = data.candidates?.length || 0;
-        if (matched > 0) {
-          toast('ok', `Priced ${matched} item${matched === 1 ? '' : 's'}${cands ? ` · ${cands} suggestion${cands === 1 ? '' : 's'}` : ''}`);
-        } else if (cands > 0) {
-          toast('ok', `Found ${cands} candidate match${cands === 1 ? '' : 'es'} — pick one to add`);
-        } else {
-          toast('warn', 'No matches or candidates found — try a more specific description');
+      for (const a of attachments) fd.append('files', a.file, a.name);
+      fd.append('stream', '1');
+      await runTask('Pricing EL items…', async (signal) => {
+        const resp = await fetch('/api/schematics/price', { method: 'POST', body: fd, signal });
+        if (!resp.body) {
+          // Server didn't stream — fall back to a single JSON parse.
+          finalizeResult(await resp.json());
+          return;
         }
-        const entry: RunEntry = {
-          id: Date.now().toString(),
-          ts: Date.now(),
-          source: 'unified',
-          filename:
-            attachments.length > 0
-              ? attachments.map(a => a.name).slice(0, 2).join(', ') + (attachments.length > 2 ? ` +${attachments.length - 2}` : '')
-              : (text.trim().slice(0, 40) + (text.length > 40 ? '…' : '')),
-          matchedCount:   data.items.filter(i => i.matched).length,
-          unmatchedCount: data.items.filter(i => !i.matched).length,
-          totalNtp:       data.total_ntp,
-          result:         data,
-        };
-        setSavedRuns(prev => {
-          const next = [entry, ...prev].slice(0, 20);
-          localStorage.setItem('mu_el_runs', JSON.stringify(next));
-          return next;
-        });
-      }
+        const reader  = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        let finalData: PriceResult | null = null;
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl: number;
+          while ((nl = buf.indexOf('\n')) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            let ev: any;
+            try { ev = JSON.parse(line); } catch { continue; }
+            if (ev.t === 'start') {
+              setProgressTotal(ev.total || 0);
+              setProgress([]);
+              setPhase(ev.total ? 'Reading items…' : 'Searching…');
+            } else if (ev.t === 'item' || ev.t === 'update') {
+              setProgress(prev => { const next = prev.slice(); next[ev.i] = ev.item; return next; });
+            } else if (ev.t === 'phase') {
+              setPhase(ev.label || '');
+            } else if (ev.t === 'done') {
+              finalData = ev as PriceResult;
+            } else if (ev.t === 'error') {
+              throw new Error(ev.error || 'Stream error');
+            }
+          }
+        }
+        if (finalData) finalizeResult(finalData);
+        else toast('warn', 'No items read — try again');
+      });
     } catch (e: any) {
-      toast('err', e.message);
+      if (!isCancel(e)) toast('err', e.message);
+      else toast('warn', 'Pricing canceled');
+    } finally {
+      setStreaming(false);
     }
-    setLoading(false);
   }
 
   function copyEmail() {
@@ -411,14 +504,16 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
   }
 
   return (
-    <div className="space-y-5 max-w-5xl">
+    <div className="space-y-5">
+      <div className="grid grid-cols-12 gap-5 items-start">
+      <div className="col-span-12 lg:col-span-5 space-y-5">
 
       {/* Unified Input card */}
       <Card>
         <div className="flex items-start justify-between gap-3 mb-3">
           <CardTitle
             title="EL Pricer"
-            sub="Paste material lists, descriptions, photos or schematic PDFs — anything goes. AI auto-routes to price-list lookup or online search."
+            sub="Paste material lists, descriptions, photos, Excel/CSV or schematic PDFs — anything goes. AI auto-routes to price-list lookup or online search."
           />
           {(text || attachments.length > 0 || result) && (
             <button
@@ -457,12 +552,14 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                     <img src={a.previewUrl} alt={a.name} className="w-8 h-8 rounded object-cover ring-1 ring-ink-200 dark:ring-ink-700" />
                   ) : a.kind === 'image' ? (
                     <ImageIcon className="w-4 h-4 text-brand-500" />
+                  ) : a.kind === 'excel' ? (
+                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
                   ) : (
                     <FileText className="w-4 h-4 text-rose-500" />
                   )}
                   <div className="min-w-0">
                     <p className="text-ink-800 dark:text-ink-100 font-medium truncate max-w-[180px]">{a.name}</p>
-                    <p className="text-[10px] text-ink-400 dark:text-ink-500">{(a.size / 1024).toFixed(0)} KB · {a.kind === 'pdf' ? 'PDF' : 'Image'}</p>
+                    <p className="text-[10px] text-ink-400 dark:text-ink-500">{(a.size / 1024).toFixed(0)} KB · {a.kind === 'pdf' ? 'PDF' : a.kind === 'excel' ? 'Excel' : 'Image'}</p>
                   </div>
                   <button
                     onClick={() => removeAttachment(a.id)}
@@ -491,7 +588,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                 ref={fileRef}
                 type="file"
                 multiple
-                accept=".pdf,image/*"
+                accept=".pdf,image/*,.xlsx,.xls,.xlsm,.csv"
                 className="hidden"
                 onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ''; }}
               />
@@ -525,6 +622,40 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           Uses your Gemini API key configured in Settings. Web search runs automatically for descriptions and uncertain matches.
         </p>
       </Card>
+      </div>
+
+      <div className="col-span-12 lg:col-span-7 space-y-5">
+
+      {/* Live read-out — items stream in as they're priced */}
+      {streaming && (
+        <Card>
+          <div className="flex items-center justify-between mb-3">
+            <CardTitle
+              title="Reading items"
+              sub={progressTotal
+                ? `${progress.filter(Boolean).length} of ${progressTotal} priced`
+                : 'Working through your list…'}
+            />
+            <Loader2 className="w-4 h-4 animate-spin text-brand-500 shrink-0" />
+          </div>
+          {progress.filter(Boolean).length > 0 ? (
+            <div className="space-y-1 max-h-[420px] overflow-y-auto pr-0.5">
+              {progress.map((it, i) => it && (
+                <ProgressRow key={i} idx={i + 1} item={it} active={i === progress.length - 1} />
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 py-6 text-[12px] text-ink-400 animate-soft-pulse">
+              <Sparkles className="w-4 h-4 text-brand-500" /> {phase || 'Reading list…'}
+            </div>
+          )}
+          {phase && progress.filter(Boolean).length > 0 && (
+            <p className="mt-3 text-[11px] text-ink-400 dark:text-ink-500 flex items-center gap-1.5 animate-soft-pulse">
+              <Loader2 className="w-3 h-3 animate-spin" /> {phase}
+            </p>
+          )}
+        </Card>
+      )}
 
       {/* Candidate suggestions — descriptive / visual matches */}
       {result && !result.error && result.candidates && result.candidates.length > 0 && (
@@ -569,7 +700,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                     {c.matched && c.ntp != null && (
                       <div className="text-right shrink-0">
                         <p className="text-[10px] uppercase tracking-wide text-ink-400">NTP</p>
-                        <p className="text-[14px] font-semibold tabular-nums">{fmt(c.ntp)}</p>
+                        <p className="text-[14px] font-semibold tabular-nums">{fmtGBP(c.ntp)}</p>
                       </div>
                     )}
                   </div>
@@ -644,8 +775,8 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                     </td>
                     <td className="px-3 py-2 text-ink-400 dark:text-ink-500 text-[11px]">{item.family}</td>
                     <td className="px-3 py-2 text-right text-ink-600 dark:text-ink-300">{item.qty}</td>
-                    <td className="px-3 py-2 text-right font-mono text-ink-600 dark:text-ink-300">{fmt(item.ntp)}</td>
-                    <td className="px-3 py-2 text-right font-mono font-semibold text-ink-800 dark:text-ink-100">{fmt(item.line_ntp)}</td>
+                    <td className="px-3 py-2 text-right font-mono text-ink-600 dark:text-ink-300">{fmtGBP(item.ntp)}</td>
+                    <td className="px-3 py-2 text-right font-mono font-semibold text-ink-800 dark:text-ink-100">{fmtGBP(item.line_ntp)}</td>
                     <td className="px-2 py-2 text-center">
                       {uncertain && (
                         <ItemMenu
@@ -664,7 +795,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                     Total NTP (ex VAT)
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono font-bold text-[13px] text-ink-900 dark:text-white">
-                    {fmt(result.total_ntp)}
+                    {fmtGBP(result.total_ntp)}
                   </td>
                 </tr>
               </tfoot>
@@ -727,6 +858,28 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           </div>
         </Card>
       )}
+
+      {/* Empty / loading placeholder for the results column */}
+      {!result && !streaming && (
+        <Card className="min-h-[320px] flex flex-col items-center justify-center text-center py-20">
+          {loading ? (
+            <>
+              <Loader2 className="w-6 h-6 animate-spin text-brand-500 mb-3" />
+              <p className="text-[12px] text-ink-400">Matching catalogue numbers…</p>
+            </>
+          ) : (
+            <>
+              <div className="w-12 h-12 rounded-2xl bg-ink-100 dark:bg-ink-800 flex items-center justify-center mb-3">
+                <Sparkles className="w-5 h-5 text-ink-400" />
+              </div>
+              <p className="text-[12.5px] font-medium text-ink-600 dark:text-ink-300">Priced items appear here</p>
+              <p className="text-[11px] text-ink-400 mt-1 max-w-[240px]">Paste a list, drop a PDF or image, then hit Get NTP Prices.</p>
+            </>
+          )}
+        </Card>
+      )}
+      </div>
+      </div>
 
       {/* Recent Runs */}
       {savedRuns.length > 0 && (

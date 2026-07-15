@@ -4,33 +4,67 @@ import {
   LayoutDashboard, History as HistoryIcon, BarChart3,
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
   Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
-  Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge,
+  Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge, Pin, PinOff,
+  Lock, MessageSquarePlus, Rocket,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
 import { cn } from './lib/cn';
 import { api } from './lib/api';
+import { CancelDock } from './components/CancelDock';
 import { LangCtx, useLang, T, type Lang } from './lib/i18n';
 import type { Config } from './types';
 
 import { DashboardPage }   from './pages/Dashboard';
 import { AnalyticsPage }   from './pages/Analytics';
-import { AssistantPage }   from './pages/Assistant';
 import { HistoryPage }     from './pages/History';
 import { InboxPage }       from './pages/Inbox';
-import { PmoPage }         from './pages/PMO';
-import { CbuPage }         from './pages/CBU';
-import { CommissionPage }  from './pages/Commission';
-import { DocsPage }        from './pages/Docs';
 import { SettingsPage }    from './pages/Settings';
-import { SchematicsPage }  from './pages/Schematics';
 import { OverlayPage }     from './pages/Overlay';
 import { CrmPage }         from './pages/Crm';
+// AI Assistant + Tools pages are lazy-imported below, gated on STRIPPED. In the
+// stripped ship build that gate is a compile-time `true`, so Rollup dead-code-
+// eliminates their code from the bundle; locally (full app) they load normally.
 
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 type TabId =
   | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Inbox' | 'CRM'
   | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Docs' | 'Settings';
+
+// Stripped ship build vs full local app. The desktop ship is produced with
+// `vite build` (import.meta.env.PROD === true). The full app runs ONLY via the
+// dev server (localhost:3000, Vite middleware → PROD === false). Gating on PROD
+// keeps localhost fully featured while the shipped bundle stays stripped — and
+// lets Rollup drop the AI/Tools page code from the ship (lazy imports below).
+const STRIPPED = import.meta.env.PROD;
+
+// AI Assistant + the entire Tools section: locked behind a "Coming Soon" wall in
+// the stripped ship (personal API keys / tooling not ready for rollout), full
+// locally.
+const LOCKED_TABS = new Set<TabId>(
+  STRIPPED ? ['Assistant', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
+);
+const isLocked = (t: TabId) => LOCKED_TABS.has(t);
+
+// Lazy pages for the locked tabs. `STRIPPED ? null : lazy(...)` — in the ship
+// build STRIPPED is literally `true`, so the dynamic import()s are dead-code-
+// eliminated and never bundled. Locally they load on first visit.
+const AssistantPage  = STRIPPED ? null : React.lazy(() => import('./pages/Assistant').then(m => ({ default: m.AssistantPage })));
+const SchematicsPage = STRIPPED ? null : React.lazy(() => import('./pages/Schematics').then(m => ({ default: m.SchematicsPage })));
+const PmoPage        = STRIPPED ? null : React.lazy(() => import('./pages/PMO').then(m => ({ default: m.PmoPage })));
+const CommissionPage = STRIPPED ? null : React.lazy(() => import('./pages/Commission').then(m => ({ default: m.CommissionPage })));
+const DocsPage       = STRIPPED ? null : React.lazy(() => import('./pages/Docs').then(m => ({ default: m.DocsPage })));
+const CBUCalculator  = STRIPPED ? null : React.lazy(() => import('./CBUCalculator'));
+
+// Title/description shown on each locked tab's Coming Soon wall.
+const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
+  Assistant:  { title: 'AI Assistant',      desc: 'Your in-app AI copilot for quotes, specs, and projects is being prepared for the whole team. Stay tuned.' },
+  Schematics: { title: 'Schematics Reader', desc: 'Automated schematic analysis is coming soon to your workspace.' },
+  PMO:        { title: 'PMO',               desc: 'PMO automation is being readied for the team and will land here soon.' },
+  CBU:        { title: 'CBU Sizer',         desc: 'The CBU sizing tool is coming soon to your workspace.' },
+  Commission: { title: 'Commission',        desc: 'Commission tooling is coming soon to your workspace.' },
+  Docs:       { title: 'Doc Packs',         desc: 'Document pack generation is coming soon to your workspace.' },
+};
 
 // Static nav structure — labels resolved at render time via useLang()
 const NAV_STRUCTURE = {
@@ -107,6 +141,7 @@ function ToastList({ toasts, remove }: { toasts: Toast[]; remove: (id: number) =
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 function Sidebar({
   tab, setTab, queueCount, inboxUnread, userInitials, userEmail,
+  pinned, setPinned, hovered, setHovered,
 }: {
   tab: TabId;
   setTab: (t: TabId) => void;
@@ -114,10 +149,21 @@ function Sidebar({
   inboxUnread: number;
   userInitials: string;
   userEmail: string | null;
+  pinned: boolean;
+  setPinned: (v: boolean) => void;
+  hovered: boolean;
+  setHovered: (v: boolean) => void;
 }) {
   const { t } = useLang();
   return (
-    <aside className="w-[220px] shrink-0 h-full flex flex-col border-r border-ink-200/70 dark:border-ink-800 bg-white dark:bg-ink-900">
+    <aside
+      onMouseEnter={() => { if (!pinned) setHovered(true); }}
+      onMouseLeave={() => { if (!pinned) setHovered(false); }}
+      className={cn(
+        'w-[220px] h-full flex flex-col border-r border-ink-200/70 dark:border-ink-800 bg-white dark:bg-ink-900 transition-transform duration-200 ease-out',
+        pinned ? 'shrink-0 relative' : 'absolute inset-y-0 left-0 z-50 shadow-2xl',
+        !pinned && !hovered && '-translate-x-full',
+      )}>
       <div className="h-14 flex items-center gap-2.5 px-4 border-b border-ink-200/70 dark:border-ink-800">
         <div className="relative">
           <div className="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center">
@@ -125,10 +171,21 @@ function Sidebar({
           </div>
           <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-ink-900" />
         </div>
-        <div className="leading-none min-w-0">
+        <div className="leading-none min-w-0 flex-1">
           <p className="text-[12.5px] font-semibold tracking-tight truncate">Vector</p>
           <p className="text-[9.5px] text-ink-400 dark:text-ink-500 mt-0.5 truncate">Quote Automation · v2.0</p>
         </div>
+        <button
+          onClick={() => { setPinned(!pinned); setHovered(false); }}
+          title={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
+          className={cn(
+            'shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-colors',
+            pinned
+              ? 'text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 hover:text-ink-700 dark:hover:text-ink-200'
+              : 'text-brand-600 dark:text-brand-300 bg-brand-50 dark:bg-brand-900/30',
+          )}>
+          {pinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto py-3 px-2 space-y-5">
@@ -139,18 +196,23 @@ function Sidebar({
             </div>
             {sec.items.map(it => {
               const active = it.id === tab;
+              const locked = isLocked(it.id);
               const badge = it.id === 'Dashboard' ? queueCount : it.id === 'Inbox' ? inboxUnread : 0;
               return (
                 <button key={it.id} onClick={() => setTab(it.id)}
+                  title={locked ? 'Coming soon' : undefined}
                   className={cn(
                     'w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[12.5px] font-medium transition-colors',
                     active
                       ? 'bg-ink-900 text-white dark:bg-white dark:text-ink-900'
-                      : 'text-ink-600 dark:text-ink-300 hover:bg-ink-100/70 dark:hover:bg-ink-800/60',
+                      : locked
+                        ? 'text-ink-400 dark:text-ink-600 hover:bg-ink-100/50 dark:hover:bg-ink-800/40'
+                        : 'text-ink-600 dark:text-ink-300 hover:bg-ink-100/70 dark:hover:bg-ink-800/60',
                   )}>
                   <it.Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={active ? 2.2 : 1.75} />
                   <span className="flex-1 text-left truncate">{t[it.labelKey]}</span>
-                  {badge > 0 && (
+                  {locked && <Lock className="w-3 h-3 shrink-0 opacity-60" />}
+                  {!locked && badge > 0 && (
                     <span className={cn(
                       'min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold flex items-center justify-center shrink-0',
                       active ? 'bg-white/15 text-white dark:bg-ink-900/10 dark:text-ink-900'
@@ -190,7 +252,7 @@ function Sidebar({
 // ─── Header ──────────────────────────────────────────────────────────────────
 function Header({
   tab, setTab, dark, setDark, connected, userName, sessionElapsed,
-  onConnect, connecting, notifs, hasNew, clearNew,
+  onConnect, connecting, notifs, hasNew, clearNew, onFeedback,
 }: {
   tab: TabId;
   setTab: (t: TabId) => void;
@@ -204,6 +266,7 @@ function Header({
   notifs: Toast[];
   hasNew: boolean;
   clearNew: () => void;
+  onFeedback: () => void;
 }) {
   const keys = TITLE_KEYS[tab];
   const { t: tr } = useLang();
@@ -247,6 +310,12 @@ function Header({
           : <span className={cn('w-1.5 h-1.5 rounded-full', connected ? 'bg-emerald-500' : 'bg-ink-400')} />}
         {connecting ? tr.connecting : connected ? (userName ? userName.split(' ')[0] : tr.connected) : tr.connectJoe}
         {connected && !connecting && <RefreshCw className="w-3 h-3 opacity-50" />}
+      </button>
+
+      <button onClick={onFeedback} title="Send feedback"
+        className="h-8 px-2.5 rounded-lg text-[11.5px] font-medium flex items-center gap-1.5 text-ink-600 dark:text-ink-300 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors">
+        <MessageSquarePlus className="w-3.5 h-3.5" />
+        <span className="hidden sm:inline">Feedback</span>
       </button>
 
       <button onClick={() => setDark((d: boolean) => !d)}
@@ -592,6 +661,172 @@ function fmtElapsed(iso: string | null) {
   return `${sec}s`;
 }
 
+// ─── Coming Soon (locked feature wall) ───────────────────────────────────────
+function ComingSoon({ title, desc }: { title: string; desc: string }) {
+  return (
+    <div className="relative h-full min-h-[420px] w-full overflow-hidden rounded-xl">
+      {/* Blurred faux content behind the wall */}
+      <div aria-hidden className="absolute inset-0 blur-[6px] opacity-50 pointer-events-none select-none p-6 space-y-4">
+        <div className="h-8 w-1/3 rounded-lg bg-ink-200 dark:bg-ink-800" />
+        <div className="grid grid-cols-3 gap-4">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="h-28 rounded-xl bg-ink-100 dark:bg-ink-800/70 ring-1 ring-ink-200/60 dark:ring-ink-700/40" />
+          ))}
+        </div>
+        <div className="h-40 rounded-xl bg-ink-100 dark:bg-ink-800/70 ring-1 ring-ink-200/60 dark:ring-ink-700/40" />
+      </div>
+      {/* Overlay card */}
+      <div className="absolute inset-0 flex items-center justify-center bg-white/40 dark:bg-ink-950/40 backdrop-blur-[2px]">
+        <div className="text-center max-w-sm px-8 py-9 rounded-2xl bg-white/90 dark:bg-ink-900/90 ring-1 ring-ink-200 dark:ring-ink-700 shadow-xl">
+          <div className="w-12 h-12 mx-auto rounded-2xl bg-brand-50 dark:bg-brand-900/30 flex items-center justify-center mb-4">
+            <Rocket className="w-5 h-5 text-brand-500" />
+          </div>
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-ink-100 dark:bg-ink-800 text-[10.5px] font-semibold tracking-wide uppercase text-ink-500 dark:text-ink-400 mb-3">
+            <Lock className="w-3 h-3" /> Coming soon
+          </div>
+          <h2 className="text-[16px] font-semibold tracking-tight text-ink-900 dark:text-ink-50">{title}</h2>
+          <p className="text-[12.5px] text-ink-500 dark:text-ink-400 mt-2 leading-relaxed">{desc}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Feedback modal ──────────────────────────────────────────────────────────
+const FEEDBACK_CATEGORIES = ['Bug', 'Idea', 'Question', 'Other'] as const;
+
+function FeedbackModal({
+  onClose, currentTab, userName, userEmail, toast,
+}: {
+  onClose: () => void;
+  currentTab: TabId;
+  userName: string | null;
+  userEmail: string | null;
+  toast: ToastFn;
+}) {
+  const [category, setCategory] = useState<string>('Idea');
+  const [message,  setMessage]  = useState('');
+  const [sending,  setSending]  = useState(false);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { setTimeout(() => taRef.current?.focus(), 120); }, []);
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [onClose]);
+
+  async function submit() {
+    const msg = message.trim();
+    if (!msg || sending) return;
+    setSending(true);
+    try {
+      const r = await api.feedback({ message: msg, category, page: currentTab, userName, userEmail });
+      if (r.ok) { toast('ok', 'Thanks — feedback sent'); onClose(); }
+      else      { toast('err', r.error || 'Could not send feedback'); }
+    } catch (e: any) {
+      toast('err', e.message || 'Could not send feedback');
+    }
+    setSending(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <motion.div initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.94 }}
+        onClick={e => e.stopPropagation()}
+        className="bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-ink-200 dark:ring-ink-700 p-5 w-[400px]">
+        <div className="flex items-center gap-2 mb-4">
+          <MessageSquarePlus className="w-4 h-4 text-brand-500" />
+          <span className="text-[13px] font-semibold flex-1">Send feedback</span>
+          <button onClick={onClose} className="w-6 h-6 flex items-center justify-center text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div className="flex gap-1.5 mb-3">
+          {FEEDBACK_CATEGORIES.map(c => (
+            <button key={c} onClick={() => setCategory(c)}
+              className={cn(
+                'px-2.5 py-1 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+                category === c
+                  ? 'bg-ink-900 text-white dark:bg-white dark:text-ink-900 ring-transparent'
+                  : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800',
+              )}>{c}</button>
+          ))}
+        </div>
+
+        <textarea
+          ref={taRef}
+          rows={5}
+          value={message}
+          onChange={e => setMessage(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } }}
+          placeholder="What's working, what's broken, what you'd love to see…"
+          className="w-full resize-none text-[12.5px] rounded-xl bg-ink-50 dark:bg-ink-800/60 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 p-3 outline-none focus:ring-brand-400 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 leading-relaxed"
+        />
+
+        <div className="flex items-center justify-between mt-4">
+          <span className="text-[10.5px] text-ink-400">Goes to the Vector team</span>
+          <button onClick={submit} disabled={!message.trim() || sending}
+            className={cn(
+              'h-9 px-4 rounded-xl text-[12.5px] font-semibold flex items-center gap-2 transition-colors',
+              message.trim() && !sending
+                ? 'bg-brand-600 text-white hover:bg-brand-700'
+                : 'bg-ink-100 dark:bg-ink-800 text-ink-400 cursor-not-allowed',
+            )}>
+            {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            {sending ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// ─── First-run welcome modal ─────────────────────────────────────────────────
+const WELCOME_KEY = 'vector_welcome_seen_v1';
+
+function WelcomeModal({ onClose }: { onClose: () => void }) {
+  const steps = [
+    { Icon: Zap,               title: 'Connect to JOE',  body: 'Hit “Connect to JOE” (top bar) while on the Eaton network or VPN to sync your quotes.' },
+    { Icon: LayoutDashboard,   title: 'Process quotes',  body: 'Drop PDFs on the Dashboard to auto-extract, file, and upload to the D&Q Store.' },
+    { Icon: ClipboardList,     title: 'Tools',           body: 'PMO, CBU sizer, Commission, and Doc packs live in the sidebar under Tools.' },
+    { Icon: MessageSquarePlus, title: 'Send feedback',   body: 'Use the feedback button (top bar) anytime — it reaches the team directly.' },
+  ];
+  return (
+    <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/55 backdrop-blur-sm">
+      <motion.div initial={{ opacity: 0, scale: 0.94, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.94 }}
+        className="bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-ink-200 dark:ring-ink-700 p-6 w-[440px]">
+        <div className="flex flex-col items-center text-center mb-5">
+          <div className="w-14 h-14 rounded-2xl bg-brand-600 flex items-center justify-center mb-3 shadow-lg ring-4 ring-brand-500/20">
+            <span className="text-white text-[28px] font-black leading-none tracking-tighter">V</span>
+          </div>
+          <h2 className="text-[18px] font-bold tracking-tight text-ink-900 dark:text-ink-50">Welcome to Vector</h2>
+          <p className="text-[12px] text-ink-400 dark:text-ink-500 mt-1">Eaton Quote &amp; PMO automation · v2.0</p>
+        </div>
+
+        <div className="space-y-2.5 mb-6">
+          {steps.map(s => (
+            <div key={s.title} className="flex items-start gap-3 p-2.5 rounded-xl bg-ink-50 dark:bg-ink-800/50">
+              <div className="w-8 h-8 rounded-lg bg-white dark:bg-ink-900 ring-1 ring-ink-200 dark:ring-ink-700 flex items-center justify-center shrink-0">
+                <s.Icon className="w-4 h-4 text-brand-500" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-[12.5px] font-semibold text-ink-800 dark:text-ink-100">{s.title}</p>
+                <p className="text-[11.5px] text-ink-500 dark:text-ink-400 leading-snug mt-0.5">{s.body}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <button onClick={onClose}
+          className="w-full h-11 rounded-xl text-[13.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 transition-colors">
+          Get started
+        </button>
+      </motion.div>
+    </div>
+  );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ────────────────────────────────────────────────────────────────────────────
@@ -617,6 +852,11 @@ export default function App() {
     document.documentElement.classList.toggle('dark', dark);
     localStorage.setItem('theme', dark ? 'dark' : 'light');
   }, [dark]);
+
+  // Sidebar pin / auto-hide
+  const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('vector_sidebar_pinned') !== '0');
+  const [sidebarHover, setSidebarHover]   = useState(false);
+  useEffect(() => { localStorage.setItem('vector_sidebar_pinned', sidebarPinned ? '1' : '0'); }, [sidebarPinned]);
 
   // Dark mode schedule
   useEffect(() => {
@@ -695,6 +935,12 @@ export default function App() {
   const [connecting, setConnecting] = useState(false);
   const [splashDone, setSplashDone] = useState(false);
   const [inboxUnread, setInboxUnread] = useState(0);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [welcomeOpen, setWelcomeOpen] = useState(() => !localStorage.getItem(WELCOME_KEY));
+  const dismissWelcome = useCallback(() => {
+    localStorage.setItem(WELCOME_KEY, '1');
+    setWelcomeOpen(false);
+  }, []);
 
   // Auto-dismiss splash once a session is confirmed
   useEffect(() => { if (connected === true) setSplashDone(true); }, [connected]);
@@ -760,10 +1006,11 @@ export default function App() {
       if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         setShortcutsOpen(o => !o); return;
       }
-      // ⌘K / Ctrl+K → Assistant
+      // ⌘K / Ctrl+K → AI Assistant (locked for team rollout)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setTab('Assistant');
+        if (isLocked('Assistant')) toast('info', 'AI Assistant — coming soon');
+        else setTab('Assistant');
         return;
       }
       // Alt+1..5 → workflow tabs
@@ -774,7 +1021,7 @@ export default function App() {
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [setTab]);
+  }, [setTab, toast]);
 
   const userInitials = userName
     ? userName.split(' ').map(p => p[0]).slice(0, 2).join('').toUpperCase()
@@ -783,6 +1030,7 @@ export default function App() {
   return (
     <LangCtx.Provider value={{ lang, t: tCurrent, setLang: saveLang }}>
       <ToastList toasts={toasts} remove={id => setToasts(p => p.filter(t => t.id !== id))} />
+      <CancelDock />
 
       {/* ── Splash screen — shown until first successful connection or skipped ── */}
       {!splashDone ? (
@@ -790,8 +1038,17 @@ export default function App() {
       ) : (
 
       <>
-      <div className="flex h-screen min-h-0">
-        <Sidebar tab={tab} setTab={setTab} queueCount={queueCount} inboxUnread={inboxUnread} userInitials={userInitials} userEmail={userEmail} />
+      <div className="flex h-screen min-h-0 relative">
+        {/* Auto-hide hover trigger — thin rail at the left edge when unpinned */}
+        {!sidebarPinned && !sidebarHover && (
+          <div className="absolute inset-y-0 left-0 w-2.5 z-40" onMouseEnter={() => setSidebarHover(true)} />
+        )}
+        <Sidebar
+          tab={tab} setTab={setTab} queueCount={queueCount} inboxUnread={inboxUnread}
+          userInitials={userInitials} userEmail={userEmail}
+          pinned={sidebarPinned} setPinned={setSidebarPinned}
+          hovered={sidebarHover} setHovered={setSidebarHover}
+        />
 
         <div className="flex-1 flex flex-col min-w-0">
           <Header
@@ -800,6 +1057,7 @@ export default function App() {
             onConnect={onConnect}
             connecting={connecting}
             notifs={recentNotifs} hasNew={hasNew} clearNew={() => setHasNew(false)}
+            onFeedback={() => setFeedbackOpen(true)}
           />
           {/* All visited pages stay mounted — outer div always in DOM, hidden via inline style */}
           <main className="flex-1 min-h-0 bg-ink-50 dark:bg-ink-950 flex flex-col overflow-hidden">
@@ -810,24 +1068,33 @@ export default function App() {
                 <div key={t}
                   className={cn('flex-1 min-h-0', !isInbox && 'overflow-y-auto')}
                   style={active ? undefined : { display: 'none' }}>
-                  {/* Render page content only after first visit — once mounted it never unmounts */}
-                  {visited.has(t) && (isInbox ? (
+                  {/* Locked features show a Coming Soon wall — their real page never mounts */}
+                  {isLocked(t) ? (
+                    <div className="p-6 w-full h-full">
+                      <ComingSoon
+                        title={COMING_SOON[t]?.title || t}
+                        desc={COMING_SOON[t]?.desc || 'This feature is coming soon to your workspace.'}
+                      />
+                    </div>
+                  ) : visited.has(t) && (isInbox ? (
                     <InboxPage toast={toast} setTab={t2 => setTab(t2 as TabId)} onUnreadCount={setInboxUnread} />
                   ) : (
-                    <div className="p-6 mx-auto" style={{ maxWidth: 1320 }}>
+                    <div className="p-6 w-full">
+                      <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-ink-400"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
                       {t === 'Analytics'  && <AnalyticsPage />}
-                      {t === 'Assistant'  && <AssistantPage   connected={!!connected} toast={toast} />}
                       {t === 'History'    && <HistoryPage      toast={toast} />}
                       {t === 'CRM'        && <CrmPage          toast={toast} />}
-                      {t === 'PMO'        && <PmoPage          toast={toast} />}
-                      {t === 'CBU'        && <CbuPage />}
-                      {t === 'Commission' && <CommissionPage />}
-                      {t === 'Schematics' && <SchematicsPage   toast={toast} />}
-                      {t === 'Docs'       && <DocsPage />}
+                      {t === 'Assistant'  && AssistantPage  && <AssistantPage  connected={!!connected} toast={toast} />}
+                      {t === 'Schematics' && SchematicsPage && <SchematicsPage toast={toast} />}
+                      {t === 'PMO'        && PmoPage        && <PmoPage        toast={toast} />}
+                      {t === 'Commission' && CommissionPage && <CommissionPage />}
+                      {t === 'Docs'       && DocsPage       && <DocsPage       toast={toast} />}
+                      {t === 'CBU'        && CBUCalculator  && <CBUCalculator />}
                       {t === 'Settings'   && <SettingsPage config={config} onSave={async c => {
                         await api.saveConfig(c); setConfig(c); toast('ok', tCurrent.settings_saved);
                       }} />}
+                      </React.Suspense>
                     </div>
                   ))}
                 </div>
@@ -837,9 +1104,15 @@ export default function App() {
         </div>
       </div>
 
-      <FloatingAssistant onOpenFull={() => setTab('Assistant')} />
       <AnimatePresence>
         {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
+        {feedbackOpen && (
+          <FeedbackModal
+            onClose={() => setFeedbackOpen(false)}
+            currentTab={tab} userName={userName} userEmail={userEmail} toast={toast}
+          />
+        )}
+        {welcomeOpen && <WelcomeModal onClose={dismissWelcome} />}
       </AnimatePresence>
       </>
 
