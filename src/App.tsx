@@ -11,6 +11,7 @@ import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
 import { cn } from './lib/cn';
 import { api } from './lib/api';
+import { openExternal, isTauri } from './lib/shell';
 import { CancelDock } from './components/CancelDock';
 import { LangCtx, useLang, T, type Lang } from './lib/i18n';
 import type { Config } from './types';
@@ -1026,6 +1027,29 @@ export default function App() {
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, [setTab, toast]);
+
+  // In the packaged Tauri app the whole UI is one WebView2 window, where a plain
+  // <a target="_blank"> (or any external link) navigates that single window
+  // instead of opening a new one — so a stray link would replace the app. Delegate
+  // every such click to the OS browser via openExternal, keeping the app window
+  // put. No-op in a normal browser (native _blank works there).
+  useEffect(() => {
+    if (!isTauri()) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as HTMLElement)?.closest?.('a');
+      if (!a) return;
+      const href = a.getAttribute('href') || '';
+      if (!href || href.startsWith('#')) return;
+      const external = /^https?:\/\//i.test(href) && !href.startsWith(location.origin);
+      if (a.getAttribute('target') === '_blank' || external) {
+        e.preventDefault();
+        void openExternal(href);
+      }
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, []);
 
   const userInitials = userName
     ? userName.split(' ').map(p => p[0]).slice(0, 2).join('').toUpperCase()

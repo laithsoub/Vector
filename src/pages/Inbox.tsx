@@ -12,6 +12,7 @@ import {
 import { runTask, isCancel } from '../lib/tasks';
 import { QuickQuotePanel } from './QuickQuote';
 import { extractMaterialHints } from '../lib/elHints';
+import { openExternal } from '../lib/shell';
 
 // ─── Module-level state — survives tab switches / component remounts ─────────
 // Locked behind a "Coming Soon" wall in the stripped ship build (personal API
@@ -172,9 +173,9 @@ function fmtSize(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-// Opens a PDF attachment in a new browser tab using the native PDF viewer
+// Opens a PDF attachment in a real OS window (Tauri: default browser; web: tab)
 function openAttachmentPdf(entryId: string, index: number) {
-  window.open(`/api/outlook/attachment-view/${encodeURIComponent(entryId)}/${index}`, '_blank', 'noopener');
+  void openExternal(`/api/outlook/attachment-view/${encodeURIComponent(entryId)}/${index}`);
 }
 
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg', '.tif', '.tiff']);
@@ -1590,7 +1591,7 @@ function EmailDetailPanel({
                         : <ChevronLeft className="w-3 h-3 -rotate-90" />}
                     </button>
                     <button
-                      onClick={() => window.open('/schematics', '_blank', 'noopener,width=900,height=700')}
+                      onClick={() => openExternal('/schematics')}
                       title="Open EL Pricer in new window"
                       className="w-5 h-5 rounded flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
                       <ExternalLink className="w-3 h-3" />

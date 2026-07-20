@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '../lib/cn';
+import { openExternal, isTauri } from '../lib/shell';
 import { Card, Pill, Button, fmtMoneyFull, relTime } from '../lib/ui';
 import { api } from '../lib/api';
 import type { CrmSyncStatus, CrmQuoteHit } from '../lib/api';
@@ -473,20 +474,22 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
     catch (e: any) { toast('err', e.message); }
   }
   // Open a quote's PDF — local archive if this machine processed it, else the
-  // D&Q Store copy on SharePoint. Open the tab synchronously (inside the click)
-  // so the browser doesn't block the popup, then point it at the resolved URL.
+  // D&Q Store copy on SharePoint. In a plain browser we pre-open a blank tab
+  // synchronously (inside the click) so the popup isn't blocked after the await;
+  // under Tauri window.open is broken, so we resolve the URL first and route it
+  // through the OS browser via openExternal.
   async function openPdf(q: CrmQuote) {
-    const w = window.open('', '_blank');
+    const pre = isTauri() ? null : window.open('', '_blank');
     try {
       const res = await fetch(`/api/crm/quote/${q.id}/pdf`);
       const j = await res.json().catch(() => ({} as any));
       if (!res.ok || !j.url) {
-        w?.close();
+        pre?.close();
         toast('warn', j.error || 'PDF not found for this quote.');
         return;
       }
-      if (w) w.location.href = j.url; else window.open(j.url, '_blank');
-    } catch (e: any) { w?.close(); toast('err', e.message); }
+      if (pre) pre.location.href = j.url; else await openExternal(j.url);
+    } catch (e: any) { pre?.close(); toast('err', e.message); }
   }
   const totalIssued = quotes.reduce((s, q) => s + (q.price || 0), 0);
 
@@ -567,8 +570,8 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                       {ct.auto && <Pill tone="brand">from quotes</Pill>}
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11.5px]">
-                      {ct.email && <a href={`mailto:${ct.email}`} className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-300 hover:underline"><Mail className="w-3 h-3" />{ct.email}</a>}
-                      {ct.phone && <a href={`tel:${ct.phone}`} className="inline-flex items-center gap-1 text-ink-600 dark:text-ink-300"><Phone className="w-3 h-3" />{ct.phone}</a>}
+                      {ct.email && <a href={`mailto:${ct.email}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-300 hover:underline"><Mail className="w-3 h-3" />{ct.email}</a>}
+                      {ct.phone && <a href={`tel:${ct.phone}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-ink-600 dark:text-ink-300"><Phone className="w-3 h-3" />{ct.phone}</a>}
                     </div>
                     {ct.notes && <p className="text-[11px] text-ink-500 dark:text-ink-400 mt-1 whitespace-pre-wrap">{ct.notes}</p>}
                   </div>
