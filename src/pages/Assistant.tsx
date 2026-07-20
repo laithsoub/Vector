@@ -722,8 +722,8 @@ export function AssistantPage({
             <Sparkles className="w-3.5 h-3.5 text-violet-500" />
           </div>
           <div className="leading-none">
-            <p className="text-[13px] font-semibold">AI Assistant</p>
-            <p className="text-[10.5px] text-ink-400 dark:text-ink-500 mt-0.5">Gemini · knows your live app state</p>
+            <p className="text-[13px] font-semibold">Ask Vector</p>
+            <p className="text-[10.5px] text-ink-400 dark:text-ink-500 mt-0.5">One AI brain · knows your app, quotes & Fenton's EL guidance</p>
           </div>
         </div>
 

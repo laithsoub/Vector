@@ -7,9 +7,11 @@ import {
   ThumbsUp, ThumbsDown, Send, Edit3, Trash2, RotateCcw,
   Play, ArrowLeft, Zap, Eye, X, Image as ImageIcon, ChevronLeft,
   Pin, PinOff, Search, FolderOpen, MoreHorizontal, Star, ExternalLink,
-  Forward, MessageSquare, PenLine, Plus, GripVertical, Battery, Lock,
+  Forward, MessageSquare, PenLine, Plus, GripVertical, Battery, Lock, Check, FileSpreadsheet, FileDown,
 } from 'lucide-react';
 import { runTask, isCancel } from '../lib/tasks';
+import { QuickQuotePanel } from './QuickQuote';
+import { extractMaterialHints } from '../lib/elHints';
 
 // ─── Module-level state — survives tab switches / component remounts ─────────
 // Locked behind a "Coming Soon" wall in the stripped ship build (personal API
@@ -17,19 +19,8 @@ import { runTask, isCancel } from '../lib/tasks';
 const STRIPPED = import.meta.env.PROD;
 
 const CACHE_TTL = 15 * 60 * 1000;
-const BRIEFING_TTL = 4 * 60 * 60 * 1000;
 interface CacheEntry { emails: EmailSummary[]; ts: number; }
 const emailCache = new Map<string, CacheEntry>();
-
-function loadBriefingCache(): BriefingItem[] {
-  try {
-    const raw = localStorage.getItem('vector_briefing');
-    if (!raw) return [];
-    const { items, ts } = JSON.parse(raw);
-    if (Date.now() - ts > BRIEFING_TTL) { localStorage.removeItem('vector_briefing'); return []; }
-    return items || [];
-  } catch { return []; }
-}
 
 // These are initialised once and kept alive while the app is open
 let _available: boolean | null = null;
@@ -37,9 +28,8 @@ let _availError = '';
 let _newOutlook = false;
 let _graphAuth  = false;
 let _mailboxes: Mailbox[] = [];
-let _analysisCache: Record<string, string> = {};
-let _briefingItems: BriefingItem[] = loadBriefingCache();
-let _briefingMode = _briefingItems.length > 0;
+// Session cache of generated summaries (the durable copy lives in SQLite).
+let _summaryCache: Record<string, string> = {};
 let _selectedId = '';
 let _detail: EmailDetail | null = null;
 import { cn } from '../lib/cn';
@@ -56,10 +46,13 @@ interface Mailbox {
 }
 
 interface AttachmentInfo {
-  index: number;
-  name:  string;
-  size:  number;
-  isPdf: boolean;
+  index:      number;
+  name:       string;
+  size:       number;
+  isPdf:      boolean;
+  isImage?:   boolean;
+  isInline?:  boolean;
+  contentId?: string;
 }
 
 interface EmailSummary {
@@ -79,14 +72,6 @@ interface EmailDetail extends EmailSummary {
   cc:       string;
   body:     string;
   htmlBody?: string;
-}
-
-interface BriefingItem {
-  entryId:  string;
-  priority: 'high' | 'medium' | 'low';
-  tag:      string;
-  action:   string;
-  summary:  string;
 }
 
 interface AttachSuggestion {
@@ -197,6 +182,11 @@ function isImageFile(name: string) {
   const dot = name.lastIndexOf('.');
   return dot !== -1 && IMAGE_EXTS.has(name.slice(dot).toLowerCase());
 }
+const EXCEL_EXTS = new Set(['.xlsx', '.xls', '.xlsm', '.xlsb', '.csv']);
+function isExcelFile(name: string) {
+  const dot = name.lastIndexOf('.');
+  return dot !== -1 && EXCEL_EXTS.has(name.slice(dot).toLowerCase());
+}
 function attViewUrl(entryId: string, index: number) {
   return `/api/outlook/attachment-view/${encodeURIComponent(entryId)}/${index}`;
 }
@@ -258,7 +248,24 @@ function wrapEmailHtml(html: string): string {
   return `<!DOCTYPE html><html><head><meta charset="utf-8">${injectStyle}</head><body>${t}</body></html>`;
 }
 
-function EmailBodyFrame({ html }: { html: string }) {
+// Inline images in an email arrive as <img src="cid:XYZ"> — the browser can't
+// resolve cid:, so they render broken. Rewrite each cid: ref to the real image
+// URL (/api/outlook/attachment-view/:entryId/:index), matching by Content-ID
+// first, then by filename (Outlook cids are usually "filename@host").
+function resolveCidImages(html: string, entryId: string, attachments: AttachmentInfo[]): string {
+  if (!html || !/cid:/i.test(html)) return html;
+  return html.replace(/(["'])cid:([^"']+)\1/gi, (whole, q, ref) => {
+    const cid  = String(ref).trim().replace(/^<|>$/g, '');
+    const base = cid.split('@')[0].toLowerCase();
+    const hit  = attachments.find(a => (a.contentId || '').replace(/^<|>$/g, '').toLowerCase() === cid.toLowerCase())
+              || attachments.find(a => a.name.toLowerCase() === base)
+              || attachments.find(a => (a.contentId || '').split('@')[0].toLowerCase() === base);
+    if (!hit) return whole;
+    return `${q}${attViewUrl(entryId, hit.index)}${q}`;
+  });
+}
+
+function EmailBodyFrame({ html, entryId, attachments }: { html: string; entryId: string; attachments: AttachmentInfo[] }) {
   const ref = useRef<HTMLIFrameElement>(null);
   function onLoad() {
     const doc = ref.current?.contentDocument;
@@ -269,7 +276,7 @@ function EmailBodyFrame({ html }: { html: string }) {
   return (
     <iframe
       ref={ref}
-      srcDoc={wrapEmailHtml(html)}
+      srcDoc={wrapEmailHtml(resolveCidImages(html, entryId, attachments))}
       sandbox="allow-same-origin"
       onLoad={onLoad}
       className="w-full border-0 block"
@@ -305,17 +312,6 @@ interface MiniCandidate {
 interface ScheduleEntry { source: string; items: MiniPricedItem[]; total_ntp: number; }
 let _pricerSchedule: ScheduleEntry[] = [];
 
-function extractMaterialHints(body: string): string {
-  const hits: string[] = [];
-  const catalogRe = /\b(MP2[A-Z0-9\-]*|NXL[A-Z0-9\-]*|LUM[A-Z0-9\-]*|AT-S[A-Z0-9\-]*|LP-STAR[A-Z0-9\-]*|I-P65[A-Z0-9 \-]*|IP65[A-Z0-9\-]*|CGS[A-Z0-9\-]*|CG-S[A-Z0-9\-]*|CGLine[A-Z0-9\-]*|CrystalWay[A-Z0-9\-]*|RoundTech[A-Z0-9\-]*|NexiLite[A-Z0-9\-]*|ExLin[A-Z0-9\-]*|LHID[A-Z0-9\-]*|EMP[A-Z0-9\-]*|CEAG[A-Z0-9\-]*)\b/i;
-  const qtyLineRe = /\d+\s*[xX×]\s*[A-Z][A-Z0-9\-]{3,}|[A-Z][A-Z0-9\-]{3,}\s*[,;]\s*\d+/;
-  for (const line of body.split('\n')) {
-    const t = line.trim();
-    if (!t || t.length > 200) continue;
-    if (catalogRe.test(t) || qtyLineRe.test(t)) hits.push(t);
-  }
-  return hits.join('\n');
-}
 
 // ─── CBU Tech Sheet Generator ─────────────────────────────────────────────────
 const CBU_SYSTEMS = [
@@ -544,7 +540,7 @@ function InlineELPricer({
   const [schedule, setSchedule] = useState<ScheduleEntry[]>(() => _pricerSchedule);
   const [schedCopied, setSchedCopied] = useState(false);
 
-  const pricerAtts = attachments.filter(a => a.isPdf || isImageFile(a.name));
+  const pricerAtts = attachments.filter(a => a.isPdf || isImageFile(a.name) || isExcelFile(a.name));
 
   async function run() {
     if (!listText.trim()) return;
@@ -730,6 +726,7 @@ function InlineELPricer({
         <div className="flex flex-wrap gap-1.5 pb-0.5">
           {pricerAtts.map(a => {
             const img = isImageFile(a.name);
+            const xls = isExcelFile(a.name);
             return (
               <button
                 key={a.index}
@@ -738,11 +735,13 @@ function InlineELPricer({
                 title={`Price ${a.name} with AI`}
                 className={cn(
                   'inline-flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset disabled:opacity-50 transition-colors cursor-pointer',
-                  img
-                    ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-700/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
-                    : 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-brand-200 dark:ring-brand-700/30 hover:bg-brand-100 dark:hover:bg-brand-900/40',
+                  xls
+                    ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-700/30 hover:bg-green-100 dark:hover:bg-green-900/40'
+                    : img
+                      ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-700/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
+                      : 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-brand-200 dark:ring-brand-700/30 hover:bg-brand-100 dark:hover:bg-brand-900/40',
                 )}>
-                {img ? <ImageIcon className="w-3 h-3 shrink-0" /> : <FileText className="w-3 h-3 shrink-0" />}
+                {xls ? <FileSpreadsheet className="w-3 h-3 shrink-0" /> : img ? <ImageIcon className="w-3 h-3 shrink-0" /> : <FileText className="w-3 h-3 shrink-0" />}
                 <span className="truncate max-w-[160px]">{a.name}</span>
                 <span className="opacity-50 ml-0.5">→ Price</span>
               </button>
@@ -755,7 +754,7 @@ function InlineELPricer({
       {/* Drop zone highlight */}
       {dragOver && (
         <div className="flex items-center justify-center h-10 rounded-lg border-2 border-dashed border-amber-400 dark:border-amber-500 text-[11.5px] font-medium text-amber-600 dark:text-amber-400">
-          Drop PDF or image to price
+          Drop PDF, image or Excel to price
         </div>
       )}
 
@@ -1120,8 +1119,10 @@ function EmailDetailPanel({
   const [entryId, setEntryId]             = useState(initialEntryId);
   const [detail, setDetail]               = useState<EmailDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(true);
-  const [analysis, setAnalysis]           = useState(() => _analysisCache[initialEntryId] || '');
+  const [analysis, setAnalysis]           = useState(() => _summaryCache[initialEntryId] || '');
   const [analyzing, setAnalyzing]         = useState(false);
+  // Attachments (real files, incl. PDFs) the user opted into feeding the AI.
+  const [included, setIncluded]           = useState<Set<number>>(new Set());
   const [savingPdf, setSavingPdf]         = useState(false);
   const [draft, setDraft]                 = useState('');
   const [draftingReply, setDraftingReply] = useState(false);
@@ -1138,7 +1139,7 @@ function EmailDetailPanel({
   const [chatMessages, setChatMessages]             = useState<Array<{ role: 'user' | 'ai'; text: string }>>([]);
   const [chatInput, setChatInput]                   = useState('');
   const [chatLoading, setChatLoading]               = useState(false);
-  const [activePanel, setActivePanel]               = useState<'analyze' | 'reply' | 'reply-attach' | 'pricer' | 'chat' | 'cbu' | null>(null);
+  const [activePanel, setActivePanel]               = useState<'summarize' | 'reply' | 'reply-attach' | 'pricer' | 'cbu' | 'quote' | null>(null);
   const [attachSuggestions, setAttachSuggestions]   = useState<AttachSuggestion[]>([]);
   const [loadingSugg, setLoadingSugg]               = useState(false);
   const [selectedAtts, setSelectedAtts]             = useState<AttachSuggestion[]>([]);
@@ -1157,6 +1158,10 @@ function EmailDetailPanel({
   const panelResizingRef  = useRef(false);
   const panelResizeStartY = useRef(0);
   const panelResizeStartH = useRef(288);
+  // While dragging a resize handle, a full-screen overlay sits above the email
+  // iframe so mousemove keeps reaching the document (iframes otherwise swallow
+  // the events, which is what made resizing stutter/jump).
+  const [resizeMode, setResizeMode] = useState<null | 'panel' | 'att'>(null);
 
   // ── Attachment strip height resize ───────────────────────────────────────
   const [attStripHeight, setAttStripHeight] = useState(() => {
@@ -1200,6 +1205,7 @@ function EmailDetailPanel({
           localStorage.setItem('inbox_att_height', String(h));
         }
       }
+      setResizeMode(null);
     }
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
@@ -1219,11 +1225,11 @@ function EmailDetailPanel({
 
   async function fetchDetail(id: string) {
     setDetail(null);
-    setAnalysis(_analysisCache[id] || '');
+    setAnalysis(_summaryCache[id] || '');
     setDraft(''); setReplyText(''); setEditingReply(false);
     setReplySent(false); setAnalysisLiked(null);
     setChatMessages([]); setChatInput('');
-    setActivePanel(null);
+    setActivePanel(null); setIncluded(new Set());
     setAttachSuggestions([]); setSelectedAtts([]);
     setLoadingDetail(true);
     bodyRef.current?.scrollTo({ top: 0 });
@@ -1231,8 +1237,18 @@ function EmailDetailPanel({
       const r = await api.outlookEmail(id) as EmailDetail & { error?: string };
       if (r.error) { toast('warn', r.error); setLoadingDetail(false); return; }
       setDetail(r);
+      // Pre-check the inline photos we'll auto-read, so the panel reflects reality
+      // and the user can uncheck logos or add attachments before summarizing/chatting.
+      setIncluded(new Set(autoInlineIndices(r)));
       onMarkRead(id);
       onLabelChange(r.subject);
+      // Pull the persisted summary (survives restart) if we don't have it in-session.
+      if (!_summaryCache[id]) {
+        try {
+          const s = await api.outlookGetSummary(id);
+          if (s.summary) { _summaryCache[id] = s.summary; setAnalysis(s.summary); }
+        } catch { /* no persisted summary — fine */ }
+      }
     } catch (e: any) { toast('err', e.message); }
     setLoadingDetail(false);
   }
@@ -1241,18 +1257,36 @@ function EmailDetailPanel({
   const prevEmail = emailIdx > 0 ? emailList[emailIdx - 1] : null;
   const nextEmail = emailIdx < emailList.length - 1 ? emailList[emailIdx + 1] : null;
 
-  async function runAnalyze(emailData: EmailDetail) {
+  // Inline body images (photos/screenshots pasted into the email) are fed to the
+  // AI automatically. Tiny inline images (< 12 KB) are almost always logos or
+  // signature icons, so we skip those. Real attachments join only when the user
+  // opts in by clicking them in the Summarize panel.
+  function autoInlineIndices(emailData: EmailDetail): number[] {
+    return emailData.attachments
+      .filter(a => a.isInline && a.isImage && a.size >= 12_000)
+      .map(a => a.index);
+  }
+  // What actually gets fed to the AI = exactly what's checked in the panel
+  // (seeded from autoInlineIndices on load, then user-editable).
+  function effectiveInclude(_emailData: EmailDetail): number[] {
+    return Array.from(included).sort((a, b) => a - b);
+  }
+
+  async function runSummarize(emailData: EmailDetail, force = false) {
     if (analyzing) return;
     setAnalyzing(true);
     try {
-      const r = await runTask('Analyzing email…', s => api.outlookAnalyze({
+      const r = await runTask(force ? 'Re-summarizing…' : 'Summarizing…', s => api.outlookSummarize({
+        entryId: emailData.entryId,
         subject: emailData.subject, sender: emailData.sender,
         senderEmail: emailData.senderEmail, received: emailData.received,
         body: emailData.body, attachments: emailData.attachments,
+        includeIndices: effectiveInclude(emailData), force,
       }, s));
-      const text = r.analysis || r.error || 'No analysis returned.';
+      const text = r.summary || r.error || 'No summary returned.';
       setAnalysis(text);
-      _analysisCache[emailData.entryId] = text;
+      _summaryCache[emailData.entryId] = text;
+      if (r.imagesRead) toast('info', `Read ${r.imagesRead} image${r.imagesRead !== 1 ? 's' : ''} from the email`);
     } catch (e: any) { if (!isCancel(e)) setAnalysis(`Error: ${e.message}`); }
     setAnalyzing(false);
   }
@@ -1331,8 +1365,10 @@ function EmailDetailPanel({
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     try {
       const r = await runTask('Assistant thinking…', s => api.outlookChat({
+        entryId: detail.entryId,
         subject: detail.subject, sender: detail.sender, senderEmail: detail.senderEmail,
         body: detail.body, analysis, history: chatMessages, question,
+        includeIndices: effectiveInclude(detail),
       }, s));
       setChatMessages(prev => [...prev, { role: 'ai', text: r.answer || r.error || 'No response.' }]);
     } catch (e: any) {
@@ -1371,8 +1407,8 @@ function EmailDetailPanel({
   function togglePanel(p: typeof activePanel) {
     const next = activePanel === p ? null : p;
     setActivePanel(next);
-    if (next === 'analyze' && !_analysisCache[entryId] && detail && !analyzing) {
-      runAnalyze(detail);
+    if (next === 'summarize' && !_summaryCache[entryId] && detail && !analyzing) {
+      runSummarize(detail);
     }
     if (next === 'reply' && !draft && detail && !draftingReply) {
       draftReply(detail);
@@ -1412,6 +1448,8 @@ function EmailDetailPanel({
   return (
     <div className="h-full flex flex-col min-h-0">
       {lightbox && <ImageLightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
+      {/* Drag shield — captures the mouse over the email iframe so resizing is smooth */}
+      {resizeMode && <div className="fixed inset-0 z-[9999]" style={{ cursor: resizeMode === 'panel' ? 'row-resize' : 'ns-resize' }} />}
 
       {loadingDetail ? (
         <div className="flex-1 flex items-center justify-center">
@@ -1473,6 +1511,13 @@ function EmailDetailPanel({
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-600 hover:bg-emerald-100 transition-colors">
                         <ImageIcon className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
                       </button>
+                    ) : isExcelFile(att.name) ? (
+                      <button key={att.index} onClick={() => setActivePanel('pricer')}
+                        draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
+                        title="Open EL Pricer · Drag to EL Pricer"
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-600 hover:bg-green-100 dark:hover:bg-green-900/40 transition-colors">
+                        <FileSpreadsheet className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
+                      </button>
                     ) : (
                       <span key={att.index} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset bg-ink-50 dark:bg-ink-800 text-ink-500 dark:text-ink-400 ring-ink-200 dark:ring-ink-600">
                         <Paperclip className="w-2.5 h-2.5" />{att.name}
@@ -1491,6 +1536,7 @@ function EmailDetailPanel({
                   className="flex items-center justify-center h-2.5 mt-0.5 cursor-ns-resize select-none group"
                   onMouseDown={e => {
                     attResizingRef.current = true;
+                    setResizeMode('att');
                     attResizeStartY.current = e.clientY;
                     attResizeStartH.current = attStripRef.current?.offsetHeight ?? attStripHeight;
                     document.body.style.cursor = 'ns-resize';
@@ -1506,7 +1552,7 @@ function EmailDetailPanel({
           {/* ── Email body — main scrollable area ───────────────────────────── */}
           <div ref={bodyRef} className="flex-1 overflow-y-auto bg-white dark:bg-ink-900">
             {detail.htmlBody
-              ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} />
+              ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} entryId={detail.entryId} attachments={detail.attachments} />
               : <pre className="px-5 py-4 text-[12.5px] text-ink-700 dark:text-ink-200 leading-relaxed whitespace-pre-wrap font-sans">{detail.body || '(no body)'}</pre>
             }
           </div>
@@ -1524,6 +1570,7 @@ function EmailDetailPanel({
                   onMouseDown={e => {
                     if ((e.target as HTMLElement).closest('button')) return;
                     panelResizingRef.current = true;
+                    setResizeMode('panel');
                     panelResizeStartY.current = e.clientY;
                     panelResizeStartH.current = panelRef.current?.offsetHeight ?? panelHeight;
                     document.body.style.cursor = 'row-resize';
@@ -1561,14 +1608,18 @@ function EmailDetailPanel({
                 <div
                   ref={panelRef}
                   className="overflow-y-auto border-b border-ink-200 dark:border-ink-700"
-                  style={{ height: panelMaximized ? 600 : panelHeight }}>
+                  // Cap to the space left below the app + inbox headers so the panel
+                  // (and its follow-up input at the bottom) plus the action bar can
+                  // never spill under the Windows taskbar / off-screen.
+                  style={{ height: panelMaximized ? 600 : panelHeight, maxHeight: 'calc(100vh - 300px)' }}>
 
-                {/* ── Analysis panel ── */}
-                {activePanel === 'analyze' && (
-                  <div className="px-5 py-3">
-                    <div className="flex items-center gap-2 mb-2">
+                {/* ── Summarize panel — summary + inline chat + vision ── */}
+                {activePanel === 'summarize' && (
+                  <div className="px-5 py-3 flex flex-col gap-3">
+                    {/* Header */}
+                    <div className="flex items-center gap-2">
                       <Sparkles className="w-3.5 h-3.5 text-violet-500 shrink-0" />
-                      <p className="text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 flex-1">AI Analysis</p>
+                      <p className="text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 flex-1">AI Summary</p>
                       {analyzing && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
                       {!analyzing && analysis && (
                         <div className="flex items-center gap-1">
@@ -1580,47 +1631,93 @@ function EmailDetailPanel({
                             className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'down' ? 'text-red-500' : 'text-ink-300 hover:text-red-500 disabled:opacity-40')}>
                             <ThumbsDown className="w-2.5 h-2.5" />
                           </button>
-                          <button onClick={() => runAnalyze(detail)} className="text-[10px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-300 ml-1 transition-colors">Re-run</button>
+                          <button onClick={() => runSummarize(detail, true)} className="text-[10px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-300 ml-1 transition-colors">Refresh</button>
                         </div>
                       )}
                     </div>
+
+                    {/* Vision controls — check any image/PDF to feed it to the AI
+                        (summary AND follow-up chat). Big inline photos start checked;
+                        tiny inline logos (< 12 KB) are hidden. */}
+                    {(() => {
+                      const visual = detail.attachments.filter(a =>
+                        (a.isPdf || a.isImage || isImageFile(a.name)) && !(a.isInline && a.size < 12_000));
+                      if (visual.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="inline-flex items-center gap-1 text-[10.5px] text-ink-400 dark:text-ink-500"><Eye className="w-2.5 h-2.5" />Feed to AI:</span>
+                          {visual.map(a => {
+                            const on  = included.has(a.index);
+                            const img = a.isImage || isImageFile(a.name);
+                            return (
+                              <button key={a.index}
+                                onClick={() => setIncluded(prev => { const n = new Set(prev); n.has(a.index) ? n.delete(a.index) : n.add(a.index); return n; })}
+                                title={on ? `${a.name} — the AI reads this, click to exclude` : `Include ${a.name} — the AI will read it`}
+                                className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors',
+                                  on ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
+                                     : 'bg-ink-50 dark:bg-ink-800 text-ink-500 dark:text-ink-400 ring-ink-200 dark:ring-ink-600 hover:bg-ink-100 dark:hover:bg-ink-700')}>
+                                {on ? <Check className="w-2.5 h-2.5 shrink-0" /> : (img ? <ImageIcon className="w-2.5 h-2.5 shrink-0" /> : <FileText className="w-2.5 h-2.5 shrink-0" />)}
+                                <span className="truncate max-w-[130px]">{a.name}</span>
+                              </button>
+                            );
+                          })}
+                          {analysis && !analyzing && (
+                            <button onClick={() => runSummarize(detail, true)}
+                              title="Re-summarize with the current image selection"
+                              className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
+                              Apply
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Summary body */}
                     {analyzing && !analysis
-                      ? <p className="text-[12px] text-ink-400 py-1">Analysing…</p>
+                      ? <p className="text-[12px] text-ink-400 py-1">Reading email{effectiveInclude(detail).length ? ' + images' : ''}…</p>
                       : analysis
                         ? <Md text={analysis} />
-                        : <p className="text-[12px] text-ink-400">Click the button above to re-run analysis.</p>
-                    }
-                  </div>
-                )}
-
-                {/* ── Chat panel ── */}
-                {activePanel === 'chat' && (
-                  <div className="px-5 py-3 flex flex-col gap-2">
-                    <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400">Ask about this email</p>
-                    {chatMessages.length > 0 && (
-                      <div className="space-y-2">
-                        {chatMessages.map((m, i) => (
-                          <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
-                            <div className={cn('max-w-[90%] px-3 py-1.5 rounded-xl text-[12px]',
-                              m.role === 'user' ? 'bg-violet-600 text-white rounded-br-sm' : 'bg-ink-100 dark:bg-ink-800 text-ink-800 dark:text-ink-100 rounded-bl-sm')}>
-                              {m.role === 'ai' ? <Md text={m.text} /> : m.text}
-                            </div>
+                        : (
+                          <div className="py-1">
+                            <p className="text-[12px] text-ink-400 mb-2">No summary yet — reads the email plus any inline photos.</p>
+                            <button onClick={() => runSummarize(detail)}
+                              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
+                              <Sparkles className="w-3 h-3" /> Summarize
+                            </button>
                           </div>
-                        ))}
-                        {chatLoading && <div className="flex justify-start"><div className="px-3 py-1.5 rounded-xl bg-ink-100 dark:bg-ink-800 text-[12px] text-ink-400 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Thinking…</div></div>}
-                        <div ref={chatEndRef} />
+                        )
+                    }
+
+                    {/* Inline follow-up chat (only once there is a summary) */}
+                    {analysis && (
+                      <div className="pt-2.5 mt-0.5 border-t border-ink-100 dark:border-ink-800 flex flex-col gap-2">
+                        <p className="text-[10.5px] font-semibold text-ink-400 dark:text-ink-500 uppercase tracking-wide">Ask a follow-up</p>
+                        {chatMessages.length > 0 && (
+                          <div className="space-y-2">
+                            {chatMessages.map((m, i) => (
+                              <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
+                                <div className={cn('max-w-[90%] px-3 py-1.5 rounded-xl text-[12px]',
+                                  m.role === 'user' ? 'bg-violet-600 text-white rounded-br-sm' : 'bg-ink-100 dark:bg-ink-800 text-ink-800 dark:text-ink-100 rounded-bl-sm')}>
+                                  {m.role === 'ai' ? <Md text={m.text} /> : m.text}
+                                </div>
+                              </div>
+                            ))}
+                            {chatLoading && <div className="flex justify-start"><div className="px-3 py-1.5 rounded-xl bg-ink-100 dark:bg-ink-800 text-[12px] text-ink-400 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Thinking…</div></div>}
+                            <div ref={chatEndRef} />
+                          </div>
+                        )}
+                        <div className="flex gap-2 sticky bottom-0 -mx-5 px-5 py-2 bg-white dark:bg-ink-900 border-t border-ink-100/60 dark:border-ink-800/60">
+                          <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+                            onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
+                            placeholder="Ask about this email or its images…"
+                            className="flex-1 h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 focus:outline-none focus:ring-violet-400 placeholder:text-ink-400 text-ink-800 dark:text-ink-100" />
+                          <button onClick={sendChatMessage} disabled={!chatInput.trim() || chatLoading}
+                            className="w-7 h-7 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
+                            <Send className="w-3 h-3" />
+                          </button>
+                        </div>
                       </div>
                     )}
-                    <div className="flex gap-2">
-                      <input value={chatInput} onChange={e => setChatInput(e.target.value)}
-                        onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
-                        placeholder="Ask about this email…"
-                        className="flex-1 h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 focus:outline-none focus:ring-violet-400 placeholder:text-ink-400 text-ink-800 dark:text-ink-100" />
-                      <button onClick={sendChatMessage} disabled={!chatInput.trim() || chatLoading}
-                        className="w-7 h-7 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
-                        <Send className="w-3 h-3" />
-                      </button>
-                    </div>
                   </div>
                 )}
 
@@ -1726,18 +1823,22 @@ function EmailDetailPanel({
                     <InlineCBUGenerator emailSubject={detail.subject} emailBody={detail.body || ''} toast={toast} />
                   </div>
                 )}
+
+                {activePanel === 'quote' && (
+                  <QuickQuotePanel emailSubject={detail.subject} emailBody={detail.body || ''} senderName={detail.sender} senderEmail={detail.senderEmail} toast={toast} />
+                )}
                 </div>
               </>
             )}
 
             {/* Action bar */}
             <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
-              <ABtn panel="analyze"      icon={Sparkles}      label="Analyse"   color="violet" locked={STRIPPED} />
+              <ABtn panel="summarize"    icon={Sparkles}      label="Summarize" color="violet" locked={STRIPPED} />
               <ABtn panel="reply"        icon={Edit3}         label="Reply"     color="ink"    locked={STRIPPED} />
               <ABtn panel="reply-attach" icon={Paperclip}     label="+ Attach"  color="brand"  locked={STRIPPED} />
               <ABtn panel="pricer"       icon={Zap}           label="EL Pricer" color="amber"  locked={STRIPPED} />
               <ABtn panel="cbu"         icon={Battery}       label="CBU Sheet" color="blue"   locked={STRIPPED} />
-              <ABtn panel="chat"         icon={MessageSquare} label="Chat"      color="violet" locked={STRIPPED} />
+              <ABtn panel="quote"        icon={FileDown}      label="Quick Quote" color="emerald" locked={STRIPPED} />
             </div>
           </div>
         </>
@@ -1937,21 +2038,6 @@ export function InboxPage({
   const [loadingMore, setLoadingMore]   = useState(false);
   const [hasMoreEmails, setHasMoreEmails] = useState(true);
 
-  const [briefingMode, _setBriefingMode]      = useState(_briefingMode);
-  const setBriefingMode = (v: boolean) => { _briefingMode = v; _setBriefingMode(v); };
-
-  const [briefingItems, _setBriefingItems]    = useState<BriefingItem[]>(_briefingItems);
-  const setBriefingItems = (v: BriefingItem[]) => {
-    _briefingItems = v;
-    _setBriefingItems(v);
-    if (v.length > 0) {
-      localStorage.setItem('vector_briefing', JSON.stringify({ items: v, ts: Date.now() }));
-    } else {
-      localStorage.removeItem('vector_briefing');
-    }
-  };
-
-  const [briefingLoading, setBriefingLoading] = useState(false);
   const [composeOpen, setComposeOpen]         = useState(false);
   const [emailMenu, setEmailMenu]             = useState<{ id: string; x: number; y: number } | null>(null);
   const [starredEmails, setStarredEmails]     = useState<Set<string>>(new Set());
@@ -2180,20 +2266,6 @@ export function InboxPage({
 
   function updateTabLabel(tabId: string, label: string) {
     setOpenTabs(prev => prev.map(t => t.id === tabId ? { ...t, label } : t));
-  }
-
-  async function runBriefing() {
-    if (emails.length === 0) { toast('warn', 'No emails loaded — refresh first'); return; }
-    setBriefingMode(true);
-    setBriefingLoading(true);
-    setBriefingItems([]);
-    try {
-      const r = await runTask('Building morning briefing…', s => api.outlookBriefing(emails.slice(0, 30), s));
-      if (r.error) toast('err', r.error);
-      else if (!r.briefing) toast('err', 'Briefing returned no data');
-      setBriefingItems(r.briefing || []);
-    } catch (e: any) { if (!isCancel(e)) toast('err', e.message); }
-    setBriefingLoading(false);
   }
 
   // ── Email row action handlers ─────────────────────────────────────────────
@@ -2461,27 +2533,6 @@ export function InboxPage({
           Unread
         </button>
 
-        {/* Briefing — AI feature, locked in the stripped ship, full locally */}
-        {STRIPPED ? (
-          <button
-            onClick={() => toast('info', 'Briefing — coming soon')}
-            title="Coming soon"
-            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors text-ink-400 dark:text-ink-600 ring-ink-200/60 dark:ring-ink-700/50 hover:bg-ink-50 dark:hover:bg-ink-800/50 cursor-default">
-            <Play className="w-3 h-3 opacity-60" />
-            Briefing
-            <Lock className="w-2.5 h-2.5 opacity-60" />
-          </button>
-        ) : (
-          <button
-            onClick={runBriefing}
-            disabled={briefingLoading || emails.length === 0}
-            title="AI morning briefing"
-            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-40">
-            <Play className="w-3 h-3" />
-            Briefing
-          </button>
-        )}
-
         {/* Compose */}
         <button
           onClick={() => setComposeOpen(true)}
@@ -2499,91 +2550,7 @@ export function InboxPage({
         </button>
       </div>
 
-      {/* ── Content: briefing panel or split pane ──────────────────────────── */}
-      {briefingMode ? (
-        <div className="flex-1 overflow-y-auto bg-ink-50 dark:bg-ink-950 px-6 py-6">
-          {briefingLoading ? (
-            <div className="flex flex-col items-center justify-center h-64 gap-4">
-              <Loader2 className="w-8 h-8 animate-spin text-amber-400" />
-              <div className="text-center">
-                <p className="text-[14px] font-semibold text-ink-800 dark:text-ink-100">Analysing your inbox…</p>
-                <p className="text-[12px] text-ink-400 mt-1">Reading {emails.length} emails and prioritising actions</p>
-              </div>
-            </div>
-          ) : briefingItems.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-64 gap-3">
-              <Play className="w-10 h-10 text-ink-200 dark:text-ink-700" />
-              <p className="text-[13px] text-ink-400 dark:text-ink-500">No actions returned — try refreshing emails then re-run</p>
-            </div>
-          ) : (
-            <div className="max-w-4xl mx-auto space-y-7">
-              {(['high', 'medium', 'low'] as const).map(priority => {
-                const group = briefingItems.filter(i => i.priority === priority);
-                if (!group.length) return null;
-                const label = { high: 'High Priority', medium: 'Medium Priority', low: 'Low Priority' }[priority];
-                const dot   = { high: 'bg-red-500',    medium: 'bg-amber-400',    low: 'bg-emerald-400'  }[priority];
-                const tagColor: Record<string, string> = {
-                  'Quote Request':   'text-violet-700 bg-violet-100 dark:text-violet-300 dark:bg-violet-900/30',
-                  'PDF Received':    'text-brand-700 bg-brand-100 dark:text-brand-300 dark:bg-brand-900/30',
-                  'Action Required': 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/30',
-                  'Follow Up':       'text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-900/30',
-                };
-                return (
-                  <div key={priority}>
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className={cn('w-2 h-2 rounded-full', dot)} />
-                      <p className="text-[11px] font-semibold tracking-wider uppercase text-ink-500 dark:text-ink-400">
-                        {label} · {group.length}
-                      </p>
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {group.map((item, idx) => {
-                        const tc  = tagColor[item.tag] || 'text-ink-600 bg-ink-100 dark:text-ink-400 dark:bg-ink-800';
-                        const src = emails.find(e => e.entryId === item.entryId);
-                        return (
-                          <button
-                            key={item.entryId + idx}
-                            onClick={() => { setBriefingMode(false); openEmail(item.entryId); }}
-                            className="group text-left bg-white dark:bg-ink-900 rounded-xl p-4 ring-1 ring-inset ring-ink-200/80 dark:ring-ink-700/50 hover:ring-violet-300 dark:hover:ring-violet-600/50 hover:shadow-sm transition-all space-y-2.5">
-                            <div className="flex items-start justify-between gap-2">
-                              <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-semibold', tc)}>
-                                {item.tag}
-                              </span>
-                              <ChevronRight className="w-3.5 h-3.5 text-ink-300 group-hover:text-violet-500 transition-colors shrink-0" />
-                            </div>
-                            <p className="text-[13px] font-semibold text-ink-900 dark:text-ink-50 leading-snug">
-                              {item.action}
-                            </p>
-                            <p className="text-[11.5px] text-ink-500 dark:text-ink-400 leading-relaxed">
-                              {item.summary}
-                            </p>
-                            {src && (
-                              <div className="pt-2.5 border-t border-ink-100 dark:border-ink-800 flex items-center justify-between gap-2">
-                                <span className="text-[10.5px] text-ink-400 dark:text-ink-500 truncate">{src.sender}</span>
-                                <span className="text-[10.5px] text-ink-400 dark:text-ink-500 shrink-0">{fmtDate(src.received)}</span>
-                              </div>
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                );
-              })}
-              <div className="pb-4 text-center space-y-1.5">
-                <p className="text-[11px] text-ink-400 dark:text-ink-500">
-                  {briefingItems.filter(i => i.priority === 'high').length} high ·{' '}
-                  {briefingItems.filter(i => i.priority === 'medium').length} medium ·{' '}
-                  {briefingItems.filter(i => i.priority === 'low').length} low
-                </p>
-                <button onClick={runBriefing} className="text-[11px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-300 transition-colors">
-                  Re-run briefing
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      ) : (
+      {/* ── Content: email list + detail split pane ── */}
       <div className="flex-1 flex min-h-0">
 
         {/* ── Email list (left) ────────────────────────────────────────────── */}
@@ -2890,7 +2857,6 @@ export function InboxPage({
 
         </div>
       </div>
-      )}
     </div>
   );
 }

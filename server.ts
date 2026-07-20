@@ -99,6 +99,49 @@ function loadDb() {
     finalReply TEXT,
     feedbackType TEXT NOT NULL
   );`);
+  // ── Persisted per-email AI summaries (survives restart, keyed by entryId) ────
+  db.run(`CREATE TABLE IF NOT EXISTS email_summaries (
+    entryId TEXT PRIMARY KEY,
+    summary TEXT,
+    includedIndices TEXT,
+    ts TEXT NOT NULL
+  );`);
+  // ── EL Internal Info: stored EATON_Emergency_Lighting_INTERNAL updates ──────
+  db.run(`CREATE TABLE IF NOT EXISTS el_internal (
+    entryId TEXT PRIMARY KEY,
+    received TEXT,
+    subject TEXT,
+    sender TEXT,
+    senderEmail TEXT,
+    body TEXT,
+    attachments TEXT,
+    ts TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS el_internal_meta (
+    id INTEGER PRIMARY KEY,
+    digest TEXT,
+    digestAt TEXT,
+    lastRefreshAt TEXT
+  );`);
+  // ── Fenton KB: Mark Fenton's answers → extracted Q&A knowledge cards ─────────
+  db.run(`CREATE TABLE IF NOT EXISTS fenton_kb (
+    entryId TEXT PRIMARY KEY,
+    received TEXT,
+    subject TEXT,
+    senderEmail TEXT,
+    body TEXT,
+    attachments TEXT,
+    topic TEXT,
+    question TEXT,
+    answer TEXT,
+    tags TEXT,
+    extracted INTEGER DEFAULT 0,
+    ts TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS fenton_meta (
+    id INTEGER PRIMARY KEY,
+    lastRefreshAt TEXT
+  );`);
   // ── In-app user feedback (team rollout) ──────────────────────────────────────
   db.run(`CREATE TABLE IF NOT EXISTS app_feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -690,63 +733,72 @@ function getGemini() {
   return _gemini;
 }
 
+// One brain, two engines. AI_MODEL_SMART = heavy reasoning (Ask Vector chat, email
+// summaries, inbox follow-up chat); AI_MODEL_FAST = routing / classification / tiny
+// extraction. NOTE: gemini-2.5-pro is retired for new API keys (404 NOT_FOUND), so
+// SMART points at flash too — the "smarter" gain comes from the rewritten prompts +
+// larger token budgets. Swap SMART to a newer pro model here once the key supports one.
+const AI_MODEL_SMART = 'gemini-2.5-flash';
+const AI_MODEL_FAST  = 'gemini-2.5-flash';
+
+// Mark Fenton's distilled EL guidance, folded into the unified brain so Ask Vector
+// (and the inbox chat) can answer EL application questions without a separate tab.
+function fentonKnowledgeBlock(limit = 30): string {
+  try {
+    const fen = queryAll(
+      `SELECT received, topic, question, answer FROM fenton_kb
+        WHERE answer IS NOT NULL AND answer != '' ORDER BY received DESC LIMIT ?`, [limit]);
+    if (!fen.length) return '';
+    return [
+      "Mark Fenton EL knowledge base (his distilled guidance, newest first — cite the date when you use one):",
+      ...fen.map((f: any) => `  [${String(f.received).slice(0, 10)}] ${f.topic || f.question || ''} → ${f.answer}`),
+    ].join('\n');
+  } catch { return ''; }
+}
+
 function buildSystemPrompt(appContext: string): string {
   const lines = [
-    'You are the AI assistant embedded in Vector — a quote automation tool for Eaton Corporation Budapest.',
-    'You are helpful, concise, and specific. You know the app inside-out.',
+    'You are Ask Vector — the single AI brain inside Vector, a quote & PMO automation app for Eaton (Budapest). The same brain answers in this chat, summarises the Inbox, and helps across the app, so behave as one consistent, self-aware assistant.',
+    'Vector was designed and built by Laith Al-Soub (Technical Sales & Systems Engineer, Eaton Budapest) — its creator and owner. If asked who made/owns it: Laith Al-Soub. (Formerly "MagicUploader".)',
     '',
-    '## About Vector',
-    'Vector was designed and built by Laith Al-Soub (Technical Sales & Systems Engineer, Eaton Budapest) — he is the creator and owner of this app. If asked who made/created/owns the app, the answer is Laith Al-Soub. (The app was formerly called "MagicUploader"; the current name is Vector.)',
+    '## How to answer (read this first)',
+    '- Lead with the answer or the bottom line. No preamble, no restating the question, no "I am an AI", no "this is an email".',
+    '- Say only what is useful. Never pad with the obvious. If one sentence does it, use one sentence.',
+    '- Be specific and confident. When you point at the app, name the exact tab/button ("Dashboard → Run Step 1", "PMO tab", "Connect to JOE").',
+    '- You are ALREADY inside the app. Never tell the user to "open Ask Vector", "go to the Inbox", or "click Summarize" — they are already there.',
+    '- Use short numbered steps ONLY when the user genuinely needs a procedure; otherwise just answer.',
+    '- If something is truly missing or ambiguous, ask one sharp question instead of guessing.',
     '',
-    '## What Vector does (every part of the app)',
-    '- **Dashboard**: Drop queue + Recent Jobs (last 20 processed quotes, status, customer, price). Run Step 1 / Run Step 2 from here.',
-    '- **Step 1**: Drops quotes (UK/BE/FR/IT/DE/ES, PDF/Word/Excel) into the queue → extracts pricing → uploads to SharePoint QuotationFactory list',
-    '- **Step 2**: Creates D&Q Store folder on SharePoint and uploads the quote PDF',
-    '- **PMO Raise** (PMO tab): Upload a quote PDF + customer PO + BidManager DOCU_ID PDFs → generates a PMO Word doc → ready to email the PMO team',
-    '- **EL Pricer** (Schematics tab): Prices Eaton emergency lighting items from uploaded schematics, images, or pasted material lists, against the Eaton EL Global Price List (July 2026, valid from 1 July 2026), which is the source data this feature uses.',
-    '- **CBU Sizer** (CBU tab): LoadStar-PS (battery/UPS) sizing calculator. It DOES contain prices: a built-in list-price table covering each kVA system (control cabinet, internal/external batteries, parallel + expansion kits) with per-line list prices and a system total. These figures come from the UK CSO LoadStar-PS Quote Configurator and are hard-coded into the app (no live/auto price feed). The tab shows the full breakdown and a printable tech brief.',
-    '- **Inbox** (Inbox tab): Reads Outlook email, AI triage + reply drafting, morning briefing, and an inline EL Pricer that appears when an email contains EL material items.',
-    '- **CRM** (CRM tab): Account cards auto-seeded from the customer field of past quotes (today these are quote names; later, real customer names). Each card holds contacts (name, role, email, phone), facts (some AI-generated, plus warnings), D&Q documents, and the account\'s quotes + opportunities pulled live from job history. An "opportunity" is an open priced quote (not marked won/lost). Duplicate cards can be MERGED into one account. You CAN edit cards from this chat: just tell me e.g. "add contact John Smith (buyer, john@acme.com) to <account>", "note that <account> pays at 60 days", "mark SR0012345 as won", "create account Acme", or "tag <account> key-account" — I execute it and confirm.',
-    '- **AI Assistant** (this chat): answers app questions and searches the user\'s quotes (see Quote search below).',
-    '- **Connect to JOE** (header): SharePoint authentication. **Settings**: Gemini API key + base folder config.',
+    '## What Vector does',
+    '- **Dashboard**: drop queue + recent jobs; Run Step 1 / Run Step 2.',
+    '- **Step 1**: extracts pricing from dropped quotes (UK/BE/FR/IT/DE/ES; PDF/Word/Excel) → uploads to the SharePoint QuotationFactory list.',
+    '- **Step 2**: creates the D&Q Store folder on SharePoint and uploads the quote PDF.',
+    '- **PMO tab**: quote PDF + customer PO + BidManager DOCU_ID PDFs → a PMO Word doc, ready to email the PMO team.',
+    '- **EL Pricer** (Schematics tab): prices Eaton emergency-lighting items from schematics/images/pasted lists against the EL Global Price List (July 2026, valid from 1 July 2026).',
+    '- **CBU Sizer** (CBU tab): LoadStar-PS battery/UPS sizing WITH a built-in list-price table per kVA system (hard-coded LoadStar-PS configurator prices — no live feed), plus a printable tech brief.',
+    '- **Inbox**: reads Outlook email; one Summarize gives a structured read (incl. photos/diagrams/PDFs) + inline follow-up chat; also AI reply drafting and an inline EL Pricer.',
+    '- **CRM tab**: account cards auto-seeded from past quotes — contacts, facts, D&Q docs, and live quotes/opportunities (an opportunity is an open priced quote, not won/lost). Duplicate cards can be MERGED. You can EDIT from chat: "add contact John Smith (buyer, john@acme.com) to <account>", "note that <account> pays at 60 days", "mark SR0012345 as won", "create account Acme", "tag <account> key-account" — you execute it and confirm.',
+    '- **Connect to JOE** (header): SharePoint auth. **Settings**: Gemini key + base folder.',
     '',
-    '## Sales reps (NOT the app team — these are salesmen whose names appear in the quote data)',
-    'Blair McDonald, Craig Donaldson, Joe Bayley, Mark Fenton, Ollie Bailey, Ryan Houston. These are Eaton sales engineers/quote owners you may see referenced in quotes — they did NOT build the app and are not who to contact about it.',
+    '## Quote search',
+    "The app can search the user's quotes by customer, salesman, kVA rating, catalogue/fitting number, or ANY text inside the quote PDF/email (the D&Q Store is full-text indexed). Never claim search is limited to Salesforce ID or customer name, or that you cannot search a spec like \"4kVA\".",
+    'But in THIS reply you cannot run the search yourself and have no results in hand — so NEVER say "searching…", "one moment", "retrieving", or pretend results are loading. If the user wants to find quotes, tell them in ONE line to type the thing itself (e.g. "4kVA", a customer, a salesman name) and the app runs the real search and shows result cards.',
     '',
-    '## Email triage — IMPORTANT',
-    'When the user pastes an email (you will see it as a large block of text), you MUST:',
-    '1. Confirm you can see it is an email',
-    '2. Extract key fields: sender, customer name, Salesforce ID (SR00xxxxx format), quote ref, amount, any deadlines',
-    '3. Identify the request type:',
-    '   - New quote PDF attached → "Go to Dashboard, drop the PDF into the queue, select the Division, click Run Step 1 then Run Step 2"',
-    '   - Customer PO received against a quote → "Go to PMO tab, upload the quote PDF, the PO PDF, and all BidManager DOCU_ID PDFs, then click Raise PMO"',
-    '   - Query about quote status → "Go to AI Assistant, type the Salesforce ID or customer name to look it up"',
+    '## Mark Fenton knowledge',
+    "You carry Mark Fenton's (Senior Lighting Application Engineer, Eaton UK) accumulated EL guidance as a knowledge base (supplied below when present). Use it for EL application questions and cite the date (YYYY-MM-DD) of the answer you draw on. If a topic isn't covered there, say so plainly rather than inventing.",
     '',
-    '## Quote search — capabilities, and what NOT to say',
-    'The app CAN search the user\'s quotes by customer, salesman, KVA rating, catalogue/fitting number, or ANY text inside the quote PDF/email (the D&Q Store is full-text indexed). So never tell the user searching is limited to Salesforce ID or customer name, and never claim you cannot search by a specification like "4kVA".',
-    'CRITICAL: In THIS chat reply you cannot run a search yourself and you have NO results in front of you. So you must NEVER say "searching…", "please wait", "retrieving", "one moment", or pretend results are loading — that is a lie and nothing will appear. Instead, if the user wants to find quotes, tell them to type the actual thing they are looking for (e.g. just "4kVA", a customer, a salesman name, or "how many quotes have 4kVA") and the app will run the real search automatically and show result cards. Keep it to one short sentence.',
-    '   - Pricing / EL schematic request → "Go to EL Pricer tab, upload the schematic PDF"',
-    '4. Give numbered, actionable steps referencing exact tab names and button labels',
-    '5. Flag anything missing (e.g. "You will need the DOCU_ID PDFs from BidManager before you can raise the PMO")',
+    '## Sales reps (people in the quote data, NOT the app team)',
+    'Blair McDonald, Craig Donaldson, Joe Bayley, Mark Fenton, Ollie Bailey, Ryan Houston.',
     '',
-    '## Common issues & fixes',
-    '- **FedAuth / 401 / cookie expired**: Click "Connect to JOE" in the top header bar',
-    '- **PDF format not recognised**: Only UK, BE, FR, IT, DE, ES language quotes are supported',
-    '- **SharePoint 403**: Cookies expired — click Connect to JOE',
-    '- **Step 1 no items uploaded**: Check the CSV was generated in the base folder; re-run if empty',
+    '## Honesty & data care',
+    "Never deny a feature that exists (e.g. the CBU Sizer DOES have prices). Don't invent a price-validity date the app doesn't store — say CBU prices are the hard-coded LoadStar-PS configurator list prices and to confirm currency check the latest configurator. Eaton data is confidential: give the specific figure asked, don't dump whole price tables, every part number, or internal filenames unprompted, and flag before any external export/share.",
     '',
-    '## Response style',
-    '- Be concise. Use numbered lists for steps, bullet points for options.',
-    '- Always name the exact UI tab or button: "PMO tab", "Run Step 1", "Connect to JOE".',
-    '- If something is unclear, ask one focused clarifying question.',
-    '',
-    '## Accuracy — never deny a feature that exists',
-    'You know the whole app (listed above). Never tell the user a feature does not exist or "has no prices" when it does — e.g. the CBU Sizer DOES contain a built-in list-price table. If asked when CBU prices were "last updated" or their cutoff date: the app does not store a price-validity date, so do not invent one. Say the CBU prices are the hard-coded LoadStar-PS configurator list prices (no auto-update), and to confirm they are current they should check against the latest LoadStar-PS Quote Configurator / their pricing team. Same honesty for the EL Pricer: its source is the July 2026 EL Global Price List (valid from 1 July 2026).',
-    '',
-    '## Data sensitivity & not oversharing',
-    'Eaton data is confidential. If the user wants to export or share data externally, remind them first. Answer at the level asked: explain what a feature does and where to find it, but do not dump entire raw price tables, every catalogue/part number, or internal source filenames unprompted. Give the specific figure or item the user asked for, not the whole dataset.',
+    '## Common fixes',
+    '- FedAuth / 401 / SharePoint 403 / cookie expired → click Connect to JOE.',
+    '- PDF format not recognised → only UK/BE/FR/IT/DE/ES quotes are supported.',
+    '- Step 1 uploaded nothing → check the CSV in the base folder; re-run if empty.',
   ];
-  if (appContext) lines.push('', '## Live app state (use this to give specific answers)', appContext);
+  if (appContext) lines.push('', '## Live app state (use for specific answers)', appContext);
   return lines.join('\n');
 }
 
@@ -809,6 +861,8 @@ async function chatAnswer(
         return l;
       }),
     ];
+    const fenBlock = fentonKnowledgeBlock();
+    if (fenBlock) contextLines.push('', fenBlock);
     appContext = contextLines.join('\n');
   } catch {}
 
@@ -822,9 +876,11 @@ async function chatAnswer(
 
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: AI_MODEL_SMART,
       contents: turns,
-      config: { systemInstruction: buildSystemPrompt(appContext), maxOutputTokens: 2048, temperature: 0.7 },
+      // 2.5-pro is a thinking model and, in this SDK, reasoning tokens draw from
+      // maxOutputTokens — keep it generous so the visible answer is never starved.
+      config: { systemInstruction: buildSystemPrompt(appContext), maxOutputTokens: 8192, temperature: 0.5 },
     });
     const answer = response.text ?? null;
     if (answer && !history?.length) _aiCache.set(cacheKey, { answer, ts: Date.now() });
@@ -1155,8 +1211,11 @@ async function startServer() {
       '/api/ai', '/api/search', '/api/schematics', '/api/pmo',
       '/api/docs', '/api/docs-xlsx',
       '/api/run/cbu', '/api/run/commission', '/api/run/pmo',
-      '/api/outlook/analyze', '/api/outlook/draft-reply', '/api/outlook/chat',
-      '/api/outlook/briefing', '/api/outlook/attachment-price',
+      '/api/outlook/summarize', '/api/outlook/draft-reply', '/api/outlook/chat',
+      '/api/outlook/attachment-price',
+      '/api/el-internal/digest', '/api/el-internal/chat',
+      '/api/fenton/refresh', '/api/fenton/chat',
+      '/api/quote/detect-cbu', '/api/quote/luminaires',
       '/api/crm/command',
     ];
     app.use((req, res, next) => {
@@ -2785,6 +2844,30 @@ async function startServer() {
     });
   }
 
+  // Fetch email attachments (images / PDFs) as Gemini inlineData parts so the
+  // AI can actually read photos, diagrams and scanned tables inside an email.
+  const VISION_MIME: Record<string, string> = {
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+    '.bmp': 'image/bmp', '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff',
+    '.pdf': 'application/pdf',
+  };
+  async function attachmentParts(entryId: string, indices: number[]): Promise<any[]> {
+    const parts: any[] = [];
+    const tmpDir = path.join(os.tmpdir(), 'vector_sum');
+    for (const idx of indices) {
+      try {
+        const att = await runOutlookPy(['--action', 'get-attachment', '--id', entryId, '--index', String(idx), '--dest', tmpDir]);
+        if (att.error || !att.path) continue;
+        const ext  = path.extname(att.path).toLowerCase();
+        const mime = VISION_MIME[ext];
+        if (!mime) continue;
+        parts.push({ inlineData: { mimeType: mime, data: readFileSync(att.path).toString('base64') } });
+        try { unlinkSync(att.path); } catch {}
+      } catch { /* skip a bad attachment, keep the rest */ }
+    }
+    return parts;
+  }
+
   app.get('/api/outlook/status', async (_req, res) => {
     try {
       const r = await runOutlookPy(['--action', 'status']);
@@ -2933,23 +3016,41 @@ async function startServer() {
       if (att.error || !att.path) { res.json({ error: att.error || 'Could not save attachment' }); return; }
 
       const imageExts = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tif', '.tiff']);
+      const excelExts = new Set(['.xlsx', '.xls', '.xlsm', '.xlsb', '.csv']);
       const ext = path.extname(att.path).toLowerCase();
-      const mode = (isImage || imageExts.has(ext)) ? 'image' : 'pdf';
+
+      // Excel/CSV can't be priced by --mode image/pdf — route through a unified
+      // manifest (kind:'excel') which extract_from_excel parses with no AI.
+      let mode: string, input: string, manifestPath = '';
+      if (excelExts.has(ext)) {
+        manifestPath = path.join(path.dirname(att.path), `manifest_${Date.now()}.json`);
+        writeFileSync(manifestPath, JSON.stringify({ text: '', files: [{ path: att.path, kind: 'excel', name: att.name }] }));
+        mode = 'unified'; input = manifestPath;
+      } else {
+        mode = (isImage || imageExts.has(ext)) ? 'image' : 'pdf';
+        input = att.path;
+      }
 
       const [py, base] = pyArgs(pyScript);
       await new Promise<void>(resolve => {
-        const proc = spawn(py, [...base, '--mode', mode, '--input', att.path], { env: { ...process.env } });
+        const proc = spawn(py, [...base, '--mode', mode, '--input', input], { env: { ...process.env } });
         let out = '', err = '';
+        // Hard cap so a pathological spreadsheet (huge pricing model, not a list)
+        // can never hang the request.
+        const killTimer = setTimeout(() => { try { proc.kill(); } catch {} }, 120_000);
         proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
         proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
         proc.on('error', (e: Error) => {
+          clearTimeout(killTimer);
           if (!res.headersSent) res.json({ error: e.message });
           resolve();
         });
         proc.on('close', () => {
+          clearTimeout(killTimer);
+          if (manifestPath) { try { unlinkSync(manifestPath); } catch {} }
           if (!res.headersSent) {
             try { res.json(JSON.parse(out.trim())); }
-            catch { res.json({ error: err.trim() || out.trim() || 'No output from schematic reader' }); }
+            catch { res.json({ error: err.trim() || out.trim() || 'Could not price this file — it may be too large or not a material list.' }); }
           }
           resolve();
         });
@@ -2959,57 +3060,94 @@ async function startServer() {
     }
   });
 
-  app.post('/api/outlook/analyze', async (req, res) => {
-    const { subject, sender, senderEmail, received, body, attachments } = req.body as {
-      subject: string; sender: string; senderEmail: string;
-      received: string; body: string; attachments: Array<{ name: string }>;
+  // ── Load a persisted summary (no AI spend) ────────────────────────────────
+  app.get('/api/outlook/summary/:entryId', (req, res) => {
+    try {
+      const row = queryAll('SELECT summary, includedIndices, ts FROM email_summaries WHERE entryId = ?', [req.params.entryId])[0];
+      if (!row) { res.json({ summary: null }); return; }
+      let included: number[] = [];
+      try { included = JSON.parse(row.includedIndices || '[]'); } catch {}
+      res.json({ summary: row.summary, includedIndices: included, ts: row.ts });
+    } catch (e: any) { res.json({ summary: null, error: e.message }); }
+  });
+
+  // ── Summarize: structured summary + vision over inline / opted-in images ──
+  // Replaces the old text-only /analyze + the batch /briefing. Reads photos,
+  // scans and diagrams inside the email, and persists per-entryId so re-opening
+  // (even after restart) is instant and costs no tokens.
+  app.post('/api/outlook/summarize', async (req, res) => {
+    const { entryId, subject, sender, senderEmail, received, body, attachments, includeIndices, force } = req.body as {
+      entryId: string; subject: string; sender: string; senderEmail: string;
+      received: string; body: string; attachments?: Array<{ name: string }>;
+      includeIndices?: number[]; force?: boolean;
     };
     const ai = getGemini();
-    if (!ai) { res.json({ analysis: null, error: 'No Gemini API key — add it in Settings' }); return; }
+    if (!ai) { res.json({ summary: null, error: 'No Gemini API key — add it in Settings' }); return; }
+
+    const indices = Array.from(new Set((includeIndices || []).filter(n => Number.isFinite(n)))).sort((a, b) => a - b);
+    const indicesKey = JSON.stringify(indices);
+
+    // Serve the persisted summary unless the caller forces a regenerate or the
+    // set of included attachments changed since it was generated.
+    if (!force) {
+      const row = queryAll('SELECT summary, includedIndices FROM email_summaries WHERE entryId = ?', [entryId])[0];
+      if (row && row.summary && (row.includedIndices || '[]') === indicesKey) {
+        res.json({ summary: row.summary, cached: true }); return;
+      }
+    }
 
     const me = await connectedUserName();
     const attList = attachments?.map(a => a.name).join(', ') || 'none';
+
+    // Dedicated summariser persona — NOT the generic Ask Vector chat prompt, whose
+    // "go to X tab" scripting used to leak into summaries as nonsense like
+    // "go to the Inbox and click Summarize". The engineer is already reading this
+    // email in the Inbox, so lead with the conclusion and skip the obvious.
+    const summarizeSystem = [
+      `You are Ask Vector, reading an email for ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest who is ALREADY looking at this email open in the app's Inbox.`,
+      `Give the bottom line first. No filler, no "this is an email", no restating the sender/subject/date already on screen, no "I have analysed…".`,
+      `NEVER tell the user to open the Inbox, select this email, or click Summarize — they are already here. Only mention ANOTHER tab when a real next action needs it (Dashboard → Step 1, PMO tab, EL Pricer, Draft Reply).`,
+      `Be adaptive and proportional: cover only what matters for THIS email. A one-line email gets a one-line answer. Omit any heading that would be empty. Never invent facts that aren't in the email or images.`,
+    ].join('\n');
+
     const prompt = [
-      `Analyze this email for ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest using Vector.`,
-      ``,
       `**From:** ${sender} <${senderEmail}>`,
       `**Subject:** ${subject}`,
       `**Received:** ${received}`,
       `**Attachments:** ${attList}`,
       ``,
       `**Email body:**`,
-      (body || '').slice(0, 3000),
+      (body || '').slice(0, 12000),
       ``,
-      `Provide a concise structured analysis with these exact sections:`,
+      indices.length
+        ? `Image(s)/document(s) from this email are attached below. Read them fully — text, tables, drawings, part numbers, photos — and fold what you see into the answer. Questions in the body may refer to them.`
+        : ``,
       ``,
-      `## Summary`,
-      `1-2 sentences: what this email is about.`,
-      ``,
-      `## What's Requested`,
-      `What is specifically being asked or needed from the quote team.`,
-      ``,
-      `## Type`,
-      `One of: Quote request / Customer PO / EL pricing request / Status query / Technical query / FYI / Other`,
-      ``,
-      `## Key Data`,
-      `Extract any present: customer name, project name, Salesforce ID (SR00xxxxx), quoted amount, deadline, product type (EL/PDC/ICP/MV/etc.)`,
-      ``,
-      `## Next Steps`,
-      `Numbered, specific actions using exact Vector UI names: "Dashboard → Step 1", "EL Pricer tab", "Raise PMO", "Draft Reply". Skip steps that don't apply.`,
-      ``,
-      `Tone: direct and factual. Skip sections if there is nothing to say.`,
-    ].join('\n');
+      `Write the summary in markdown, shaped to the email (skip anything that doesn't apply):`,
+      `- Open with **Bottom line** — 1-2 sentences: what this is and what, if anything, ${me ? me.split(' ')[0] : 'the engineer'} needs to do about it.`,
+      `- If the sender asks explicit questions, answer each one directly (from the body and images).`,
+      `- **Key data** — only the fields actually present: customer, project, Salesforce ID (SR00xxxxx), amount, deadline, product (EL/PDC/ICP/MV/…), part numbers/quantities from images.`,
+      `- **Next step** — the single most useful concrete action, naming the exact Vector tab/button. Omit entirely if the email needs no action.`,
+    ].filter(Boolean).join('\n');
 
     try {
+      const imageParts = indices.length ? await attachmentParts(entryId, indices) : [];
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: { systemInstruction: buildSystemPrompt(''), maxOutputTokens: 2048, temperature: 0.2 },
+        model: AI_MODEL_SMART,
+        contents: [{ role: 'user', parts: [{ text: prompt }, ...imageParts] }],
+        config: { systemInstruction: summarizeSystem, maxOutputTokens: 8192, temperature: 0.2 },
       });
-      res.json({ analysis: response.text });
+      const summary = response.text;
+      if (summary) {
+        runWrite(
+          `INSERT OR REPLACE INTO email_summaries (entryId, summary, includedIndices, ts) VALUES (?, ?, ?, ?)`,
+          [entryId, summary, indicesKey, new Date().toISOString()],
+        );
+      }
+      res.json({ summary, cached: false, imagesRead: indices.length });
     } catch (e: any) {
       const detail = e.cause?.message ? ` (${e.cause.message})` : '';
-      res.json({ analysis: null, error: 'Gemini error: ' + e.message + detail });
+      res.json({ summary: null, error: 'Gemini error: ' + e.message + detail });
     }
   });
 
@@ -3093,18 +3231,65 @@ async function startServer() {
   });
 
   // ── Inline email chat (context-aware follow-up questions) ─────────────────
+  // Offline EL luminaire price-sheet lookup for chat context. Runs schematic_reader
+  // in 'lookup' mode (exact cat-no match only — no Gemini, no fuzzy guessing) on the
+  // email body so the assistant can quote luminaire list prices instead of falsely
+  // claiming it only has CBU data. Cached per entryId (body is stable per email).
+  const _lumChatCache = new Map<string, Array<{ catNo: string; description: string; listPrice: number; ntp: number }>>();
+  function luminairePricesForBody(body: string, entryId?: string): Promise<Array<{ catNo: string; description: string; listPrice: number; ntp: number }>> {
+    return new Promise((resolve) => {
+      if (entryId && _lumChatCache.has(entryId)) { resolve(_lumChatCache.get(entryId)!); return; }
+      const script = pyFile('schematic_reader.py');
+      if (!existsSync(script) || !String(body || '').trim()) { resolve([]); return; }
+      const tmpDir = path.join(os.tmpdir(), `lumchat_${Date.now()}`);
+      try { mkdirSync(tmpDir, { recursive: true }); } catch {}
+      const inp = path.join(tmpDir, 'body.txt');
+      try { writeFileSync(inp, String(body || '')); } catch { resolve([]); return; }
+      const [py, base] = pyArgs(script);
+      const proc = spawn(py, [...base, '--mode', 'lookup', '--input', inp], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      let out = '';
+      const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 30_000);
+      proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+      const done = (matches: any[]) => {
+        clearTimeout(killer);
+        try { unlinkSync(inp); } catch {}
+        try { rmdirSync(tmpDir); } catch {}
+        const rows = (matches || []).map((m: any) => ({
+          catNo: m.cat_no, description: m.description, listPrice: m.list_price || 0, ntp: m.ntp || 0,
+        }));
+        if (entryId) _lumChatCache.set(entryId, rows);
+        resolve(rows);
+      };
+      proc.on('error', () => done([]));
+      proc.on('close', () => { try { done(JSON.parse(out.trim()).matches || []); } catch { done([]); } });
+    });
+  }
+
   app.post('/api/outlook/chat', async (req, res) => {
-    const { subject, sender, senderEmail, body, analysis, history, question } = req.body as {
-      subject: string; sender: string; senderEmail: string; body: string;
+    const { entryId, subject, sender, senderEmail, body, analysis, history, question, includeIndices } = req.body as {
+      entryId?: string; subject: string; sender: string; senderEmail: string; body: string;
       analysis?: string; history: Array<{ role: 'user' | 'ai'; text: string }>; question: string;
+      includeIndices?: number[];
     };
     const ai = getGemini();
     if (!ai) { res.json({ answer: null, error: 'No Gemini API key — add it in Settings' }); return; }
 
+    const chatIndices = Array.from(new Set((includeIndices || []).filter(n => Number.isFinite(n))));
+
     const me = await connectedUserName();
+    const lumRows = await luminairePricesForBody(body || '', entryId);
+    const lumBlock = lumRows.length
+      ? [
+          `Eaton EL luminaire list prices (from the EL price sheet) for items found in THIS email (ex VAT):`,
+          ...lumRows.map(r => `${r.catNo} — ${r.description}: list £${r.listPrice.toFixed(2)}${r.ntp ? ` | NTP £${r.ntp.toFixed(2)}` : ''}`),
+          `Answer luminaire price questions directly from this table.`,
+        ].join('\n')
+      : `You ALSO have the Eaton EL luminaire price sheet (2000+ part numbers — the same sheet the EL Pricer tab uses). No exact catalogue-number match for this email was found in it, so any specific luminaire mentioned here is likely not on the EL price sheet — say so plainly (and suggest running the EL Pricer on the schematic to confirm). Do NOT claim your only pricing data is CBU/LoadStar.`;
+    const fenBlock = fentonKnowledgeBlock(20);
     const systemCtx = [
-      `You are an AI assistant helping ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest handle emails.`,
-      `Answer questions about the current email concisely and directly.`,
+      `You are Ask Vector — the same AI brain used across this app — now helping ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest with the email they have open in the Inbox.`,
+      `Answer directly and concisely: bottom line first, no filler, no restating the question, no "this is an email". The user is already in the Inbox — never tell them to open it or click Summarize.`,
+      `You have access to TWO price sources: (1) the Eaton LoadStar-PS CBU list prices below, and (2) the Eaton EL luminaire price sheet.`,
       ``,
       `Eaton LoadStar-PS CBU list prices (3hr autonomy, ex VAT):`,
       `Single Phase: 0.5KVA=£5,501 | 1KVA=£7,452 | 2KVA=£8,961 | 4KVA=£12,085 | 5KVA=£13,475 | 8KVA=£24,432 | 10KVA=£27,214 | 12KVA=£36,780 | 15KVA=£40,952 | 16KVA=£49,128 | 20KVA=£54,690`,
@@ -3112,27 +3297,32 @@ async function startServer() {
       `Note: No 50KVA system exists — nearest are 48KVA (£114,515) and 54KVA (£118,897).`,
       `When asked about CBU or LoadStar-PS prices, answer directly from this table. Do not say you lack access to pricing data.`,
       ``,
+      lumBlock,
+      fenBlock ? `\n${fenBlock}` : '',
+      ``,
       `Current email:`,
       `From: ${sender} <${senderEmail}>`,
       `Subject: ${subject}`,
       ``,
-      (body || '').slice(0, 3000),
-      analysis ? `\nPrevious analysis:\n${analysis}` : '',
+      (body || '').slice(0, 8000),
+      analysis ? `\nEmail summary so far:\n${analysis}` : '',
+      chatIndices.length ? `\nImage(s)/document(s) from this email are attached to the latest question — read them to answer.` : '',
     ].join('\n');
 
-    const contents = [
-      ...history.map(m => ({
-        role: m.role === 'user' ? 'user' : 'model' as const,
-        parts: [{ text: m.text }],
-      })),
-      { role: 'user' as const, parts: [{ text: question }] },
-    ];
-
     try {
+      const imageParts = (entryId && chatIndices.length) ? await attachmentParts(entryId, chatIndices) : [];
+      const contents = [
+        ...history.map(m => ({
+          role: m.role === 'user' ? 'user' : 'model' as const,
+          parts: [{ text: m.text }],
+        })),
+        { role: 'user' as const, parts: [{ text: question }, ...imageParts] },
+      ];
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: AI_MODEL_SMART,
         contents,
-        config: { systemInstruction: systemCtx, maxOutputTokens: 800, temperature: 0.3 },
+        // 2.5-pro thinking tokens share the output budget in this SDK — keep headroom.
+        config: { systemInstruction: systemCtx, maxOutputTokens: 6144, temperature: 0.3 },
       });
       res.json({ answer: response.text });
     } catch (e: any) {
@@ -3140,106 +3330,283 @@ async function startServer() {
     }
   });
 
-  // ── Morning Briefing ──────────────────────────────────────────────────────
-  app.post('/api/outlook/briefing', async (req, res) => {
-    const { emails } = req.body as {
-      emails: Array<{
-        entryId: string; subject: string; sender: string; senderEmail: string;
-        received: string; bodyPreview: string; hasPdf: boolean;
-      }>;
-    };
+  // ── EL Internal Info — EATON_Emergency_Lighting_INTERNAL updates ────────────
+  const EL_SENDER_MATCH = 'emergency_lighting_internal';
+  const elParseAtts = (s: string) => { try { return JSON.parse(s || '[]'); } catch { return []; } };
+  const elRows = () =>
+    queryAll('SELECT entryId, received, subject, sender, senderEmail, body, attachments FROM el_internal ORDER BY received DESC')
+      .map(r => ({ ...r, attachments: elParseAtts(r.attachments) }));
+  const elMeta = () => queryAll('SELECT digest, digestAt, lastRefreshAt FROM el_internal_meta WHERE id = 1')[0] || {};
+  const elWriteMeta = (patch: { digest?: string | null; digestAt?: string | null; lastRefreshAt?: string | null }) => {
+    const cur = elMeta();
+    runWrite('INSERT OR REPLACE INTO el_internal_meta (id, digest, digestAt, lastRefreshAt) VALUES (1, ?, ?, ?)', [
+      patch.digest        !== undefined ? patch.digest        : (cur.digest ?? null),
+      patch.digestAt      !== undefined ? patch.digestAt      : (cur.digestAt ?? null),
+      patch.lastRefreshAt !== undefined ? patch.lastRefreshAt : (cur.lastRefreshAt ?? null),
+    ]);
+  };
+  // Corpus text for the AI (subjects + bodies + file names), newest first.
+  const elCorpus = (rows: any[], perBody = 2500) => rows.map((e, i) =>
+    `### ${i + 1}. ${String(e.received || '').slice(0, 10)} — ${e.subject}\n${String(e.body || '').slice(0, perBody)}`
+    + ((e.attachments || []).length ? `\n[attached files: ${e.attachments.map((a: any) => a.name).join(', ')}]` : '')
+  ).join('\n\n');
+
+  app.get('/api/el-internal/list', (_req, res) => {
+    const m = elMeta();
+    res.json({ emails: elRows(), digest: m.digest ?? null, digestAt: m.digestAt ?? null, lastRefreshAt: m.lastRefreshAt ?? null });
+  });
+
+  // Pull this year's emails from the sender, upsert new ones (incremental).
+  app.post('/api/el-internal/refresh', async (_req, res) => {
+    try {
+      const since = `01/01/${new Date().getFullYear()}`;
+      const r = await runOutlookPy(['--action', 'emails-from', '--sender', EL_SENDER_MATCH, '--since', since]);
+      const fetched = (r.emails || []) as any[];
+      const existing = new Set(queryAll('SELECT entryId FROM el_internal').map((x: any) => x.entryId));
+      const now = new Date().toISOString();
+      let added = 0;
+      for (const e of fetched) {
+        runWrite(
+          `INSERT OR REPLACE INTO el_internal (entryId, received, subject, sender, senderEmail, body, attachments, ts) VALUES (?,?,?,?,?,?,?,?)`,
+          [e.entryId, e.received || '', e.subject || '', e.sender || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), now],
+        );
+        if (!existing.has(e.entryId)) added++;
+      }
+      elWriteMeta({ lastRefreshAt: now });
+      res.json({ added, total: fetched.length, emails: elRows(), lastRefreshAt: now, error: r.error });
+    } catch (e: any) {
+      res.json({ error: e.message, emails: elRows() });
+    }
+  });
+
+  // Consolidated "current state" digest across all stored updates.
+  app.post('/api/el-internal/digest', async (_req, res) => {
     const ai = getGemini();
-    if (!ai) { res.json({ briefing: null, error: 'No Gemini API key — add it in Settings' }); return; }
-    if (!emails || emails.length === 0) { res.json({ briefing: [] }); return; }
-
+    if (!ai) { res.json({ digest: null, error: 'No Gemini API key — add it in Settings' }); return; }
+    const rows = elRows();
+    if (rows.length === 0) { res.json({ digest: null, error: 'No EL internal emails stored yet — hit Refresh first.' }); return; }
     const me = await connectedUserName();
-
-    // Use short numeric ids in the prompt to avoid 140-char entryIds blowing the token budget
-    const idMap = emails.map((e, i) => ({ idx: i + 1, entryId: e.entryId }));
-    const emailList = emails.map((e, i) =>
-      `${i + 1}. Subject: ${e.subject}\n   From: ${e.sender} <${e.senderEmail}>\n   Preview: ${e.bodyPreview.slice(0, 120)}${e.hasPdf ? '\n   [PDF attached]' : ''}`
-    ).join('\n\n');
-
-    const prompt =
-`You are helping ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest triage the inbox.
-
-For each email, output one JSON object with:
-- "id": the email number (integer, 1-${emails.length})
-- "priority": "high", "medium", or "low"
-- "tag": one of "Quote Request", "PDF Received", "Action Required", "Follow Up", "Info Only", "FYI"
-- "action": one imperative sentence (max 12 words)
-- "summary": one sentence (max 15 words)
-
-Output ONLY a JSON array. No prose, no markdown.
-
-Emails:
-${emailList}`;
-
-    let lastErr = '';
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
+    const prompt = [
+      `You are compiling a living internal-updates brief for ${me ? me + ', ' : ''}an Eaton Emergency Lighting (EL) engineer in Budapest,`,
+      `from ALL ${rows.length} internal update emails sent this year by EATON_Emergency_Lighting_INTERNAL.`,
+      ``,
+      `Produce a concise Markdown digest of the CURRENT state, grouped under these exact headings (skip a heading if it has nothing):`,
+      `## 🆕 New / Launched`,
+      `## ⛔ Discontinued / Phased out`,
+      `## 📦 Stock & Availability`,
+      `## 🔧 Technical / Other`,
+      ``,
+      `Rules: one bullet per item, prefix each with its date (YYYY-MM-DD). When the same product/topic was updated multiple times, MERGE into one bullet reflecting the latest status. Be factual, no filler. Mention key part numbers/product names.`,
+      ``,
+      `--- UPDATE EMAILS (newest first) ---`,
+      elCorpus(rows),
+    ].join('\n');
+    try {
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: { maxOutputTokens: 8192, temperature: 0.1 },
+        config: { maxOutputTokens: 4096, temperature: 0.2 },
       });
-      const raw = (response.text || '').trim();
-      console.log('[briefing] raw response (%d chars): %s', raw.length, raw.slice(0, 300));
+      const digest = response.text; const now = new Date().toISOString();
+      if (digest) elWriteMeta({ digest, digestAt: now });
+      res.json({ digest, digestAt: now });
+    } catch (e: any) {
+      const detail = e.cause?.message ? ` (${e.cause.message})` : '';
+      res.json({ digest: null, error: 'Gemini error: ' + e.message + detail });
+    }
+  });
 
-      // Robust JSON array extraction: find first '[' and walk to its matching ']'
-      function extractArray(text: string): any[] | null {
-        // First try: maybe the whole response (stripped of fences) is already valid JSON
-        const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
-        try {
-          const p = JSON.parse(stripped);
-          if (Array.isArray(p)) return p;
-        } catch {}
-        // Second try: find first '[' and count brackets to find matching ']'
-        const start = text.indexOf('[');
-        if (start === -1) return null;
-        let depth = 0, inStr = false, esc = false;
-        for (let i = start; i < text.length; i++) {
-          const c = text[i];
-          if (esc)             { esc = false; continue; }
-          if (c === '\\' && inStr) { esc = true;  continue; }
-          if (c === '"')       { inStr = !inStr; continue; }
-          if (inStr)           continue;
-          if (c === '[')       depth++;
-          else if (c === ']') {
-            depth--;
-            if (depth === 0) {
-              try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
-            }
-          }
-        }
-        return null;
+  // Ask-AI across all stored EL internal updates.
+  app.post('/api/el-internal/chat', async (req, res) => {
+    const { history, question } = req.body as { history: Array<{ role: 'user' | 'ai'; text: string }>; question: string };
+    const ai = getGemini();
+    if (!ai) { res.json({ answer: null, error: 'No Gemini API key — add it in Settings' }); return; }
+    const rows = elRows();
+    if (rows.length === 0) { res.json({ answer: null, error: 'No EL internal emails stored yet — hit Refresh first.' }); return; }
+    const me = await connectedUserName();
+    const systemCtx = [
+      `You help ${me ? me + ', ' : ''}an Eaton Emergency Lighting engineer using Vector.`,
+      `Answer questions about EL division internal updates using ONLY the emails below. Cite the update date (YYYY-MM-DD) you drew from. If something isn't covered, say so plainly. Be concise and direct.`,
+      ``,
+      `--- EL INTERNAL UPDATE EMAILS (newest first) ---`,
+      elCorpus(rows, 2000),
+    ].join('\n');
+    const contents = [
+      ...(history || []).map(m => ({ role: m.role === 'user' ? 'user' : 'model' as const, parts: [{ text: m.text }] })),
+      { role: 'user' as const, parts: [{ text: question }] },
+    ];
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents,
+        config: { systemInstruction: systemCtx, maxOutputTokens: 1200, temperature: 0.3 },
+      });
+      res.json({ answer: response.text });
+    } catch (e: any) {
+      res.json({ answer: null, error: 'Gemini error: ' + e.message });
+    }
+  });
+
+  // ── Fenton KB — Mark Fenton's expert answers → Q&A knowledge cards ──────────
+  const FENTON_SENDER    = 'markafenton';
+  const FENTON_RECIPIENTS = 'laithal-soub,ukquotefactoryel';
+  const fenParseJson = (s: string, fb: any) => { try { return JSON.parse(s || ''); } catch { return fb; } };
+  const fenCards = () =>
+    queryAll('SELECT entryId, received, subject, senderEmail, body, attachments, topic, question, answer, tags, extracted FROM fenton_kb ORDER BY received DESC')
+      .map(r => ({ ...r, attachments: fenParseJson(r.attachments, []), tags: fenParseJson(r.tags, []) }));
+  const fenMeta = () => queryAll('SELECT lastRefreshAt FROM fenton_meta WHERE id = 1')[0] || {};
+
+  // Pull the first JSON array out of a model response (handles ``` fences / prose).
+  function firstJsonArray(text: string): any[] | null {
+    const stripped = (text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+    try { const p = JSON.parse(stripped); if (Array.isArray(p)) return p; } catch {}
+    const start = text.indexOf('[');
+    if (start === -1) return null;
+    let depth = 0, inStr = false, esc = false;
+    for (let i = start; i < text.length; i++) {
+      const c = text[i];
+      if (esc) { esc = false; continue; }
+      if (c === '\\' && inStr) { esc = true; continue; }
+      if (c === '"') { inStr = !inStr; continue; }
+      if (inStr) continue;
+      if (c === '[') depth++;
+      else if (c === ']') { depth--; if (depth === 0) { try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; } } }
+    }
+    return null;
+  }
+
+  // AI-extract Q&A cards for rows that don't have one yet (one batched call).
+  async function fentonExtract(force: boolean): Promise<void> {
+    const ai = getGemini();
+    if (!ai) return;
+    const rows = queryAll(
+      `SELECT entryId, received, subject, body FROM fenton_kb ${force ? '' : 'WHERE extracted = 0'} ORDER BY received DESC`
+    );
+    if (rows.length === 0) return;
+    const list = rows.map((r: any, i: number) =>
+      `#### idx ${i} · ${String(r.received).slice(0, 10)} · ${r.subject}\n${String(r.body || '').slice(0, 2500)}`
+    ).join('\n\n');
+    const prompt = [
+      `You are cataloguing the expertise of Mark Fenton (Senior Lighting Application Engineer, Eaton UK) from emails he sent to the EL quote team.`,
+      `For EACH email below output one JSON object with:`,
+      `- "idx": the email's idx number`,
+      `- "topic": a short title (max 8 words)`,
+      `- "question": what was asked or the situation/problem being addressed (infer from the quoted thread/subject if needed; max 30 words)`,
+      `- "answer": Mark's guidance/answer as reusable knowledge, 1-3 sentences. Capture the ACTIONABLE fact/rule, not pleasantries.`,
+      `- "tags": array of 2-4 lowercase keywords (e.g. "bidman", "loadstar", "dualguard", "pricing", "salesforce")`,
+      `If an email is an announcement rather than a Q&A, still capture topic+answer (question = the context).`,
+      `Output ONLY a JSON array of these objects, nothing else.`,
+      ``,
+      `--- EMAILS ---`,
+      list,
+    ].join('\n');
+    try {
+      const resp = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { maxOutputTokens: 8192, temperature: 0.2, responseMimeType: 'application/json' },
+      });
+      const arr = firstJsonArray(resp.text || '');
+      if (!arr) return;
+      const now = new Date().toISOString();
+      for (const card of arr) {
+        const row = rows[card.idx];
+        if (!row) continue;
+        runWrite(
+          `UPDATE fenton_kb SET topic=?, question=?, answer=?, tags=?, extracted=1, ts=? WHERE entryId=?`,
+          [String(card.topic || ''), String(card.question || ''), String(card.answer || ''),
+           JSON.stringify(Array.isArray(card.tags) ? card.tags : []), now, row.entryId],
+        );
       }
+    } catch { /* leave rows unextracted; a later refresh retries */ }
+  }
 
-      const parsed = extractArray(raw);
-      if (parsed) {
-        // Map short numeric ids back to real Outlook entryIds
-        const briefing = parsed.map((item: any) => ({
-          ...item,
-          entryId: idMap.find(m => m.idx === item.id)?.entryId ?? '',
-        })).filter((item: any) => item.entryId);
-        console.log('[briefing] parsed %d items', briefing.length);
-        res.json({ briefing });
-        return;
+  app.get('/api/fenton/list', (_req, res) => {
+    res.json({ cards: fenCards(), lastRefreshAt: fenMeta().lastRefreshAt ?? null });
+  });
+
+  // Fetch Mark Fenton's recent emails → upsert → AI-extract Q&A. Shared by the
+  // (now headless) refresh endpoint and the background timer below, so the Fenton
+  // knowledge base stays fresh for Ask Vector even though the tab is gone.
+  async function refreshFentonKB(force: boolean): Promise<{ added: number; total: number; lastRefreshAt: string; error?: string }> {
+    const since = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1);
+      return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`; })();
+    const r = await runOutlookPy(['--action', 'emails-from', '--sender', FENTON_SENDER, '--recipient', FENTON_RECIPIENTS, '--since', since]);
+    const fetched = (r.emails || []) as any[];
+    const existing = new Set(queryAll('SELECT entryId FROM fenton_kb').map((x: any) => x.entryId));
+    const now = new Date().toISOString();
+    let added = 0;
+    for (const e of fetched) {
+      if (existing.has(e.entryId)) {
+        runWrite(`UPDATE fenton_kb SET received=?, subject=?, senderEmail=?, body=?, attachments=? WHERE entryId=?`,
+          [e.received || '', e.subject || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), e.entryId]);
       } else {
-        console.log('[briefing] parse failed, raw:', raw.slice(0, 500));
-        res.json({ briefing: null, error: 'Could not parse AI response. Raw: ' + raw.slice(0, 200) });
-        return;
-      }
-      } catch (e: any) {
-        lastErr = e.message;
-        const is5xx = /5\d\d/.test(e.message) || e.message.includes('Bad Gateway') || e.message.includes('unavailable');
-        console.warn(`[briefing] attempt ${attempt} failed: ${e.message}`);
-        if (!is5xx || attempt === 3) break;
-        await new Promise(r => setTimeout(r, 2000 * attempt));
+        runWrite(
+          `INSERT INTO fenton_kb (entryId, received, subject, senderEmail, body, attachments, topic, question, answer, tags, extracted, ts)
+           VALUES (?,?,?,?,?,?,'','','','[]',0,?)`,
+          [e.entryId, e.received || '', e.subject || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), now]);
+        added++;
       }
     }
-    console.error('[briefing] Gemini error after retries:', lastErr);
-    res.json({ briefing: null, error: 'Gemini error: ' + lastErr });
+    await fentonExtract(force);
+    runWrite('INSERT OR REPLACE INTO fenton_meta (id, lastRefreshAt) VALUES (1, ?)', [now]);
+    return { added, total: fetched.length, lastRefreshAt: now, error: r.error };
+  }
+
+  app.post('/api/fenton/refresh', async (req, res) => {
+    try {
+      const out = await refreshFentonKB(!!(req.body && req.body.force));
+      res.json({ ...out, cards: fenCards() });
+    } catch (e: any) {
+      res.json({ error: e.message, cards: fenCards() });
+    }
+  });
+
+  // Keep the KB fresh without a tab: kick once ~90s after boot if stale (>12h),
+  // then every 6h, but only when Outlook + a JOE session are actually available.
+  let _fentonRefreshing = false;
+  async function maybeRefreshFenton() {
+    if (_fentonRefreshing || !getSpCookies()) return;
+    const last = fenMeta().lastRefreshAt as string | undefined;
+    if (last && Date.now() - new Date(last).getTime() < 12 * 3600 * 1000) return;
+    _fentonRefreshing = true;
+    try { await refreshFentonKB(false); appendLog('[fenton] background KB refresh done'); }
+    catch (e: any) { appendLog('[fenton] background refresh failed: ' + e.message); }
+    _fentonRefreshing = false;
+  }
+  setTimeout(maybeRefreshFenton, 90_000);
+  setInterval(maybeRefreshFenton, 6 * 3600 * 1000);
+
+  app.post('/api/fenton/chat', async (req, res) => {
+    const { history, question } = req.body as { history: Array<{ role: 'user' | 'ai'; text: string }>; question: string };
+    const ai = getGemini();
+    if (!ai) { res.json({ answer: null, error: 'No Gemini API key — add it in Settings' }); return; }
+    const rows = fenCards();
+    if (rows.length === 0) { res.json({ answer: null, error: 'No Fenton emails stored yet — hit Refresh first.' }); return; }
+    const me = await connectedUserName();
+    const corpus = rows.map((r: any, i: number) =>
+      `### ${i + 1}. ${String(r.received).slice(0, 10)} — ${r.subject}\n${r.answer ? `Mark's guidance: ${r.answer}\n` : ''}${String(r.body || '').slice(0, 1800)}`
+    ).join('\n\n');
+    const systemCtx = [
+      `You are the knowledge base of Mark Fenton (Senior Lighting Application Engineer, Eaton UK) — the EL team's go-to expert.`,
+      `Answer ${me ? me + "'s" : 'the user\'s'} questions using ONLY Mark's emails/answers below. Speak as a distilled reference of what Mark has advised. Cite the date (YYYY-MM-DD) of the relevant answer. If it isn't covered, say so plainly. Be concise and practical.`,
+      ``,
+      `--- MARK FENTON'S EMAILS & ANSWERS (newest first) ---`,
+      corpus,
+    ].join('\n');
+    const contents = [
+      ...(history || []).map(m => ({ role: m.role === 'user' ? 'user' : 'model' as const, parts: [{ text: m.text }] })),
+      { role: 'user' as const, parts: [{ text: question }] },
+    ];
+    try {
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash', contents,
+        config: { systemInstruction: systemCtx, maxOutputTokens: 1200, temperature: 0.3 },
+      });
+      res.json({ answer: response.text });
+    } catch (e: any) {
+      res.json({ answer: null, error: 'Gemini error: ' + e.message });
+    }
   });
 
   // ── Flag / unflag email ───────────────────────────────────────────────────
@@ -4060,6 +4427,111 @@ ${emailList}`;
         if (!res.headersSent) res.json({ id: dlId });
       } else {
         const msg = errLine ? errLine.slice('__ERROR__:'.length) : (stderr.trim() || stdout.trim() || 'No output from script');
+        if (!res.headersSent) res.status(500).json({ error: msg });
+      }
+    }));
+  });
+
+  // ── Quick Quote — Inbox proposal generator (CBU BOM + luminaires → PDF) ─────
+  const quoteDownloads = new Map<string, { filePath: string; tmpDir: string; filename: string }>();
+
+  app.get('/api/download/quote/:id', (req, res) => {
+    const entry = quoteDownloads.get(req.params.id);
+    if (!entry || !existsSync(entry.filePath)) { res.status(404).json({ error: 'Not found or expired' }); return; }
+    res.setHeader('Content-Type', 'application/pdf');
+    const safe = (entry.filename || 'Quote').replace(/[^\w\s.\-()&]/g, '_').trim() || 'Quote';
+    res.setHeader('Content-Disposition', `attachment; filename="${safe}.pdf"`);
+    const stream = createReadStream(entry.filePath);
+    stream.on('end', () => { quoteDownloads.delete(req.params.id); try { unlinkSync(entry.filePath); } catch {} });
+    stream.pipe(res);
+  });
+
+  // AI: which CBU/LoadStar system (if any) does this email discuss?
+  app.post('/api/quote/detect-cbu', express.json(), async (req, res) => {
+    const { body, systems } = req.body as { body: string; systems: string[] };
+    const ai = getGemini();
+    if (!ai || !Array.isArray(systems) || systems.length === 0) { res.json({ system: '' }); return; }
+    const prompt = [
+      `An Eaton EL engineer is drafting a proposal. From the email below, decide whether a LoadStar-PS / CBU (central battery UPS) system is being requested, and which size.`,
+      `Valid system keys (phase + kVA): ${systems.join(' | ')}`,
+      `Reply with ONLY the single best-matching key EXACTLY as written above, or "NONE" if no CBU/LoadStar system is clearly referenced. No other text.`,
+      ``,
+      `Email:`,
+      (body || '').slice(0, 6000),
+    ].join('\n');
+    try {
+      const r = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { maxOutputTokens: 40, temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
+      });
+      const t = (r.text || '').trim().replace(/["'`]/g, '');
+      const hit = systems.find(s => s === t) || systems.find(s => t.includes(s)) || '';
+      res.json({ system: hit });
+    } catch { res.json({ system: '' }); }
+  });
+
+  // Extract + price luminaires from the email text via schematic_reader (list mode).
+  app.post('/api/quote/luminaires', express.json(), (req, res) => {
+    const { body } = req.body as { body: string };
+    const script = pyFile('schematic_reader.py');
+    if (!existsSync(script)) { res.json({ items: [], error: 'schematic_reader.py not found' }); return; }
+    const tmpDir = path.join(os.tmpdir(), `qlum_${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const inp = path.join(tmpDir, 'body.txt');
+    writeFileSync(inp, String(body || ''));
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--mode', 'list', '--input', inp], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let out = '', err = '';
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 120_000);
+    proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+    const cleanup = () => { try { unlinkSync(inp); } catch {} try { rmdirSync(tmpDir); } catch {} };
+    proc.on('error', () => { clearTimeout(killer); cleanup(); if (!res.headersSent) res.json({ items: [], error: 'spawn failed' }); });
+    proc.on('close', () => {
+      clearTimeout(killer); cleanup();
+      try {
+        const j = JSON.parse(out.trim());
+        const items = (j.items || [])
+          .filter((it: any) => it.matched)
+          .map((it: any) => ({ catNo: it.cat_no, description: it.description, qty: it.qty || 1, price: it.list_price || it.ntp || 0 }));
+        if (!res.headersSent) res.json({ items, unmatched: (j.unmatched || []).length });
+      } catch { if (!res.headersSent) res.json({ items: [], error: err.trim() || 'no output' }); }
+    });
+  });
+
+  // Generate the proposal PDF from assembled line items.
+  app.post('/api/quote/generate', express.json({ limit: '2mb' }), (req, res) => {
+    const { header, lines, appendComm, appendTC } = req.body as { header: any; lines: any[]; appendComm?: boolean; appendTC?: boolean };
+    if (!Array.isArray(lines) || lines.length === 0) { res.status(400).json({ error: 'No line items to quote' }); return; }
+    const script = pyFile('quote_export.py');
+    if (!existsSync(script)) { res.status(500).json({ error: 'quote_export.py not found' }); return; }
+    const tmpDir = path.join(os.tmpdir(), `quote_${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const inp = path.join(tmpDir, 'in.json');
+    // Base template already includes T&C pages, so extras default OFF (opt-in only).
+    writeFileSync(inp, JSON.stringify({ header: header || {}, lines, appendComm: appendComm === true, appendTC: appendTC === true }));
+    const [py, base] = pyArgs(script);
+    const child = spawn(py, [...base, '--input', inp, '--outdir', tmpDir], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let stdout = '', stderr = '', settled = false;
+    const finish = (fn: () => void) => { if (settled) return; settled = true; clearTimeout(hardTimer); fn(); };
+    const hardTimer = setTimeout(() => { try { child.kill(); } catch {} finish(() => { if (!res.headersSent) res.status(504).json({ error: 'Quote export timed out' }); }); }, 120_000);
+    child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    child.on('error', (e: Error) => finish(() => { if (!res.headersSent) res.status(500).json({ error: `Could not start Python: ${e.message}` }); }));
+    child.on('close', () => finish(() => {
+      const pdfLine = stdout.split('\n').find(l => l.startsWith('__PDF__:'));
+      const errLine = stdout.split('\n').find(l => l.startsWith('__ERROR__:'));
+      if (pdfLine) {
+        const filePath = pdfLine.slice('__PDF__:'.length).trim();
+        const dlId = randomUUID();
+        // Filename = "<quote name> - <quote number>" (whatever is present).
+        const filename = [header?.quoteName, header?.quoteNumber].map(s => String(s || '').trim()).filter(Boolean).join(' - ') || 'Quote';
+        quoteDownloads.set(dlId, { filePath, tmpDir, filename });
+        setTimeout(() => quoteDownloads.delete(dlId), 10 * 60 * 1000);
+        if (!res.headersSent) res.json({ id: dlId });
+      } else {
+        const msg = errLine ? errLine.slice('__ERROR__:'.length) : (stderr.trim() || 'No output from quote export');
         if (!res.headersSent) res.status(500).json({ error: msg });
       }
     }));

@@ -5,7 +5,7 @@ import {
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
   Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
   Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge, Pin, PinOff,
-  Lock, MessageSquarePlus, Rocket,
+  Lock, MessageSquarePlus, Rocket, Megaphone,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
@@ -22,13 +22,14 @@ import { InboxPage }       from './pages/Inbox';
 import { SettingsPage }    from './pages/Settings';
 import { OverlayPage }     from './pages/Overlay';
 import { CrmPage }         from './pages/Crm';
+import { ELInfoPage }      from './pages/ELInfo';
 // AI Assistant + Tools pages are lazy-imported below, gated on STRIPPED. In the
 // stripped ship build that gate is a compile-time `true`, so Rollup dead-code-
 // eliminates their code from the bundle; locally (full app) they load normally.
 
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 type TabId =
-  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Inbox' | 'CRM'
+  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Inbox' | 'CRM' | 'ELInfo'
   | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Docs' | 'Settings';
 
 // Stripped ship build vs full local app. The desktop ship is produced with
@@ -42,7 +43,7 @@ const STRIPPED = import.meta.env.PROD;
 // the stripped ship (personal API keys / tooling not ready for rollout), full
 // locally.
 const LOCKED_TABS = new Set<TabId>(
-  STRIPPED ? ['Assistant', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
+  STRIPPED ? ['Assistant', 'ELInfo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
 );
 const isLocked = (t: TabId) => LOCKED_TABS.has(t);
 
@@ -58,7 +59,8 @@ const CBUCalculator  = STRIPPED ? null : React.lazy(() => import('./CBUCalculato
 
 // Title/description shown on each locked tab's Coming Soon wall.
 const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
-  Assistant:  { title: 'AI Assistant',      desc: 'Your in-app AI copilot for quotes, specs, and projects is being prepared for the whole team. Stay tuned.' },
+  Assistant:  { title: 'Ask Vector',        desc: 'Your in-app AI copilot for quotes, specs, and projects is being prepared for the whole team. Stay tuned.' },
+  ELInfo:     { title: 'EL Internal Info',  desc: 'Your EL division internal-updates hub — digest, files and AI chat — is coming soon to your workspace.' },
   Schematics: { title: 'Schematics Reader', desc: 'Automated schematic analysis is coming soon to your workspace.' },
   PMO:        { title: 'PMO',               desc: 'PMO automation is being readied for the team and will land here soon.' },
   CBU:        { title: 'CBU Sizer',         desc: 'The CBU sizing tool is coming soon to your workspace.' },
@@ -75,6 +77,7 @@ const NAV_STRUCTURE = {
       { id: 'Assistant' as TabId, Icon: Sparkles,         labelKey: 'assistant' as const },
       { id: 'Inbox'     as TabId, Icon: Mail,            labelKey: 'inbox'     as const },
       { id: 'CRM'       as TabId, Icon: Users,           labelKey: 'crm'       as const },
+      { id: 'ELInfo'    as TabId, Icon: Megaphone,       labelKey: 'elInfo'    as const },
       { id: 'History'   as TabId, Icon: HistoryIcon,     labelKey: 'history'   as const },
       { id: 'Analytics' as TabId, Icon: BarChart3,       labelKey: 'analytics' as const },
     ],
@@ -97,6 +100,7 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   Assistant: { t: 'assistant',  s: 'sub_assistant'  },
   Inbox:     { t: 'inbox',      s: 'sub_inbox'      },
   CRM:       { t: 'crm',        s: 'sub_crm'       },
+  ELInfo:    { t: 'elInfo',     s: 'sub_elInfo'    },
   History:   { t: 'history',    s: 'sub_history'   },
   Analytics: { t: 'analytics',  s: 'sub_analytics' },
   PMO:       { t: 'pmo',        s: 'sub_pmo'       },
@@ -398,9 +402,9 @@ function SplashScreen({
 
 // ─── Keyboard shortcuts modal ────────────────────────────────────────────────
 const SHORTCUTS = [
-  { key: 'Ctrl + K',  desc: 'Open AI Assistant' },
+  { key: 'Ctrl + K',  desc: 'Open Ask Vector' },
   { key: 'Alt + 1',   desc: 'Dashboard' },
-  { key: 'Alt + 2',   desc: 'Assistant' },
+  { key: 'Alt + 2',   desc: 'Ask Vector' },
   { key: 'Alt + 3',   desc: 'Inbox' },
   { key: 'Alt + 4',   desc: 'History' },
   { key: 'Alt + 5',   desc: 'Analytics' },
@@ -524,7 +528,7 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
               <div className="w-5 h-5 rounded-md bg-brand-600 flex items-center justify-center shrink-0">
                 <span className="text-white text-[11px] font-black leading-none">V</span>
               </div>
-              <span className="flex-1 text-[12px] font-semibold">Vector AI</span>
+              <span className="flex-1 text-[12px] font-semibold">Ask Vector</span>
               <button onClick={() => { onOpenFull(); setOpen(false); }}
                 className="text-[10.5px] text-brand-600 hover:text-brand-700 dark:text-brand-400 font-medium mr-1">
                 Full view →
@@ -830,7 +834,7 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
 // ────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ────────────────────────────────────────────────────────────────────────────
-const VALID_TABS: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'CRM', 'History', 'Analytics', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'Settings'];
+const VALID_TABS: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'CRM', 'ELInfo', 'History', 'Analytics', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'Settings'];
 
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
@@ -1009,7 +1013,7 @@ export default function App() {
       // ⌘K / Ctrl+K → AI Assistant (locked for team rollout)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        if (isLocked('Assistant')) toast('info', 'AI Assistant — coming soon');
+        if (isLocked('Assistant')) toast('info', 'Ask Vector — coming soon');
         else setTab('Assistant');
         return;
       }
@@ -1085,6 +1089,7 @@ export default function App() {
                       {t === 'Analytics'  && <AnalyticsPage />}
                       {t === 'History'    && <HistoryPage      toast={toast} />}
                       {t === 'CRM'        && <CrmPage          toast={toast} />}
+                      {t === 'ELInfo'     && <ELInfoPage       toast={toast} />}
                       {t === 'Assistant'  && AssistantPage  && <AssistantPage  connected={!!connected} toast={toast} />}
                       {t === 'Schematics' && SchematicsPage && <SchematicsPage toast={toast} />}
                       {t === 'PMO'        && PmoPage        && <PmoPage        toast={toast} />}
