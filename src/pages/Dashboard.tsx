@@ -275,16 +275,16 @@ export function DashboardPage({
         <div className="col-span-12 lg:col-span-8 space-y-5">
 
           <Card padded={false}>
-            <div className="px-5 py-4 flex items-center justify-between border-b border-ink-200/70 dark:border-ink-800">
+            <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
               <div>
-                <h2 className="text-[13px] font-semibold tracking-tight">Upload workflow</h2>
-                <p className="text-[11.5px] text-ink-500 dark:text-ink-400 mt-1">Drop files → tag → run. Each Run pushes to SharePoint.</p>
+                <h2 className="text-[14px] font-semibold tracking-[-0.015em]">Upload workflow</h2>
+                <p className="text-[11.5px] text-[var(--t3)] mt-1">Drop files → tag → run. Each run pushes to SharePoint.</p>
               </div>
               <div className="flex items-center gap-1.5">
                 <WfStep n={1} label="Files"   done={pdfs.length > 0} />
-                <span className="w-4 h-px bg-ink-200 dark:bg-ink-800" />
+                <span className="w-[22px] h-px bg-[var(--line-2)]" />
                 <WfStep n={2} label="Details" done={allResolved && !!arrived} />
-                <span className="w-4 h-px bg-ink-200 dark:bg-ink-800" />
+                <span className="w-[22px] h-px bg-[var(--line-2)]" />
                 <WfStep n={3} label="Run"     done={step1 === 'done' || step2 === 'done'} />
               </div>
             </div>
@@ -292,30 +292,32 @@ export function DashboardPage({
             {/* Stage 1 — Files */}
             <Stage n={1} title="Files" right={<Pill tone="neutral">{pdfs.length} file{pdfs.length !== 1 ? 's' : ''}</Pill>}>
               <div {...getRootProps()} className={cn(
-                'border-2 border-dashed rounded-lg px-5 py-5 flex items-center justify-center gap-3 cursor-pointer transition-colors',
+                'rounded-[12px] px-4 py-4 flex items-center justify-center gap-3 cursor-pointer transition-colors border-[1.5px] border-dashed',
                 isDragActive
-                  ? 'border-brand-400 bg-brand-50/50 dark:bg-brand-900/15'
-                  : 'border-ink-200 dark:border-ink-700 hover:border-brand-400 dark:hover:border-brand-500 hover:bg-brand-50/40 dark:hover:bg-brand-900/10',
+                  ? 'border-[var(--accent-line)] bg-[var(--accent-soft)]'
+                  : 'border-[var(--line-3)] bg-[var(--s1)] hover:border-[var(--accent-line)] hover:bg-[var(--accent-soft)]',
               )}>
                 <input {...getInputProps()} />
-                <UploadCloud className="w-5 h-5 text-ink-400 shrink-0" />
+                <span className="w-[34px] h-[34px] rounded-[10px] flex items-center justify-center shrink-0" style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
+                  <UploadCloud className="w-[18px] h-[18px]" />
+                </span>
                 <div>
-                  <p className="text-[12px] text-ink-700 dark:text-ink-200 font-medium">
+                  <p className="text-[12.5px] text-[var(--t1)] font-medium">
                     {isDragActive ? 'Release to add files' : 'Drop quote files here'}
                   </p>
-                  <p className="text-[10.5px] text-ink-400 mt-0.5">PDF, XLSX, DOCX · max 30 MB each</p>
+                  <p className="text-[10.5px] text-[var(--t3)] mt-0.5">PDF, XLSX, DOCX · max 30 MB each</p>
                 </div>
               </div>
               {pdfs.length > 0 && (
-                <div className="mt-3 space-y-1 max-h-40 overflow-y-auto">
+                <div className="mt-2.5 space-y-0.5 max-h-40 overflow-y-auto vec-scroll">
                   {pdfs.map(p => (
-                    <div key={p.name} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-ink-50 dark:hover:bg-ink-800/60 group text-[11.5px]">
-                      <FileText className="w-3.5 h-3.5 text-ink-400 shrink-0" />
-                      <span className="truncate flex-1 font-medium">{p.name}</span>
-                      <span className="text-ink-400 num shrink-0">{(p.size / 1024).toFixed(0)} KB</span>
-                      <span className="text-ink-400 num shrink-0">{relTime(p.modified)}</span>
+                    <div key={p.name} className="flex items-center gap-2.5 px-2 py-1.5 rounded-[9px] hover:bg-[var(--s3)] group text-[11.5px]">
+                      <FileText className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
+                      <span className="truncate flex-1 font-medium text-[var(--t1)]">{p.name}</span>
+                      <span className="text-[var(--t3)] num shrink-0">{(p.size / 1024).toFixed(0)} KB</span>
+                      <span className="text-[var(--t3)] num shrink-0">{relTime(p.modified)}</span>
                       <button onClick={() => deletePdf(p.name)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity text-ink-400 hover:text-red-500">
+                        className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--t3)] hover:text-[var(--err)]">
                         <Trash2 className="w-3 h-3" />
                       </button>
                     </div>
@@ -329,11 +331,11 @@ export function DashboardPage({
               <div className="grid grid-cols-2 gap-5">
                 <div>
                   <div className="flex items-center justify-between mb-2 gap-2">
-                    <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500">Product line · per quote</label>
+                    <label className="block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-[var(--t3)]">Product line · per quote</label>
                     {pdfs.length > 1 && (
                       <select value=""
                         onChange={e => { const v = e.target.value; if (v) setFileLines(Object.fromEntries(pdfs.map(p => [p.name, v]))); }}
-                        className="shrink-0 h-6 text-[10px] rounded-md px-1.5 bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 focus:outline-none focus:ring-brand-400">
+                        className="shrink-0 h-6 text-[10px] rounded-[7px] px-1.5 bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:outline-none focus:border-[var(--accent-line)]">
                         <option value="">Set all…</option>
                         {PRODUCT_OPTS.map(o => <option key={o} value={o}>{PRODUCT_LABELS[o] || o}</option>)}
                       </select>
@@ -341,35 +343,36 @@ export function DashboardPage({
                   </div>
 
                   {pdfs.length === 0 ? (
-                    <p className="text-[10.5px] text-ink-400">Drop files to auto-detect product lines.</p>
+                    <p className="text-[10.5px] text-[var(--t3)]">Drop files to auto-detect product lines.</p>
                   ) : (
                     <>
                       {suggesting && (
-                        <p className="flex items-center gap-1.5 text-[10px] text-ink-400 mb-2">
+                        <p className="flex items-center gap-1.5 text-[10px] text-[var(--t3)] mb-2">
                           <Loader2 className="w-3 h-3 animate-spin" />
                           Detecting product line{isBulk ? `s · ${pdfs.length} quotes` : ''}…
                         </p>
                       )}
-                      <div className="space-y-1 max-h-56 overflow-y-auto pr-0.5">
+                      <div className="space-y-1 max-h-56 overflow-y-auto pr-0.5 vec-scroll">
                         {pdfs.map(p => {
                           const detected = detectedMap[p.name] || '';
                           const cur      = lineFor(p.name);
                           const isAuto   = !!cur && fileLines[p.name] == null;   // showing the detected value
                           return (
                             <div key={p.name} className={cn(
-                              'flex items-center gap-2 px-2 py-1 rounded-md',
-                              cur ? 'hover:bg-ink-50 dark:hover:bg-ink-800/60' : 'bg-amber-50/60 dark:bg-amber-900/10',
-                            )}>
-                              <span className="w-1.5 h-4 rounded-sm shrink-0" style={{ background: cur ? (PRODUCT_COLORS[cur] || '#65656c') : '#d4d4d8' }} />
-                              <span className="truncate flex-1 text-[11px] font-medium" title={p.name}>{p.name}</span>
+                              'flex items-center gap-2 px-2 py-1 rounded-[9px]',
+                              cur ? 'hover:bg-[var(--s3)]' : '',
+                            )} style={cur ? undefined : { background: 'var(--warn-soft)' }}>
+                              <span className="w-[3px] h-4 rounded-[3px] shrink-0" style={{ background: cur ? (PRODUCT_COLORS[cur] || 'var(--t3)') : 'var(--warn)' }} />
+                              <span className="truncate flex-1 text-[11px] font-medium text-[var(--t2)]" title={p.name}>{p.name}</span>
                               {isAuto && detected && (
-                                <span className="shrink-0 text-[8px] font-bold uppercase tracking-wide text-brand-600 dark:text-brand-400" title="Auto-detected">auto</span>
+                                <span className="shrink-0 text-[8px] font-bold uppercase tracking-wide" style={{ color: 'var(--accent-text)' }} title="Auto-detected">auto</span>
                               )}
                               <select value={cur}
                                 onChange={e => setFileLines(prev => ({ ...prev, [p.name]: e.target.value }))}
+                                style={cur ? undefined : { color: 'var(--warn)', borderColor: 'color-mix(in oklab, var(--warn) 45%, transparent)' }}
                                 className={cn(
-                                  'shrink-0 h-6 text-[10.5px] rounded-md px-1 ring-1 ring-inset focus:outline-none bg-white dark:bg-ink-900',
-                                  cur ? 'ring-ink-200 dark:ring-ink-700' : 'ring-amber-300 dark:ring-amber-700 text-amber-700 dark:text-amber-300',
+                                  'shrink-0 h-6 text-[10.5px] rounded-[7px] px-1 border focus:outline-none bg-[var(--s1)]',
+                                  cur ? 'border-[var(--line-2)] text-[var(--t1)]' : '',
                                 )}>
                                 <option value="">Not detected</option>
                                 {PRODUCT_OPTS.map(o => <option key={o} value={o}>{PRODUCT_LABELS[o] || o}</option>)}
@@ -382,8 +385,8 @@ export function DashboardPage({
                         <div className="flex flex-wrap gap-1 mt-2">
                           {lineBreakdown.map(([line, n]) => (
                             <span key={line}
-                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[9.5px] font-medium bg-ink-100 dark:bg-ink-800 text-ink-600 dark:text-ink-300">
-                              <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ background: line === 'UNKNOWN' ? '#a1a1aa' : (PRODUCT_COLORS[line] || '#65656c') }} />
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[7px] text-[9.5px] font-medium bg-[var(--s3)] border border-[var(--line)] text-[var(--t2)]">
+                              <span className="w-1.5 h-1.5 rounded-sm shrink-0" style={{ background: line === 'UNKNOWN' ? 'var(--t3)' : (PRODUCT_COLORS[line] || 'var(--t3)') }} />
                               {line === 'UNKNOWN' ? 'Not detected' : (PRODUCT_LABELS[line] || line)} ×{n}
                             </span>
                           ))}
@@ -393,23 +396,24 @@ export function DashboardPage({
                   )}
                 </div>
                 <div>
-                  <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">Quote received <span className="text-red-500 normal-case">*</span></label>
+                  <label className="block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-[var(--t3)] mb-2">Quote received <span className="normal-case" style={{ color: 'var(--err)' }}>*</span></label>
                   <div className="flex flex-wrap gap-1.5 mb-2.5">
-                    {quickDates.map(d => (
-                      <button key={d.tag} onClick={() => setArrived(d.date)}
-                        className={cn(
-                          'px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors',
-                          arrived === d.date
-                            ? 'bg-brand-600 text-white'
-                            : 'bg-ink-100 dark:bg-ink-800 text-ink-700 dark:text-ink-200 hover:bg-ink-200 dark:hover:bg-ink-700',
-                        )}>
-                        {d.tag}
-                        <span className="ml-1 opacity-60 num">{d.date.slice(0, 5)}</span>
-                      </button>
-                    ))}
+                    {quickDates.map(d => {
+                      const on = arrived === d.date;
+                      return (
+                        <button key={d.tag} onClick={() => setArrived(d.date)}
+                          style={on
+                            ? { background: 'var(--accent)', color: 'var(--accent-ink)', border: '1px solid transparent' }
+                            : { background: 'var(--s1)', color: 'var(--t2)', border: '1px solid var(--line-2)' }}
+                          className="px-2.5 py-[5px] rounded-[8px] text-[11px] font-medium transition-colors">
+                          {d.tag}
+                          <span className="ml-1 opacity-60 num">{d.date.slice(0, 5)}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                   <div className="relative">
-                    <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-400" />
+                    <Calendar className="absolute left-[11px] top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--t3)]" />
                     <input type="text" placeholder="DD/MM/YYYY" value={arrived} maxLength={10}
                       onChange={e => {
                         let v = e.target.value.replace(/[^\d/]/g, '');
@@ -417,10 +421,10 @@ export function DashboardPage({
                         if (v.length === 5 && v.split('/').length === 2) v = v + '/';
                         setArrived(v);
                       }}
-                      className="w-full h-8 pl-8 pr-2 rounded-md text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 focus:ring-brand-400 focus:outline-none num"
+                      className="w-full h-[34px] pl-[34px] pr-2.5 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none num"
                     />
                   </div>
-                  <p className="text-[10px] text-ink-400 mt-2 leading-relaxed">Sets arrival, on-hold and recovery dates. Processed date is always today.</p>
+                  <p className="text-[10px] text-[var(--t3)] mt-2 leading-relaxed">Sets arrival, on-hold and recovery dates. Processed date is always today.</p>
                 </div>
               </div>
             </Stage>
@@ -455,64 +459,59 @@ export function DashboardPage({
 
           {/* ── New mail preview ──────────────────────────────────────────── */}
           <Card padded={false}>
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-ink-200/70 dark:border-ink-800">
-              <div className="flex items-center gap-2">
-                <Mail className="w-4 h-4 text-violet-500" />
-                <h3 className="text-[13px] font-semibold tracking-tight">New mail</h3>
+            <div className="flex items-center justify-between px-[18px] py-3.5 border-b border-[var(--line)]">
+              <div className="flex items-center gap-2.5">
+                <Mail className="w-4 h-4" style={{ color: 'var(--violet)' }} />
+                <h3 className="text-[13px] font-semibold tracking-tight flex-1">New mail</h3>
                 {inboxEmails.filter(e => e.unread).length > 0 && (
-                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 text-[10px] font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-violet-500" />
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold" style={{ background: 'var(--violet-soft)', color: 'var(--violet)' }}>
+                    <span className="w-[5px] h-[5px] rounded-full" style={{ background: 'var(--violet)' }} />
                     {inboxEmails.filter(e => e.unread).length} unread
                   </span>
                 )}
               </div>
-              <button onClick={() => onTab('Inbox')} className="text-[11px] font-medium text-brand-600 hover:text-brand-700 dark:text-brand-400 dark:hover:text-brand-300">Open →</button>
+              <button onClick={() => onTab('Inbox')} className="text-[11px] font-medium ml-2" style={{ color: 'var(--accent-text)' }}>Open →</button>
             </div>
 
             {inboxLoading ? (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-5 h-5 animate-spin text-ink-300" />
+                <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" />
               </div>
             ) : inboxEmails.length === 0 ? (
               <div className="flex flex-col items-center justify-center gap-2 py-10 px-4 text-center">
-                <Mail className="w-8 h-8 text-ink-200 dark:text-ink-700" />
-                <p className="text-[12px] text-ink-400 dark:text-ink-500">No emails — make sure Outlook is open</p>
+                <Mail className="w-8 h-8 text-[var(--t4)]" />
+                <p className="text-[12px] text-[var(--t3)]">No emails — make sure Outlook is open</p>
               </div>
             ) : (
-              <div className="divide-y divide-ink-100 dark:divide-ink-800">
+              <div>
                 {inboxEmails.slice(0, 6).map((email: any) => (
                   <button
                     key={email.entryId}
                     onClick={() => onTab('Inbox')}
-                    className={cn(
-                      'w-full text-left px-5 py-3 transition-colors hover:bg-ink-50/80 dark:hover:bg-ink-800/40 group',
-                      email.unread && 'bg-violet-50/40 dark:bg-violet-900/10',
-                    )}>
+                    style={email.unread ? { background: 'var(--violet-soft)' } : undefined}
+                    className="w-full text-left px-[18px] py-[11px] transition-colors border-b border-[var(--line)] last:border-0 hover:bg-[var(--s3)] group">
                     <div className="flex items-center gap-2 min-w-0 mb-0.5">
-                      {email.unread && <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />}
-                      <span className={cn(
-                        'text-[12px] truncate flex-1',
-                        email.unread ? 'font-semibold text-ink-900 dark:text-ink-50' : 'font-medium text-ink-700 dark:text-ink-300',
-                      )}>
+                      {email.unread && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--violet)' }} />}
+                      <span className={cn('text-[12px] truncate flex-1', email.unread ? 'font-semibold text-[var(--t1)]' : 'font-medium text-[var(--t2)]')}>
                         {email.subject || '(no subject)'}
                       </span>
-                      <span className="text-[10.5px] text-ink-400 dark:text-ink-500 shrink-0 num">{relTime(email.received)}</span>
+                      <span className="text-[10px] text-[var(--t3)] shrink-0 num">{relTime(email.received)}</span>
                     </div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[11px] text-ink-500 dark:text-ink-400 truncate flex-1">{email.sender}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[11px] text-[var(--t3)] truncate flex-1">{email.sender}</span>
                       {email.hasPdf && (
-                        <span className="inline-flex items-center gap-0.5 text-[9.5px] font-medium text-brand-600 dark:text-brand-400 shrink-0">
+                        <span className="inline-flex items-center gap-0.5 text-[9.5px] font-semibold shrink-0" style={{ color: 'var(--accent-text)' }}>
                           <FileText className="w-2.5 h-2.5" /> PDF
                         </span>
                       )}
                       {email.attachments?.length > 0 && !email.hasPdf && (
-                        <span className="inline-flex items-center gap-0.5 text-[9.5px] text-ink-400 shrink-0">
+                        <span className="inline-flex items-center gap-0.5 text-[9.5px] text-[var(--t3)] shrink-0">
                           <Paperclip className="w-2.5 h-2.5" />{email.attachments.length}
                         </span>
                       )}
                     </div>
                     {email.bodyPreview && (
-                      <p className="text-[11px] text-ink-400 dark:text-ink-500 leading-relaxed line-clamp-2">
+                      <p className="text-[11px] text-[var(--t4)] leading-relaxed line-clamp-2 mt-1">
                         {email.bodyPreview}
                       </p>
                     )}
@@ -523,23 +522,23 @@ export function DashboardPage({
           </Card>
 
           <Card padded={false}>
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-ink-200/70 dark:border-ink-800">
+            <div className="flex items-center justify-between px-[18px] py-3.5 border-b border-[var(--line)]">
               <h3 className="text-[13px] font-semibold tracking-tight">Recent jobs</h3>
-              <button onClick={() => onTab('History')} className="text-[11px] font-medium text-brand-600 hover:text-brand-700">All →</button>
+              <button onClick={() => onTab('History')} className="text-[11px] font-medium" style={{ color: 'var(--accent-text)' }}>All →</button>
             </div>
-            <div className="divide-y divide-ink-100 dark:divide-ink-800">
+            <div>
               {jobs.slice(0, 6).map(j => (
-                <div key={j.id} className="flex items-center gap-2.5 px-5 py-2.5">
+                <div key={j.id} className="flex items-center gap-2.5 px-[18px] py-2.5 border-b border-[var(--line)] last:border-0">
                   <StatusDot status={j.status} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-[11.5px] font-medium truncate">{j.step} · {j.customer || j.product || j.pdfName || '—'}</p>
-                    <p className="text-[10px] text-ink-500 dark:text-ink-400 truncate mono">{j.sfId || '—'} · {j.note || ''}</p>
+                    <p className="text-[11.5px] font-medium truncate text-[var(--t1)]">{j.step} · {j.customer || j.product || j.pdfName || '—'}</p>
+                    <p className="text-[10px] text-[var(--t3)] truncate mono">{j.sfId || '—'} · {j.note || ''}</p>
                   </div>
-                  <span className="text-[10px] text-ink-400 num shrink-0">{relTime(j.timestamp)}</span>
+                  <span className="text-[10px] text-[var(--t3)] num shrink-0">{relTime(j.timestamp)}</span>
                 </div>
               ))}
               {jobs.length === 0 && (
-                <p className="px-5 py-6 text-[11.5px] text-ink-400 text-center">No jobs yet — run Step 1 to get started.</p>
+                <p className="px-5 py-6 text-[11.5px] text-[var(--t3)] text-center">No jobs yet — run Step 1 to get started.</p>
               )}
             </div>
           </Card>
@@ -547,20 +546,20 @@ export function DashboardPage({
           <Card>
             <CardTitle title="Archive" sub="Files moved out of PDF Quotes" />
             {archive.length === 0
-              ? <p className="text-[11.5px] text-ink-500 dark:text-ink-400">Nothing archived yet.</p>
+              ? <p className="text-[11.5px] text-[var(--t3)]">Nothing archived yet.</p>
               : (
-                <div className="space-y-3">
+                <div className="space-y-3.5">
                   {archive.map(day => (
                     <div key={day.date}>
-                      <div className="flex items-baseline justify-between">
-                        <p className="text-[11.5px] font-semibold text-ink-700 dark:text-ink-200">{day.date}</p>
+                      <div className="flex items-baseline justify-between mb-1.5">
+                        <p className="text-[11.5px] font-semibold text-[var(--t1)]">{day.date}</p>
                         <Pill tone="neutral">{day.total} files</Pill>
                       </div>
-                      <ul className="mt-1 space-y-0.5">
+                      <ul className="space-y-0.5 border-l border-[var(--line-2)] pl-2.5">
                         {day.files.slice(0, 2).map(f => (
-                          <li key={f} className="text-[10.5px] text-ink-500 dark:text-ink-400 truncate pl-1.5 border-l border-ink-200 dark:border-ink-700 ml-0.5">{f}</li>
+                          <li key={f} className="text-[10.5px] text-[var(--t3)] truncate">{f}</li>
                         ))}
-                        {day.total > 2 && <li className="text-[10px] text-ink-400 pl-2">+ {day.total - 2} more</li>}
+                        {day.total > 2 && <li className="text-[10px] text-[var(--t4)]">+ {day.total - 2} more</li>}
                       </ul>
                     </div>
                   ))}
@@ -577,11 +576,9 @@ export function DashboardPage({
 function WfStep({ n, label, done }: { n: number; label: string; done: boolean }) {
   return (
     <div className="flex items-center gap-1.5 text-[11px]">
-      <span className={cn(
-        'w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold',
-        done ? 'bg-emerald-500 text-white' : 'bg-ink-200 dark:bg-ink-700 text-ink-500',
-      )}>{done ? '✓' : n}</span>
-      <span className={cn('font-medium', done ? 'text-ink-800 dark:text-ink-100' : 'text-ink-500 dark:text-ink-400')}>{label}</span>
+      <span className="w-[17px] h-[17px] rounded-full flex items-center justify-center text-[9px] font-bold"
+        style={done ? { background: 'var(--ok)', color: '#fff' } : { background: 'var(--s3)', color: 'var(--t3)' }}>{done ? '✓' : n}</span>
+      <span className="font-medium" style={{ color: done ? 'var(--t1)' : 'var(--t3)' }}>{label}</span>
     </div>
   );
 }
@@ -592,10 +589,10 @@ function Stage({
   n: number; title: string; right?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <div className="px-5 py-4 border-b border-ink-200/70 dark:border-ink-800 last:border-b-0">
+    <div className="px-5 py-4 border-b border-[var(--line)] last:border-b-0">
       <div className="flex items-baseline justify-between mb-3">
-        <h3 className="text-[12px] font-semibold flex items-center gap-2">
-          <span className="w-5 h-5 rounded-full bg-ink-100 dark:bg-ink-800 text-ink-700 dark:text-ink-200 text-[10px] flex items-center justify-center font-bold num">{n}</span>
+        <h3 className="text-[12.5px] font-semibold flex items-center gap-2">
+          <span className="w-[19px] h-[19px] rounded-full bg-[var(--s3)] border border-[var(--line-2)] text-[var(--t1)] text-[10px] flex items-center justify-center font-bold num">{n}</span>
           {title}
         </h3>
         {right && <div>{right}</div>}
@@ -619,35 +616,35 @@ function RunCard({
   const running = status === 'running';
   const done    = status === 'done';
   const err     = status === 'err';
+  const primary = tone === 'brand';
+  // Card frame: primary/ready step glows with the accent; secondary sits on the base surface.
+  const frame = done ? { border: '1px solid color-mix(in oklab, var(--ok) 40%, transparent)', background: 'var(--ok-soft)' }
+    : err ? { border: '1px solid color-mix(in oklab, var(--err) 40%, transparent)', background: 'var(--err-soft)' }
+    : (primary || ready) ? { border: '1px solid var(--accent-line)', background: 'var(--accent-soft)' }
+    : { border: '1px solid var(--line-2)', background: 'var(--s1)' };
+  const btnStyle = done ? { background: 'var(--ok)', color: '#fff' }
+    : err ? { background: 'var(--err)', color: '#fff' }
+    : ready && primary ? { background: 'var(--accent)', color: 'var(--accent-ink)', boxShadow: 'var(--glow)' }
+    : ready ? { background: 'var(--ok)', color: '#fff' }
+    : { background: 'var(--s2)', color: 'var(--t3)', border: '1px solid var(--line-2)' };
   return (
-    <div className={cn(
-      'rounded-lg ring-1 ring-inset transition-colors p-3.5',
-      done ? 'ring-emerald-300/70 dark:ring-emerald-700/40 bg-emerald-50/30 dark:bg-emerald-900/10' :
-      err  ? 'ring-red-300/70 dark:ring-red-700/40 bg-red-50/30 dark:bg-red-900/10' :
-      ready ? 'ring-brand-200 dark:ring-brand-700/50 bg-brand-50/30 dark:bg-brand-900/10'
-            : 'ring-ink-200 dark:ring-ink-700',
-    )}>
-      <div className="flex items-center gap-1.5 mb-1">
-        <Pill tone={tone}>{badge}</Pill>
+    <div className="rounded-[12px] p-3.5 transition-colors" style={frame}>
+      <div className="flex items-center gap-1.5 mb-2">
+        <span className="text-[9.5px] font-bold tracking-[0.05em] px-[7px] py-0.5 rounded-[6px]"
+          style={primary ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : { background: 'var(--ok-soft)', color: 'var(--ok)' }}>{badge}</span>
         {ready && !done && !running && !err && <Pill tone="ok" dot>Ready</Pill>}
         {done && <Pill tone="ok" dot>Done</Pill>}
         {err  && <Pill tone="err" dot>Failed</Pill>}
       </div>
-      <h4 className="text-[12.5px] font-semibold mt-1">{title}</h4>
-      <p className="text-[10.5px] text-ink-500 dark:text-ink-400 mt-0.5 mb-3 leading-snug">{sub}</p>
+      <h4 className="text-[12.5px] font-semibold mt-1 text-[var(--t1)]">{title}</h4>
+      <p className="text-[10.5px] text-[var(--t2)] mt-1 mb-3 leading-snug">{sub}</p>
       <button onClick={onRun} disabled={!ready && !running}
-        className={cn(
-          'w-full h-8 rounded-md text-[11.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors',
-          done ? 'bg-emerald-600 text-white hover:bg-emerald-700' :
-          err  ? 'bg-red-600 text-white hover:bg-red-700' :
-          ready
-            ? (tone === 'brand' ? 'bg-brand-600 hover:bg-brand-700 text-white' : 'bg-emerald-600 hover:bg-emerald-700 text-white')
-            : 'bg-ink-100 dark:bg-ink-800 text-ink-400',
-        )}>
+        style={btnStyle}
+        className="w-full h-[34px] rounded-[9px] text-[12px] font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:cursor-not-allowed">
         {running ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Stop</>
          : done   ? <><Check className="w-3.5 h-3.5" /> Completed · run again</>
          : err    ? <><AlertCircle className="w-3.5 h-3.5" /> Retry</>
-                  : <><Play className="w-3.5 h-3.5" /> Run {badge.split(' ')[1]}</>}
+                  : <><Play className="w-3.5 h-3.5" fill="currentColor" stroke="none" /> Run {badge.split(' ')[1]}</>}
       </button>
     </div>
   );
@@ -675,31 +672,31 @@ function ConflictModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="bg-white dark:bg-ink-900 rounded-xl ring-1 ring-ink-200 dark:ring-ink-700 shadow-xl w-full max-w-lg mx-4">
-        <div className="px-5 py-4 border-b border-ink-200/70 dark:border-ink-800">
+      <div className="v3-pop rounded-[16px] w-full max-w-lg mx-4 bg-[var(--s2)] border border-[var(--line)]">
+        <div className="px-5 py-4 border-b border-[var(--line)]">
           <div className="flex items-center gap-2.5">
-            <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+            <AlertCircle className="w-4 h-4 shrink-0" style={{ color: 'var(--warn)' }} />
             <h2 className="text-[13px] font-semibold">Duplicate Quotes Found</h2>
           </div>
-          <p className="text-[11.5px] text-ink-500 dark:text-ink-400 mt-1.5">
+          <p className="text-[11.5px] text-[var(--t3)] mt-1.5">
             {conflicts.length} quote{conflicts.length > 1 ? 's' : ''} already exist in SharePoint. Choose what to do with each:
           </p>
         </div>
 
-        <div className="px-5 py-4 space-y-3 max-h-80 overflow-y-auto">
+        <div className="px-5 py-4 space-y-3 max-h-80 overflow-y-auto vec-scroll">
           {conflicts.map(c => (
-            <div key={c.sfid} className="rounded-lg ring-1 ring-amber-200 dark:ring-amber-800/40 bg-amber-50/50 dark:bg-amber-900/10 p-3">
-              <p className="text-[11px] font-semibold mono text-ink-700 dark:text-ink-200">{c.sfid}</p>
-              {c.existingTitle    && <p className="text-[10.5px] text-ink-600 dark:text-ink-300 truncate mt-0.5">{c.existingTitle}</p>}
-              {c.existingCustomer && <p className="text-[10px] text-ink-400 truncate">{c.existingCustomer}</p>}
+            <div key={c.sfid} className="rounded-[11px] p-3" style={{ border: '1px solid color-mix(in oklab, var(--warn) 35%, transparent)', background: 'var(--warn-soft)' }}>
+              <p className="text-[11px] font-semibold mono text-[var(--t1)]">{c.sfid}</p>
+              {c.existingTitle    && <p className="text-[10.5px] text-[var(--t2)] truncate mt-0.5">{c.existingTitle}</p>}
+              {c.existingCustomer && <p className="text-[10px] text-[var(--t3)] truncate">{c.existingCustomer}</p>}
               <div className="flex gap-4 mt-2.5">
                 {(['replace', 'add', 'skip'] as const).map(action => (
                   <label key={action} className="flex items-center gap-1.5 cursor-pointer">
                     <input type="radio" name={`dec-${c.sfid}`} value={action}
                       checked={decisions[c.sfid]?.action === action}
                       onChange={() => setAction(c.sfid, action, c.existingId)}
-                      className="accent-brand-600" />
-                    <span className="text-[11px] font-medium text-ink-700 dark:text-ink-200">
+                      style={{ accentColor: 'var(--accent)' }} />
+                    <span className="text-[11px] font-medium text-[var(--t2)]">
                       {action === 'replace' ? 'Replace' : action === 'add' ? 'Add (keep both)' : 'Skip'}
                     </span>
                   </label>
@@ -709,13 +706,13 @@ function ConflictModal({
           ))}
         </div>
 
-        <div className="px-5 py-4 border-t border-ink-200/70 dark:border-ink-800 flex justify-end gap-2">
+        <div className="px-5 py-4 border-t border-[var(--line)] flex justify-end gap-2">
           <button onClick={onCancel}
-            className="h-8 px-4 rounded-md text-[11.5px] font-semibold text-ink-700 dark:text-ink-200 ring-1 ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800">
+            className="h-[34px] px-4 rounded-[9px] text-[11.5px] font-semibold text-[var(--t1)] border border-[var(--line-2)] bg-[var(--s2)] hover:bg-[var(--s-hover)]">
             Cancel
           </button>
           <button onClick={() => onResolve(decisions)}
-            className="h-8 px-4 rounded-md text-[11.5px] font-semibold bg-brand-600 text-white hover:bg-brand-700">
+            className="h-[34px] px-4 rounded-[9px] text-[11.5px] font-semibold v3-glow" style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>
             Proceed
           </button>
         </div>

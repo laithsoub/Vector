@@ -22,16 +22,31 @@ function absolute(url: string): string {
   return location.origin + (url.startsWith('/') ? url : '/' + url);
 }
 
+export interface OpenOpts {
+  /** Force a real separate window (not a new tab). For the browser/Edge build. */
+  popup?: boolean;
+  width?: number;
+  height?: number;
+}
+
 /**
  * Open a URL or app-relative path in a real, resizable OS window.
- * Tauri → OS default browser (via shell). Browser → new tab.
+ * - Tauri → OS default browser (via shell) — always a separate window.
+ * - Browser/Edge → new tab, OR a real popup window when `popup: true`.
+ *   Chromium/Edge only spawns a separate sized window if the `popup` feature
+ *   keyword is present; otherwise it opens a new TAB and ignores width/height
+ *   (this is the "new window is the same window, not even bigger" symptom in
+ *   the Edge-launched build).
  * Safe to `void` — never throws to the caller.
  */
-export async function openExternal(url: string): Promise<void> {
+export async function openExternal(url: string, opts: OpenOpts = {}): Promise<void> {
   const abs = absolute(url);
   if (isTauri()) {
     try { await shellOpen(abs); return; }
     catch { /* fall through to window.open below */ }
   }
-  window.open(abs, '_blank', 'noopener');
+  const features = opts.popup
+    ? `popup,noopener,width=${opts.width ?? 1000},height=${opts.height ?? 760}`
+    : 'noopener';
+  window.open(abs, '_blank', features);
 }

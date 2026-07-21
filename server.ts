@@ -3231,22 +3231,25 @@ async function startServer() {
   });
 
   // ── Inline email chat (context-aware follow-up questions) ─────────────────
-  // Offline EL luminaire price-sheet lookup for chat context. Runs schematic_reader
-  // in 'lookup' mode (exact cat-no match only — no Gemini, no fuzzy guessing) on the
-  // email body so the assistant can quote luminaire list prices instead of falsely
-  // claiming it only has CBU data. Cached per entryId (body is stable per email).
-  const _lumChatCache = new Map<string, Array<{ catNo: string; description: string; listPrice: number; ntp: number }>>();
-  function luminairePricesForBody(body: string, entryId?: string): Promise<Array<{ catNo: string; description: string; listPrice: number; ntp: number }>> {
+  // Offline EL price-sheet SEARCH for chat context. Runs schematic_reader in
+  // 'search' mode: exact catalogue-number matches PLUS weighted description
+  // matches (so a luminaire named only by description in the email — not by
+  // part number — is still found in the real sheet instead of guessed). Every
+  // row is real sheet data the assistant MUST cite as "EL price sheet".
+  interface ElSheetRow { catNo: string; description: string; family: string; listPrice: number; ntp: number; status: string; matchType: string; score: number; }
+  const _elSearchCache = new Map<string, ElSheetRow[]>();
+  function elSheetSearch(query: string, cacheKey?: string): Promise<ElSheetRow[]> {
     return new Promise((resolve) => {
-      if (entryId && _lumChatCache.has(entryId)) { resolve(_lumChatCache.get(entryId)!); return; }
+      const q = String(query || '').trim();
+      if (cacheKey && _elSearchCache.has(cacheKey)) { resolve(_elSearchCache.get(cacheKey)!); return; }
       const script = pyFile('schematic_reader.py');
-      if (!existsSync(script) || !String(body || '').trim()) { resolve([]); return; }
-      const tmpDir = path.join(os.tmpdir(), `lumchat_${Date.now()}`);
+      if (!existsSync(script) || !q) { resolve([]); return; }
+      const tmpDir = path.join(os.tmpdir(), `elsearch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
       try { mkdirSync(tmpDir, { recursive: true }); } catch {}
-      const inp = path.join(tmpDir, 'body.txt');
-      try { writeFileSync(inp, String(body || '')); } catch { resolve([]); return; }
+      const inp = path.join(tmpDir, 'q.txt');
+      try { writeFileSync(inp, q); } catch { resolve([]); return; }
       const [py, base] = pyArgs(script);
-      const proc = spawn(py, [...base, '--mode', 'lookup', '--input', inp], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      const proc = spawn(py, [...base, '--mode', 'search', '--input', inp], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
       let out = '';
       const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 30_000);
       proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
@@ -3254,15 +3257,67 @@ async function startServer() {
         clearTimeout(killer);
         try { unlinkSync(inp); } catch {}
         try { rmdirSync(tmpDir); } catch {}
-        const rows = (matches || []).map((m: any) => ({
-          catNo: m.cat_no, description: m.description, listPrice: m.list_price || 0, ntp: m.ntp || 0,
+        const rows: ElSheetRow[] = (matches || []).map((m: any) => ({
+          catNo: m.cat_no, description: m.description, family: m.family || '',
+          listPrice: m.list_price || 0, ntp: m.ntp || 0, status: m.status || '',
+          matchType: m.match_type || '', score: m.score || 0,
         }));
-        if (entryId) _lumChatCache.set(entryId, rows);
+        if (cacheKey) _elSearchCache.set(cacheKey, rows);
         resolve(rows);
       };
       proc.on('error', () => done([]));
       proc.on('close', () => { try { done(JSON.parse(out.trim()).matches || []); } catch { done([]); } });
     });
+  }
+
+  // Does the question actually ask about a product / catalogue number / price?
+  // Gates the (slower) web search so casual "what does this email want?" turns
+  // stay fast and never trigger an external lookup.
+  function isPriceProductQuestion(q: string): boolean {
+    return /\b(price|pricing|cost|costs|£|\$|€|eur|gbp|quote|list price|ntp|discount|catalogue|catalog|cat[\s\-]?no|part\s*(no|number)|model|alternativ|equivalent|replace|substitut|instead of|cheaper|lumen|ip\s*\d|wattage|spec|datasheet|which product|what product|does eaton|is there a)\b/i.test(q || '');
+  }
+
+  // Web-grounded product/price lookup — Gemini + Google Search. Used ONLY when
+  // the item isn't found locally in the EL price sheet. Returns the answer text
+  // plus clickable citations (grounding source links) so the user can see where
+  // each figure came from, ChatGPT/Claude-style.
+  async function webGroundedLookup(
+    question: string, context: string,
+  ): Promise<{ text: string | null; citations: Array<{ title: string; url: string }> }> {
+    const ai = getGemini();
+    if (!ai) return { text: null, citations: [] };
+    const prompt = [
+      'You are Ask Vector, helping an Eaton emergency-lighting quote engineer. The item below was NOT found in the internal Eaton EL price sheet, so use Google Search to answer.',
+      'Search Eaton product catalogues, datasheets and reputable distributor pages. Identify the correct Eaton/Cooper catalogue number and give what you find.',
+      'STRICT RULES:',
+      '- Ground every fact in a search result. NEVER invent a catalogue number or a price. If you cannot find it, say so plainly.',
+      '- Any price you give is an EXTERNAL/web figure, NOT the Eaton NTP — say so, and tell the user to confirm against the configurator or run the EL Pricer.',
+      '- Never say "I was trained on this" or similar — cite the web source.',
+      '- Be concise: lead with the answer.',
+      context ? `\nEmail context:\n${context.slice(0, 2000)}` : '',
+      `\nQuestion: ${question}`,
+    ].filter(Boolean).join('\n');
+    try {
+      const resp = await ai.models.generateContent({
+        model: AI_MODEL_SMART,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { tools: [{ googleSearch: {} }], maxOutputTokens: 4096, temperature: 0.3 },
+      });
+      const chunks = (resp as any)?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+      const seen = new Set<string>();
+      const citations: Array<{ title: string; url: string }> = [];
+      for (const c of chunks) {
+        const url = c?.web?.uri; if (!url || seen.has(url)) continue;
+        seen.add(url);
+        let title = c?.web?.title || '';
+        try { title = title || new URL(url).hostname.replace(/^www\./, ''); } catch {}
+        citations.push({ title, url });
+      }
+      return { text: resp.text ?? null, citations: citations.slice(0, 6) };
+    } catch (e: any) {
+      console.error(`[web-lookup] ${e.message}`);
+      return { text: null, citations: [] };
+    }
   }
 
   app.post('/api/outlook/chat', async (req, res) => {
@@ -3277,27 +3332,47 @@ async function startServer() {
     const chatIndices = Array.from(new Set((includeIndices || []).filter(n => Number.isFinite(n))));
 
     const me = await connectedUserName();
-    const lumRows = await luminairePricesForBody(body || '', entryId);
-    const lumBlock = lumRows.length
+    // Real EL price-sheet rows: search on the QUESTION (what they're asking about)
+    // and on the BODY (ambient context, cached per email). Dedup, question first.
+    const [qRows, bodyRows] = await Promise.all([
+      elSheetSearch(question, undefined),
+      elSheetSearch(body || '', entryId ? `body:${entryId}` : undefined),
+    ]);
+    const sheetRows: ElSheetRow[] = [];
+    const seenCat = new Set<string>();
+    for (const r of [...qRows, ...bodyRows]) {
+      if (r.catNo && !seenCat.has(r.catNo)) { seenCat.add(r.catNo); sheetRows.push(r); }
+    }
+    const fmtRow = (r: ElSheetRow) => {
+      const tag = r.matchType === 'exact' ? '[exact]' : `[description-match, score ${r.score}]`;
+      const price = `list £${r.listPrice.toFixed(2)}${r.ntp ? ` | NTP £${r.ntp.toFixed(2)}` : ''}`;
+      return `${r.catNo} — ${r.description}${r.family ? ` (${r.family})` : ''}: ${price} ${tag}`;
+    };
+    const sheetBlock = sheetRows.length
       ? [
-          `Eaton EL luminaire list prices (from the EL price sheet) for items found in THIS email (ex VAT):`,
-          ...lumRows.map(r => `${r.catNo} — ${r.description}: list £${r.listPrice.toFixed(2)}${r.ntp ? ` | NTP £${r.ntp.toFixed(2)}` : ''}`),
-          `Answer luminaire price questions directly from this table.`,
+          `Eaton EL price-sheet rows relevant to this email / question (ex VAT — the AUTHORITATIVE internal source; cite as "EL price sheet"):`,
+          ...sheetRows.slice(0, 14).map(fmtRow),
+          `[exact] = confirmed part-number match. [description-match] = a candidate found by description; present it as "closest match in the sheet", not a confirmed part.`,
         ].join('\n')
-      : `You ALSO have the Eaton EL luminaire price sheet (2000+ part numbers — the same sheet the EL Pricer tab uses). No exact catalogue-number match for this email was found in it, so any specific luminaire mentioned here is likely not on the EL price sheet — say so plainly (and suggest running the EL Pricer on the schematic to confirm). Do NOT claim your only pricing data is CBU/LoadStar.`;
+      : `No catalogue number or description from this email/question matched the Eaton EL price sheet. Do NOT invent one — say it isn't in the sheet and offer to run the EL Pricer or search the web.`;
     const fenBlock = fentonKnowledgeBlock(20);
     const systemCtx = [
       `You are Ask Vector — the same AI brain used across this app — now helping ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest with the email they have open in the Inbox.`,
       `Answer directly and concisely: bottom line first, no filler, no restating the question, no "this is an email". The user is already in the Inbox — never tell them to open it or click Summarize.`,
-      `You have access to TWO price sources: (1) the Eaton LoadStar-PS CBU list prices below, and (2) the Eaton EL luminaire price sheet.`,
       ``,
-      `Eaton LoadStar-PS CBU list prices (3hr autonomy, ex VAT):`,
+      `## Sourcing rules (MANDATORY — the user complained about invented numbers)`,
+      `- Every catalogue number or price you state MUST name its source in the answer: EL price-sheet rows → "(EL price sheet)"; the LoadStar-PS table below → "(LoadStar-PS list)".`,
+      `- NEVER invent or approximate a catalogue number or a price. If it isn't in the data below, say "that's not in the EL price sheet" and offer to run the EL Pricer or search the web — do NOT guess a figure.`,
+      `- NEVER say you were "trained on" a price, that you "just know" it, or anything about your training. If you can't source it from the data below, you don't state it.`,
+      `- A [description-match] row is a CANDIDATE, not a confirmed part — say so.`,
+      ``,
+      `## Price source 1 — Eaton LoadStar-PS CBU list prices (3hr autonomy, ex VAT):`,
       `Single Phase: 0.5KVA=£5,501 | 1KVA=£7,452 | 2KVA=£8,961 | 4KVA=£12,085 | 5KVA=£13,475 | 8KVA=£24,432 | 10KVA=£27,214 | 12KVA=£36,780 | 15KVA=£40,952 | 16KVA=£49,128 | 20KVA=£54,690`,
       `Three Phase: 6KVA=£14,939 | 8KVA=£21,048 | 10KVA=£22,913 | 12KVA=£31,483 | 14KVA=£36,225 | 16KVA=£37,996 | 18KVA=£39,457 | 20KVA=£45,780 | 24KVA=£63,228 | 28KVA=£72,713 | 30KVA=£69,265 | 32KVA=£76,256 | 36KVA=£79,177 | 40KVA=£91,824 | 42KVA=£109,201 | 48KVA=£114,515 | 54KVA=£118,897 | 56KVA=£145,689 | 60KVA=£137,867 | 64KVA=£152,775 | 72KVA=£158,617 | 80KVA=£183,910`,
       `Note: No 50KVA system exists — nearest are 48KVA (£114,515) and 54KVA (£118,897).`,
-      `When asked about CBU or LoadStar-PS prices, answer directly from this table. Do not say you lack access to pricing data.`,
       ``,
-      lumBlock,
+      `## Price source 2 — Eaton EL luminaire price sheet`,
+      sheetBlock,
       fenBlock ? `\n${fenBlock}` : '',
       ``,
       `Current email:`,
@@ -3310,6 +3385,25 @@ async function startServer() {
     ].join('\n');
 
     try {
+      // Web fallback: fires ONLY when the item isn't found locally with CONFIDENCE
+      // (an exact cat-no or a strong description score — loose keyword overlap like
+      // "emergency luminaire" matching many rows doesn't count as "found") and the
+      // question is about a product/price (and no image attached — those go the
+      // multimodal route below). Returns clickable sources.
+      const strongLocal = qRows.some(r => r.matchType === 'exact' || r.score >= 9);
+      const wantWeb = isPriceProductQuestion(question) && !strongLocal && chatIndices.length === 0;
+      if (wantWeb) {
+        const web = await webGroundedLookup(question, `${subject}\n${(body || '').slice(0, 2000)}`);
+        if (web.text) {
+          const cites = web.citations.length
+            ? '\n\n**Sources:**\n' + web.citations.map(c => `- [${c.title}](${c.url})`).join('\n')
+            : '';
+          res.json({ answer: web.text + cites, sourced: 'web' });
+          return;
+        }
+        // web found nothing usable → fall through to the grounded local answer.
+      }
+
       const imageParts = (entryId && chatIndices.length) ? await attachmentParts(entryId, chatIndices) : [];
       const contents = [
         ...history.map(m => ({
@@ -3324,7 +3418,7 @@ async function startServer() {
         // 2.5-pro thinking tokens share the output budget in this SDK — keep headroom.
         config: { systemInstruction: systemCtx, maxOutputTokens: 6144, temperature: 0.3 },
       });
-      res.json({ answer: response.text });
+      res.json({ answer: response.text, sourced: sheetRows.length ? 'price_sheet' : 'none' });
     } catch (e: any) {
       res.json({ answer: null, error: 'Gemini error: ' + e.message });
     }
@@ -4202,7 +4296,9 @@ async function startServer() {
     'commission_calculators': { file: 'commission_calculators.xlsx', name: 'Commission_Calculators.xlsx' },
   };
 
-  app.get('/api/docs/:id', (req, res) => {
+  app.get('/api/docs/:id', (req, res, next) => {
+    // Don't shadow the user-doc routes registered below (/api/docs/user...).
+    if (req.params.id === 'user') return next();
     const doc = DOCS[req.params.id];
     if (!doc) { res.status(404).json({ error: 'Not found' }); return; }
     const filePath = path.join(PY_DIR, 'docs', doc.file);

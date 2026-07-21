@@ -8,6 +8,7 @@ import {
   Play, ArrowLeft, Zap, Eye, X, Image as ImageIcon, ChevronLeft,
   Pin, PinOff, Search, FolderOpen, MoreHorizontal, Star, ExternalLink,
   Forward, MessageSquare, PenLine, Plus, GripVertical, Battery, Lock, Check, FileSpreadsheet, FileDown,
+  Flag, Archive,
 } from 'lucide-react';
 import { runTask, isCancel } from '../lib/tasks';
 import { QuickQuotePanel } from './QuickQuote';
@@ -100,7 +101,7 @@ function Md({ text }: { text: string }) {
     out.push(
       <ul key={out.length} className="my-1 space-y-1 pl-0.5">
         {ulBuf.map((item, i) => (
-          <li key={i} className="flex gap-2 text-[12px] text-ink-700 dark:text-ink-200 leading-relaxed">
+          <li key={i} className="flex gap-2 text-[12px] text-[var(--t2)] leading-relaxed">
             <span className="text-violet-400 shrink-0 mt-0.5">•</span>
             <span>{inline(item)}</span>
           </li>
@@ -114,7 +115,7 @@ function Md({ text }: { text: string }) {
     out.push(
       <ol key={out.length} className="my-1 space-y-1 pl-0.5">
         {olBuf.map((item, i) => (
-          <li key={i} className="flex gap-2 text-[12px] text-ink-700 dark:text-ink-200 leading-relaxed">
+          <li key={i} className="flex gap-2 text-[12px] text-[var(--t2)] leading-relaxed">
             <span className="text-violet-500 font-semibold shrink-0 w-4 text-right mt-0.5">{i + 1}.</span>
             <span>{inline(item)}</span>
           </li>
@@ -127,14 +128,14 @@ function Md({ text }: { text: string }) {
   for (const line of lines) {
     const raw = line.trim();
     if (!raw) { flushUl(); flushOl(); out.push(<div key={out.length} className="h-1" />); continue; }
-    if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[11.5px] font-bold mt-2 mb-0.5 text-ink-800 dark:text-ink-100">{inline(raw.slice(4))}</p>); continue; }
-    if (raw.startsWith('## '))  { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[12.5px] font-bold mt-2.5 mb-0.5 text-ink-800 dark:text-ink-100">{inline(raw.slice(3))}</p>); continue; }
-    if (raw.startsWith('# '))   { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[13px] font-bold mt-2.5 mb-1 text-ink-800 dark:text-ink-100">{inline(raw.slice(2))}</p>); continue; }
+    if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[11.5px] font-bold mt-2 mb-0.5 text-[var(--t1)]">{inline(raw.slice(4))}</p>); continue; }
+    if (raw.startsWith('## '))  { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[12.5px] font-bold mt-2.5 mb-0.5 text-[var(--t1)]">{inline(raw.slice(3))}</p>); continue; }
+    if (raw.startsWith('# '))   { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[13px] font-bold mt-2.5 mb-1 text-[var(--t1)]">{inline(raw.slice(2))}</p>); continue; }
     if (/^[-*•]\s/.test(raw))  { flushOl(); ulBuf.push(raw.replace(/^[-*•]\s+/, '')); continue; }
     if (/^\d+\.\s/.test(raw))  { flushUl(); olBuf.push(raw.replace(/^\d+\.\s+/, '')); continue; }
     if (/^---+$/.test(raw))    { flushUl(); flushOl(); out.push(<hr key={out.length} className="my-2 border-violet-200/60 dark:border-violet-800/40" />); continue; }
     flushUl(); flushOl();
-    out.push(<p key={out.length} className="text-[12px] text-ink-700 dark:text-ink-200 leading-relaxed">{inline(raw)}</p>);
+    out.push(<p key={out.length} className="text-[12px] text-[var(--t2)] leading-relaxed">{inline(raw)}</p>);
   }
   flushUl(); flushOl();
   return <div className="space-y-0.5">{out}</div>;
@@ -142,12 +143,17 @@ function Md({ text }: { text: string }) {
 
 function inline(text: string): React.ReactNode {
   const parts: React.ReactNode[] = [];
-  const re = /(\*\*(.+?)\*\*)|(`([^`]+)`)/g;
+  // bold | code | [label](url) markdown link (links open in a new tab)
+  const re = /(\*\*(.+?)\*\*)|(`([^`]+)`)|(\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))/g;
   let last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index));
-    if (m[1])      parts.push(<strong key={m.index} className="font-semibold text-ink-900 dark:text-ink-50">{m[2]}</strong>);
-    else if (m[3]) parts.push(<code key={m.index} className="px-1 py-0.5 rounded bg-ink-100 dark:bg-ink-700 text-[11px] font-mono text-brand-600 dark:text-brand-300">{m[4]}</code>);
+    if (m[1])      parts.push(<strong key={m.index} className="font-semibold text-[var(--t1)]">{m[2]}</strong>);
+    else if (m[3]) parts.push(<code key={m.index} className="px-1 py-0.5 rounded bg-[var(--s3)] text-[11px] font-mono text-[var(--accent-text)]">{m[4]}</code>);
+    else if (m[5]) parts.push(
+      <a key={m.index} href={m[7]} target="_blank" rel="noopener noreferrer"
+         className="text-violet-400 underline decoration-violet-400/40 hover:decoration-violet-400 break-all">{m[6]}</a>,
+    );
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push(text.slice(last));
@@ -386,7 +392,7 @@ function pickCBUSystem(kva: number | null, phase: '1PH' | '3PH' | null): string 
 function CBUSystemSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
-      className="flex-1 h-7 px-2 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 focus:outline-none focus:ring-blue-400">
+      className="flex-1 h-7 px-2 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] focus:outline-none focus:ring-[var(--accent-line)]">
       <optgroup label="Single Phase">
         {CBU_SYSTEMS.filter(s => s.startsWith('1PH')).map(s => <option key={s} value={s}>{s}</option>)}
       </optgroup>
@@ -455,7 +461,7 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <Battery className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-        <p className="text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 flex-1">CBU Tech Sheet Generator</p>
+        <p className="text-[11.5px] font-semibold text-[var(--t1)] flex-1">CBU Tech Sheet Generator</p>
         {hints.detectedSystems.length > 0 && (
           <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 ring-1 ring-inset ring-blue-200 dark:ring-blue-700">
             {hints.detectedSystems.map(h => `${h.kva}kVA`).join(' + ')} detected
@@ -466,7 +472,7 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
       {/* Systems list */}
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
-          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide flex-1">Systems</label>
+          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide flex-1">Systems</label>
           <button onClick={addSystem}
             className="inline-flex items-center gap-1 h-5 px-2 rounded text-[10px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
             <Plus className="w-2.5 h-2.5" />Add
@@ -474,11 +480,11 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
         </div>
         {systems.map((sys, i) => (
           <div key={i} className="flex items-center gap-1.5">
-            <span className="text-[10px] text-ink-400 w-4 text-right shrink-0">{i + 1}</span>
+            <span className="text-[10px] text-[var(--t3)] w-4 text-right shrink-0">{i + 1}</span>
             <CBUSystemSelect value={sys} onChange={v => updateSystem(i, v)} />
             {systems.length > 1 && (
               <button onClick={() => removeSystem(i)}
-                className="w-5 h-5 rounded flex items-center justify-center text-ink-300 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0">
+                className="w-5 h-5 rounded flex items-center justify-center text-[var(--t4)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0">
                 <X className="w-3 h-3" />
               </button>
             )}
@@ -488,19 +494,19 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
 
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Project Name</label>
+          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Project Name</label>
           <input value={project} onChange={e => setProject(e.target.value)} placeholder="Project name…"
-            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-blue-400" />
+            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-[var(--accent-line)]" />
         </div>
         <div>
-          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Quote Ref</label>
+          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Quote Ref</label>
           <input value={quote} onChange={e => setQuote(e.target.value)} placeholder="Q-XXXX…"
-            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-blue-400" />
+            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-[var(--accent-line)]" />
         </div>
         <div className="col-span-2">
-          <label className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Sales Engineer</label>
+          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Sales Engineer</label>
           <select value={smIdx ?? ''} onChange={e => setSmIdx(e.target.value === '' ? null : Number(e.target.value))}
-            className="mt-1 w-full h-7 px-2 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 focus:outline-none focus:ring-blue-400">
+            className="mt-1 w-full h-7 px-2 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] focus:outline-none focus:ring-[var(--accent-line)]">
             <option value="">Select salesman…</option>
             {CBU_SALESMEN.map((s, i) => <option key={i} value={i}>{s.name}</option>)}
           </select>
@@ -705,7 +711,7 @@ function InlineELPricer({
         'rounded-xl ring-1 ring-inset p-4 space-y-3 transition-colors',
         dragOver
           ? 'bg-amber-50/70 dark:bg-amber-900/20 ring-amber-400 dark:ring-amber-500'
-          : 'bg-white dark:bg-ink-900 ring-amber-200/70 dark:ring-amber-700/30',
+          : 'bg-[var(--s1)] ring-amber-200/70 dark:ring-amber-700/30',
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -716,9 +722,9 @@ function InlineELPricer({
         <div className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center shrink-0">
           <Zap className="w-3 h-3 text-amber-500" />
         </div>
-        <p className="text-[12px] font-semibold text-ink-800 dark:text-ink-100">EL Material Pricer</p>
+        <p className="text-[12px] font-semibold text-[var(--t1)]">EL Material Pricer</p>
         {pdfSource
-          ? <span className="text-[10px] text-brand-600 dark:text-brand-400 bg-brand-50 dark:bg-brand-900/20 px-2 py-0.5 rounded-full ring-1 ring-inset ring-brand-200 dark:ring-brand-700/30 truncate max-w-[200px]">{pdfSource}</span>
+          ? <span className="text-[10px] text-[var(--accent-text)] bg-[var(--accent-soft)] px-2 py-0.5 rounded-full ring-1 ring-inset ring-[var(--accent-line)] truncate max-w-[200px]">{pdfSource}</span>
           : <span className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full ring-1 ring-inset ring-amber-200 dark:ring-amber-700/30">detected</span>}
       </div>
 
@@ -740,7 +746,7 @@ function InlineELPricer({
                     ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-700/30 hover:bg-green-100 dark:hover:bg-green-900/40'
                     : img
                       ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-700/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
-                      : 'bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-brand-200 dark:ring-brand-700/30 hover:bg-brand-100 dark:hover:bg-brand-900/40',
+                      : 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)]',
                 )}>
                 {xls ? <FileSpreadsheet className="w-3 h-3 shrink-0" /> : img ? <ImageIcon className="w-3 h-3 shrink-0" /> : <FileText className="w-3 h-3 shrink-0" />}
                 <span className="truncate max-w-[160px]">{a.name}</span>
@@ -748,7 +754,7 @@ function InlineELPricer({
               </button>
             );
           })}
-          <span className="text-[10px] text-ink-400 dark:text-ink-500 self-center ml-1">or drag here</span>
+          <span className="text-[10px] text-[var(--t3)] self-center ml-1">or drag here</span>
         </div>
       )}
 
@@ -774,7 +780,7 @@ function InlineELPricer({
           onChange={e => setListText(e.target.value)}
           placeholder={`Paste material list here…\nMP2ES230CGS, 6\nNXL100, 12`}
           rows={3}
-          className="w-full rounded-lg bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 p-2.5 text-[11.5px] font-mono focus:outline-none focus:ring-brand-400 resize-none placeholder:text-ink-300 dark:placeholder:text-ink-600"
+          className="w-full rounded-lg bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] p-2.5 text-[11.5px] font-mono focus:outline-none focus:ring-[var(--accent-line)] resize-none placeholder:text-[var(--t4)]"
         />
       )}
 
@@ -791,7 +797,7 @@ function InlineELPricer({
         {pdfSource && !loading && (
           <button
             onClick={() => { setResult(null); setPdfSource(null); }}
-            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-ink-500 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
             ← Manual input
           </button>
         )}
@@ -805,14 +811,14 @@ function InlineELPricer({
             </button>
             <button
               onClick={copySchedule}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-medium ring-1 ring-inset ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-medium ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
               {copied ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <FileText className="w-3 h-3" />}
               {copied ? 'Copied!' : 'Copy result'}
             </button>
           </>
         )}
         {result && (
-          <span className="text-[10.5px] text-ink-400">
+          <span className="text-[10.5px] text-[var(--t3)]">
             {matched.length} matched{unmatched.length > 0 ? ` · ${unmatched.length} not found` : ''}
           </span>
         )}
@@ -821,7 +827,7 @@ function InlineELPricer({
       {/* Candidate suggestions (descriptive search) */}
       {result && result.candidates && result.candidates.length > 0 && (
         <div className="space-y-1.5">
-          <p className="text-[10px] font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wide">
+          <p className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">
             Suggested matches · pick to add
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
@@ -830,30 +836,30 @@ function InlineELPricer({
                 ? 'bg-emerald-50 dark:bg-emerald-900/20 ring-emerald-200 dark:ring-emerald-800/40'
                 : c.confidence === 'low'
                   ? 'bg-amber-50 dark:bg-amber-900/20 ring-amber-200 dark:ring-amber-800/40'
-                  : 'bg-ink-50 dark:bg-ink-800/40 ring-ink-200 dark:ring-ink-700';
+                  : 'bg-[var(--s3)]/40 ring-[var(--line-2)]';
               return (
                 <div key={`${c.cat_no}-${idx}`} className={cn('rounded-lg ring-1 ring-inset p-2.5 text-[11px]', tone)}>
                   <div className="flex items-start gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                        <span className="text-[9.5px] font-semibold uppercase tracking-wide text-ink-500">
+                        <span className="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--t3)]">
                           {c.confidence || 'med'}
                         </span>
                         {c.matched
                           ? <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">in list</span>
-                          : <span className="text-[9px] px-1 py-0.5 rounded bg-ink-200 dark:bg-ink-700 text-ink-600">not priced</span>}
+                          : <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--s3)] text-[var(--t2)]">not priced</span>}
                         {c.suggested_qty && c.suggested_qty > 1 && (
-                          <span className="text-[9px] px-1 py-0.5 rounded bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300">qty {c.suggested_qty}</span>
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent-text)]">qty {c.suggested_qty}</span>
                         )}
                       </div>
-                      <p className="font-mono text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 truncate">{c.cat_no}</p>
-                      {c.family && <p className="text-[10.5px] text-brand-600 dark:text-brand-400 truncate">{c.family}</p>}
-                      {c.description && <p className="text-[10.5px] text-ink-600 dark:text-ink-300 line-clamp-2">{c.description}</p>}
-                      {c.reasoning && <p className="text-[10px] text-ink-500 dark:text-ink-400 italic mt-0.5 line-clamp-2">"{c.reasoning}"</p>}
+                      <p className="font-mono text-[11.5px] font-semibold text-[var(--t1)] truncate">{c.cat_no}</p>
+                      {c.family && <p className="text-[10.5px] text-[var(--accent-text)] truncate">{c.family}</p>}
+                      {c.description && <p className="text-[10.5px] text-[var(--t2)] line-clamp-2">{c.description}</p>}
+                      {c.reasoning && <p className="text-[10px] text-[var(--t3)] italic mt-0.5 line-clamp-2">"{c.reasoning}"</p>}
                     </div>
                     {c.matched && c.ntp != null && (
                       <div className="text-right shrink-0">
-                        <p className="text-[9px] uppercase text-ink-400">NTP</p>
+                        <p className="text-[9px] uppercase text-[var(--t3)]">NTP</p>
                         <p className="text-[12.5px] font-semibold tabular-nums">{fmtGBP(c.ntp)}</p>
                       </div>
                     )}
@@ -867,7 +873,7 @@ function InlineELPricer({
                     </button>
                     {c.source_url && (
                       <a href={c.source_url} target="_blank" rel="noreferrer"
-                         className="inline-flex items-center h-6 px-2 rounded text-[10.5px] text-brand-600 dark:text-brand-400 hover:underline">
+                         className="inline-flex items-center h-6 px-2 rounded text-[10.5px] text-[var(--accent-text)] hover:underline">
                         source ↗
                       </a>
                     )}
@@ -881,10 +887,10 @@ function InlineELPricer({
 
       {/* Results table */}
       {result && matched.length > 0 && (
-        <div className="overflow-x-auto rounded-lg ring-1 ring-inset ring-ink-100 dark:ring-ink-800">
+        <div className="overflow-x-auto rounded-lg ring-1 ring-inset ring-[var(--line)]">
           <table className="w-full text-[11.5px]">
             <thead>
-              <tr className="bg-ink-50 dark:bg-ink-900 text-[10px] text-ink-400 font-semibold uppercase tracking-wide">
+              <tr className="bg-[var(--s1)] text-[10px] text-[var(--t3)] font-semibold uppercase tracking-wide">
                 <th className="px-3 py-1.5 text-left">Catalogue No</th>
                 <th className="px-3 py-1.5 text-left">Description</th>
                 <th className="px-3 py-1.5 text-right">Qty</th>
@@ -893,19 +899,21 @@ function InlineELPricer({
             </thead>
             <tbody>
               {matched.map((item, i) => (
-                <tr key={i} className="border-t border-ink-50 dark:border-ink-800/60">
+                <tr key={i} className="border-t border-[var(--line)]">
                   <td className="px-3 py-1.5">
-                    <span className="font-mono font-semibold text-brand-700 dark:text-brand-400">{item.cat_no}</span>
+                    <span className="font-mono font-semibold text-[var(--accent-text)]">{item.cat_no}</span>
                     {item.original_input && item.original_input !== item.cat_no && (
                       <span className="ml-1.5 text-[9.5px] text-amber-500 font-mono">← {item.original_input}</span>
                     )}
-                    {item.search_note && (
-                      <span className="ml-1.5 text-[9px] bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 px-1 py-0.5 rounded">Google</span>
-                    )}
+                    {item.search_note && /^[⚠]|range header/i.test(item.search_note) ? (
+                      <span className="ml-1.5 text-[9px] bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-1 py-0.5 rounded cursor-help" title={item.search_note}>⚠ verify</span>
+                    ) : item.search_note ? (
+                      <span className="ml-1.5 text-[9px] bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 px-1 py-0.5 rounded cursor-help" title={item.search_note}>Google</span>
+                    ) : null}
                   </td>
-                  <td className="px-3 py-1.5 text-ink-600 dark:text-ink-300 max-w-[200px] truncate">{item.description}</td>
-                  <td className="px-3 py-1.5 text-right text-ink-600 dark:text-ink-300">{item.qty}</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-ink-800 dark:text-ink-100">{fmtGBP(item.ntp)}</td>
+                  <td className="px-3 py-1.5 text-[var(--t2)] max-w-[200px] truncate">{item.description}</td>
+                  <td className="px-3 py-1.5 text-right text-[var(--t2)]">{item.qty}</td>
+                  <td className="px-3 py-1.5 text-right font-mono text-[var(--t1)]">{fmtGBP(item.ntp)}</td>
                 </tr>
               ))}
             </tbody>
@@ -923,22 +931,22 @@ function InlineELPricer({
             <div key={i} className="border-t border-red-50 dark:border-red-900/20 px-3 py-2 space-y-1.5">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-mono text-[11px] font-semibold text-red-700 dark:text-red-400">{item.cat_no}</span>
-                {item.description && <span className="text-[10.5px] text-ink-500 dark:text-ink-400 truncate">{item.description}</span>}
+                {item.description && <span className="text-[10.5px] text-[var(--t3)] truncate">{item.description}</span>}
                 {item.status === 'Non-Eaton' && (
-                  <span className="text-[9px] bg-ink-100 dark:bg-ink-800 text-ink-500 px-1.5 py-0.5 rounded">Non-Eaton</span>
+                  <span className="text-[9px] bg-[var(--s3)] text-[var(--t3)] px-1.5 py-0.5 rounded">Non-Eaton</span>
                 )}
                 {item.search_note && (
-                  <span className="text-[9.5px] text-ink-400 italic truncate max-w-[200px]">{item.search_note}</span>
+                  <span className="text-[9.5px] text-[var(--t3)] italic truncate max-w-[200px]">{item.search_note}</span>
                 )}
               </div>
               {item.closest_matches && item.closest_matches.length > 0 && (
                 <div className="space-y-0.5">
-                  <p className="text-[9.5px] text-ink-400 dark:text-ink-500 font-medium">Closest in price list:</p>
+                  <p className="text-[9.5px] text-[var(--t3)] font-medium">Closest in price list:</p>
                   {item.closest_matches.map((m, j) => (
                     <div key={j} className="flex items-center gap-2 text-[10px]">
-                      <span className="font-mono text-brand-600 dark:text-brand-400">{m.cat_no}</span>
-                      <span className="text-ink-500 dark:text-ink-400 truncate flex-1">{m.description}</span>
-                      {m.ntp > 0 && <span className="font-mono text-ink-600 dark:text-ink-300 shrink-0">{fmtGBP(m.ntp)}</span>}
+                      <span className="font-mono text-[var(--accent-text)]">{m.cat_no}</span>
+                      <span className="text-[var(--t3)] truncate flex-1">{m.description}</span>
+                      {m.ntp > 0 && <span className="font-mono text-[var(--t2)] shrink-0">{fmtGBP(m.ntp)}</span>}
                     </div>
                   ))}
                 </div>
@@ -970,14 +978,14 @@ function InlineELPricer({
           {schedule.map((entry, ei) => (
             <div key={ei} className="border-t border-emerald-100 dark:border-emerald-900/30">
               {schedule.length > 1 && (
-                <div className="px-3 py-1 text-[10px] font-medium text-ink-500 dark:text-ink-400 bg-ink-50/50 dark:bg-ink-900/30">{entry.source}</div>
+                <div className="px-3 py-1 text-[10px] font-medium text-[var(--t3)] bg-[var(--s1)]">{entry.source}</div>
               )}
               {entry.items.map((item, ii) => (
                 <div key={ii} className="flex items-center gap-2 px-3 py-1 text-[10.5px] border-t border-emerald-50 dark:border-emerald-900/20 first:border-t-0">
-                  <span className="font-mono text-brand-700 dark:text-brand-400 shrink-0">{item.cat_no}</span>
-                  <span className="text-ink-500 dark:text-ink-400 flex-1 truncate">{item.description}</span>
-                  <span className="text-ink-500 dark:text-ink-400 shrink-0">×{item.qty}</span>
-                  <span className="font-mono text-ink-700 dark:text-ink-200 shrink-0">{fmtGBP(item.line_ntp)}</span>
+                  <span className="font-mono text-[var(--accent-text)] shrink-0">{item.cat_no}</span>
+                  <span className="text-[var(--t3)] flex-1 truncate">{item.description}</span>
+                  <span className="text-[var(--t3)] shrink-0">×{item.qty}</span>
+                  <span className="font-mono text-[var(--t2)] shrink-0">{fmtGBP(item.line_ntp)}</span>
                 </div>
               ))}
             </div>
@@ -1024,35 +1032,35 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
 
   return (
     <div className="fixed inset-0 z-[9980] bg-black/50 flex items-end sm:items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full max-w-xl bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-inset ring-ink-200 dark:ring-ink-600 flex flex-col max-h-[90vh]">
+      <div className="w-full max-w-xl bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-inset ring-[var(--line-2)] flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-ink-200 dark:border-ink-700">
-          <PenLine className="w-4 h-4 text-ink-400 shrink-0" />
+        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-[var(--line-2)]">
+          <PenLine className="w-4 h-4 text-[var(--t3)] shrink-0" />
           <p className="text-[13px] font-semibold flex-1">New Email</p>
-          <button onClick={onClose} className="w-7 h-7 rounded-md flex items-center justify-center text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors"><X className="w-4 h-4" /></button>
+          <button onClick={onClose} className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] transition-colors"><X className="w-4 h-4" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
           <div>
-            <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide">To</label>
+            <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">To</label>
             <input value={to} onChange={e => setTo(e.target.value)} placeholder="recipient@example.com"
-              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400" />
+              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
           </div>
           <div>
-            <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide">Subject</label>
+            <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Subject</label>
             <input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Subject…"
-              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400" />
+              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
           </div>
           <div>
-            <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide">Message</label>
+            <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Message</label>
             <textarea value={body} onChange={e => setBody(e.target.value)} rows={6} placeholder="Write your message…"
-              className="mt-1 w-full px-3 py-2.5 rounded-lg text-[12.5px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400 resize-none" />
+              className="mt-1 w-full px-3 py-2.5 rounded-lg text-[12.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400 resize-none" />
           </div>
           {/* Attachments */}
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <label className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide flex-1">Attachments from Outlook</label>
+              <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide flex-1">Attachments from Outlook</label>
               <button onClick={searchAtts} disabled={loadingSugg}
-                className="inline-flex items-center gap-1 h-6 px-2.5 rounded-md text-[10.5px] font-medium bg-ink-100 dark:bg-ink-800 hover:bg-ink-200 dark:hover:bg-ink-700 text-ink-600 dark:text-ink-300 transition-colors disabled:opacity-50">
+                className="inline-flex items-center gap-1 h-6 px-2.5 rounded-md text-[10.5px] font-medium bg-[var(--s3)] hover:bg-[var(--s-hover)] text-[var(--t2)] transition-colors disabled:opacity-50">
                 {loadingSugg ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
                 {loadingSugg ? 'Searching…' : 'Search'}
               </button>
@@ -1060,7 +1068,7 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
             {atts.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {atts.map((a, i) => (
-                  <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-1 ring-inset ring-brand-200 dark:ring-brand-700/40">
+                  <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
                     <FileText className="w-3 h-3 shrink-0" />
                     <span className="max-w-[160px] truncate">{a.attachmentName}</span>
                     <button onClick={() => setAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
@@ -1072,29 +1080,29 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
               <div className="space-y-1 max-h-36 overflow-y-auto">
                 {suggestions.filter(s => !atts.some(a => a.sourceEntryId === s.sourceEntryId && a.attachmentIndex === s.attachmentIndex)).map((s, i) => (
                   <button key={i} onClick={() => setAtts(prev => [...prev, s])}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-left hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors ring-1 ring-inset ring-ink-100 dark:ring-ink-700">
-                    <FileText className="w-3 h-3 text-brand-500 shrink-0" />
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-left hover:bg-[var(--s3)] transition-colors ring-1 ring-inset ring-[var(--line)]">
+                    <FileText className="w-3 h-3 text-[var(--accent-text)] shrink-0" />
                     <span className="flex-1 min-w-0">
-                      <span className="font-medium text-ink-700 dark:text-ink-200 truncate block">{s.attachmentName}</span>
-                      <span className="text-ink-400 dark:text-ink-500 truncate block">{s.emailSubject}</span>
+                      <span className="font-medium text-[var(--t2)] truncate block">{s.attachmentName}</span>
+                      <span className="text-[var(--t3)] truncate block">{s.emailSubject}</span>
                     </span>
-                    <Plus className="w-3 h-3 text-ink-400 shrink-0" />
+                    <Plus className="w-3 h-3 text-[var(--t3)] shrink-0" />
                   </button>
                 ))}
               </div>
             )}
             {searchedQ && !loadingSugg && suggestions.length === 0 && (
-              <p className="text-[11px] text-ink-400 dark:text-ink-500">No matching PDFs found in Outlook for "{searchedQ}"</p>
+              <p className="text-[11px] text-[var(--t3)]">No matching PDFs found in Outlook for "{searchedQ}"</p>
             )}
           </div>
         </div>
-        <div className="px-5 py-3 border-t border-ink-200 dark:border-ink-700 flex items-center gap-2">
+        <div className="px-5 py-3 border-t border-[var(--line-2)] flex items-center gap-2">
           <button onClick={send} disabled={sending || !to.trim() || !subject.trim()}
-            className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 disabled:opacity-50 transition-colors">
+            className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
             {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
             {sending ? 'Sending…' : 'Send'}
           </button>
-          <button onClick={onClose} className="h-8 px-3 rounded-lg text-[12px] text-ink-500 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">Cancel</button>
+          <button onClick={onClose} className="h-8 px-3 rounded-lg text-[12px] text-[var(--t3)] hover:bg-[var(--s3)] transition-colors">Cancel</button>
         </div>
       </div>
     </div>
@@ -1425,7 +1433,7 @@ function EmailDetailPanel({
     if (locked) {
       return (
         <button onClick={() => toast('info', `${label} — coming soon`)} title="Coming soon"
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors text-ink-400 dark:text-ink-600 ring-ink-200/60 dark:ring-ink-700/50 hover:bg-ink-50 dark:hover:bg-ink-800/50 cursor-default">
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors text-[var(--t3)] ring-[var(--line)] hover:bg-[var(--s3)] cursor-default">
           <Icon className="w-3 h-3 shrink-0 opacity-60" />
           {label}
           <Lock className="w-2.5 h-2.5 shrink-0 opacity-60" />
@@ -1438,7 +1446,7 @@ function EmailDetailPanel({
           'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
           active
             ? `bg-${color || 'violet'}-100 dark:bg-${color || 'violet'}-900/30 text-${color || 'violet'}-700 dark:text-${color || 'violet'}-300 ring-${color || 'violet'}-200 dark:ring-${color || 'violet'}-600`
-            : 'text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800',
+            : 'text-[var(--t2)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
         )}>
         <Icon className="w-3 h-3 shrink-0" />
         {label}
@@ -1454,45 +1462,45 @@ function EmailDetailPanel({
 
       {loadingDetail ? (
         <div className="flex-1 flex items-center justify-center">
-          <Loader2 className="w-5 h-5 animate-spin text-ink-300" />
+          <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" />
         </div>
       ) : detail ? (
         <>
           {/* ── Compact header ──────────────────────────────────────────────── */}
-          <div className="shrink-0 px-5 pt-4 pb-3 border-b border-ink-200 dark:border-ink-700 bg-white dark:bg-ink-900">
+          <div className="shrink-0 px-5 pt-4 pb-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
             {/* Nav + counter */}
             <div className="flex items-center gap-1 mb-2">
               <button onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} title={prevEmail?.subject}
-                className="w-6 h-6 rounded flex items-center justify-center text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 disabled:opacity-25 transition-colors">
+                className="w-6 h-6 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-25 transition-colors">
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
               <button onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} title={nextEmail?.subject}
-                className="w-6 h-6 rounded flex items-center justify-center text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 disabled:opacity-25 transition-colors">
+                className="w-6 h-6 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-25 transition-colors">
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
-              {emailIdx >= 0 && <span className="text-[10px] text-ink-400 ml-1 num">{emailIdx + 1} / {emailList.length}</span>}
+              {emailIdx >= 0 && <span className="text-[10px] text-[var(--t3)] ml-1 num">{emailIdx + 1} / {emailList.length}</span>}
             </div>
 
             {/* Subject */}
-            <h2 className="text-[15px] font-bold text-ink-900 dark:text-ink-50 leading-snug mb-1.5">{detail.subject}</h2>
+            <h2 className="text-[15px] font-bold text-[var(--t1)] leading-snug mb-1.5">{detail.subject}</h2>
 
             {/* Meta row */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-ink-500 dark:text-ink-400">
-              <span className="w-6 h-6 rounded-full bg-gradient-to-br from-ink-300 to-ink-500 dark:from-ink-600 dark:to-ink-800 flex items-center justify-center text-[9px] font-bold text-white shrink-0">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[var(--t3)]">
+              <span className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0" style={{ background: 'linear-gradient(140deg, var(--t3), var(--t4))' }}>
                 {detail.sender.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
               </span>
-              <span className="font-medium text-ink-700 dark:text-ink-200">{detail.sender}</span>
-              <span className="text-ink-400 dark:text-ink-500">&lt;{detail.senderEmail}&gt;</span>
+              <span className="font-medium text-[var(--t2)]">{detail.sender}</span>
+              <span className="text-[var(--t3)]">&lt;{detail.senderEmail}&gt;</span>
               {detail.to && <span>→ {detail.to}</span>}
               {detail.cc && <span className="truncate max-w-[200px]">CC: {detail.cc}</span>}
-              <span className="ml-auto shrink-0 text-ink-400 dark:text-ink-500">
+              <span className="ml-auto shrink-0 text-[var(--t3)]">
                 {(() => { try { return new Date(detail.received).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }); } catch { return detail.received; } })()}
               </span>
             </div>
 
             {/* Attachments strip */}
             {detail.attachments.length > 0 && (
-              <div className="mt-2.5 pt-2.5 border-t border-ink-100 dark:border-ink-700">
+              <div className="mt-2.5 pt-2.5 border-t border-[var(--line)]">
                 <div
                   ref={attStripRef}
                   className="flex flex-wrap gap-1.5 overflow-y-auto"
@@ -1502,7 +1510,7 @@ function EmailDetailPanel({
                       <button key={att.index} onClick={() => openAttachmentPdf(detail.entryId, att.index)}
                         draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
                         title="View · Drag to EL Pricer"
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-brand-200 dark:ring-brand-600 hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-colors">
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)] transition-colors">
                         <FileText className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">{fmtSize(att.size)}</span>
                       </button>
                     ) : isImageFile(att.name) ? (
@@ -1520,14 +1528,14 @@ function EmailDetailPanel({
                         <FileSpreadsheet className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
                       </button>
                     ) : (
-                      <span key={att.index} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset bg-ink-50 dark:bg-ink-800 text-ink-500 dark:text-ink-400 ring-ink-200 dark:ring-ink-600">
+                      <span key={att.index} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset bg-[var(--s3)] text-[var(--t3)] ring-[var(--line-2)]">
                         <Paperclip className="w-2.5 h-2.5" />{att.name}
                       </span>
                     )
                   ))}
                   {detail.hasPdf && (detail.senderEmail.toLowerCase().includes('manualnotification') || /SR00[A-Za-z0-9]+/i.test(detail.subject)) && (
                     <button onClick={queuePdf} disabled={savingPdf}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-semibold bg-brand-600 hover:bg-brand-700 text-white disabled:opacity-60 transition-colors">
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-semibold bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white disabled:opacity-60 transition-colors">
                       {savingPdf ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Download className="w-2.5 h-2.5" />}Queue
                     </button>
                   )}
@@ -1544,29 +1552,29 @@ function EmailDetailPanel({
                     document.body.style.userSelect = 'none';
                     e.preventDefault();
                   }}>
-                  <div className="w-6 h-0.5 rounded-full bg-ink-200 dark:bg-ink-700 group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
+                  <div className="w-6 h-0.5 rounded-full bg-[var(--s3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
                 </div>
               </div>
             )}
           </div>
 
           {/* ── Email body — main scrollable area ───────────────────────────── */}
-          <div ref={bodyRef} className="flex-1 overflow-y-auto bg-white dark:bg-ink-900">
+          <div ref={bodyRef} className="flex-1 overflow-y-auto bg-[var(--s1)]">
             {detail.htmlBody
               ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} entryId={detail.entryId} attachments={detail.attachments} />
-              : <pre className="px-5 py-4 text-[12.5px] text-ink-700 dark:text-ink-200 leading-relaxed whitespace-pre-wrap font-sans">{detail.body || '(no body)'}</pre>
+              : <pre className="px-5 py-4 text-[12.5px] text-[var(--t2)] leading-relaxed whitespace-pre-wrap font-sans">{detail.body || '(no body)'}</pre>
             }
           </div>
 
           {/* ── Bottom: expanded panel + action bar ─────────────────────────── */}
-          <div className="shrink-0 border-t border-ink-200 dark:border-ink-700 bg-white dark:bg-ink-900">
+          <div className="shrink-0 border-t border-[var(--line-2)] bg-[var(--s1)]">
 
             {/* Expanded panel */}
             {activePanel && (
               <>
                 {/* ── Resize handle — OUTSIDE the scroll container so drag works ── */}
                 <div
-                  className="group flex items-center h-5 border-b border-ink-100 dark:border-ink-800 select-none bg-ink-50 dark:bg-ink-900/80 hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
+                  className="group flex items-center h-5 border-b border-[var(--line)] select-none bg-[var(--s1)] hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
                   style={{ cursor: 'row-resize' }}
                   onMouseDown={e => {
                     if ((e.target as HTMLElement).closest('button')) return;
@@ -1579,27 +1587,27 @@ function EmailDetailPanel({
                     e.preventDefault();
                   }}>
                   <div className="flex-1 flex items-center justify-center pointer-events-none">
-                    <div className="w-8 h-0.5 rounded-full bg-ink-300 dark:bg-ink-600 group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
+                    <div className="w-8 h-0.5 rounded-full bg-[var(--line-3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
                   </div>
                   <div className="flex items-center gap-0.5 pr-1.5">
                     <button
                       onClick={() => setPanelMaximized(p => !p)}
                       title={panelMaximized ? 'Restore' : 'Maximise'}
-                      className="w-5 h-5 rounded flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+                      className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
                       {panelMaximized
                         ? <ChevronRight className="w-3 h-3 rotate-90" />
                         : <ChevronLeft className="w-3 h-3 -rotate-90" />}
                     </button>
                     <button
-                      onClick={() => openExternal('/schematics')}
+                      onClick={() => openExternal('/schematics', { popup: true, width: 1000, height: 760 })}
                       title="Open EL Pricer in new window"
-                      className="w-5 h-5 rounded flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+                      className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
                       <ExternalLink className="w-3 h-3" />
                     </button>
                     <button
                       onClick={() => setActivePanel(null)}
                       title="Close"
-                      className="w-5 h-5 rounded flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+                      className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
                       <X className="w-3 h-3" />
                     </button>
                   </div>
@@ -1608,7 +1616,7 @@ function EmailDetailPanel({
                 {/* Scrollable panel content */}
                 <div
                   ref={panelRef}
-                  className="overflow-y-auto border-b border-ink-200 dark:border-ink-700"
+                  className="overflow-y-auto border-b border-[var(--line-2)]"
                   // Cap to the space left below the app + inbox headers so the panel
                   // (and its follow-up input at the bottom) plus the action bar can
                   // never spill under the Windows taskbar / off-screen.
@@ -1620,19 +1628,19 @@ function EmailDetailPanel({
                     {/* Header */}
                     <div className="flex items-center gap-2">
                       <Sparkles className="w-3.5 h-3.5 text-violet-500 shrink-0" />
-                      <p className="text-[11.5px] font-semibold text-ink-800 dark:text-ink-100 flex-1">AI Summary</p>
+                      <p className="text-[11.5px] font-semibold text-[var(--t1)] flex-1">AI Summary</p>
                       {analyzing && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
                       {!analyzing && analysis && (
                         <div className="flex items-center gap-1">
                           <button onClick={() => submitAnalysisFeedback('up')} disabled={!!analysisLiked}
-                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'up' ? 'text-emerald-500' : 'text-ink-300 hover:text-emerald-500 disabled:opacity-40')}>
+                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'up' ? 'text-emerald-500' : 'text-[var(--t4)] hover:text-emerald-500 disabled:opacity-40')}>
                             <ThumbsUp className="w-2.5 h-2.5" />
                           </button>
                           <button onClick={() => submitAnalysisFeedback('down')} disabled={!!analysisLiked}
-                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'down' ? 'text-red-500' : 'text-ink-300 hover:text-red-500 disabled:opacity-40')}>
+                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'down' ? 'text-red-500' : 'text-[var(--t4)] hover:text-red-500 disabled:opacity-40')}>
                             <ThumbsDown className="w-2.5 h-2.5" />
                           </button>
-                          <button onClick={() => runSummarize(detail, true)} className="text-[10px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-300 ml-1 transition-colors">Refresh</button>
+                          <button onClick={() => runSummarize(detail, true)} className="text-[10px] text-[var(--t3)] hover:text-violet-600 dark:hover:text-violet-300 ml-1 transition-colors">Refresh</button>
                         </div>
                       )}
                     </div>
@@ -1646,7 +1654,7 @@ function EmailDetailPanel({
                       if (visual.length === 0) return null;
                       return (
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="inline-flex items-center gap-1 text-[10.5px] text-ink-400 dark:text-ink-500"><Eye className="w-2.5 h-2.5" />Feed to AI:</span>
+                          <span className="inline-flex items-center gap-1 text-[10.5px] text-[var(--t3)]"><Eye className="w-2.5 h-2.5" />Feed to AI:</span>
                           {visual.map(a => {
                             const on  = included.has(a.index);
                             const img = a.isImage || isImageFile(a.name);
@@ -1656,7 +1664,7 @@ function EmailDetailPanel({
                                 title={on ? `${a.name} — the AI reads this, click to exclude` : `Include ${a.name} — the AI will read it`}
                                 className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors',
                                   on ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
-                                     : 'bg-ink-50 dark:bg-ink-800 text-ink-500 dark:text-ink-400 ring-ink-200 dark:ring-ink-600 hover:bg-ink-100 dark:hover:bg-ink-700')}>
+                                     : 'bg-[var(--s3)] text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]')}>
                                 {on ? <Check className="w-2.5 h-2.5 shrink-0" /> : (img ? <ImageIcon className="w-2.5 h-2.5 shrink-0" /> : <FileText className="w-2.5 h-2.5 shrink-0" />)}
                                 <span className="truncate max-w-[130px]">{a.name}</span>
                               </button>
@@ -1675,12 +1683,12 @@ function EmailDetailPanel({
 
                     {/* Summary body */}
                     {analyzing && !analysis
-                      ? <p className="text-[12px] text-ink-400 py-1">Reading email{effectiveInclude(detail).length ? ' + images' : ''}…</p>
+                      ? <p className="text-[12px] text-[var(--t3)] py-1">Reading email{effectiveInclude(detail).length ? ' + images' : ''}…</p>
                       : analysis
                         ? <Md text={analysis} />
                         : (
                           <div className="py-1">
-                            <p className="text-[12px] text-ink-400 mb-2">No summary yet — reads the email plus any inline photos.</p>
+                            <p className="text-[12px] text-[var(--t3)] mb-2">No summary yet — reads the email plus any inline photos.</p>
                             <button onClick={() => runSummarize(detail)}
                               className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
                               <Sparkles className="w-3 h-3" /> Summarize
@@ -1691,27 +1699,27 @@ function EmailDetailPanel({
 
                     {/* Inline follow-up chat (only once there is a summary) */}
                     {analysis && (
-                      <div className="pt-2.5 mt-0.5 border-t border-ink-100 dark:border-ink-800 flex flex-col gap-2">
-                        <p className="text-[10.5px] font-semibold text-ink-400 dark:text-ink-500 uppercase tracking-wide">Ask a follow-up</p>
+                      <div className="pt-2.5 mt-0.5 border-t border-[var(--line)] flex flex-col gap-2">
+                        <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Ask a follow-up</p>
                         {chatMessages.length > 0 && (
                           <div className="space-y-2">
                             {chatMessages.map((m, i) => (
                               <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
                                 <div className={cn('max-w-[90%] px-3 py-1.5 rounded-xl text-[12px]',
-                                  m.role === 'user' ? 'bg-violet-600 text-white rounded-br-sm' : 'bg-ink-100 dark:bg-ink-800 text-ink-800 dark:text-ink-100 rounded-bl-sm')}>
+                                  m.role === 'user' ? 'bg-violet-600 text-white rounded-br-sm' : 'bg-[var(--s3)] text-[var(--t1)] rounded-bl-sm')}>
                                   {m.role === 'ai' ? <Md text={m.text} /> : m.text}
                                 </div>
                               </div>
                             ))}
-                            {chatLoading && <div className="flex justify-start"><div className="px-3 py-1.5 rounded-xl bg-ink-100 dark:bg-ink-800 text-[12px] text-ink-400 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Thinking…</div></div>}
+                            {chatLoading && <div className="flex justify-start"><div className="px-3 py-1.5 rounded-xl bg-[var(--s3)] text-[12px] text-[var(--t3)] flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Thinking…</div></div>}
                             <div ref={chatEndRef} />
                           </div>
                         )}
-                        <div className="flex gap-2 sticky bottom-0 -mx-5 px-5 py-2 bg-white dark:bg-ink-900 border-t border-ink-100/60 dark:border-ink-800/60">
+                        <div className="flex gap-2 sticky bottom-0 -mx-5 px-5 py-2 bg-[var(--s1)] border-t border-[var(--line)]">
                           <input value={chatInput} onChange={e => setChatInput(e.target.value)}
                             onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
                             placeholder="Ask about this email or its images…"
-                            className="flex-1 h-7 px-2.5 rounded-lg text-[12px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 focus:outline-none focus:ring-violet-400 placeholder:text-ink-400 text-ink-800 dark:text-ink-100" />
+                            className="flex-1 h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 placeholder:text-[var(--t3)] text-[var(--t1)]" />
                           <button onClick={sendChatMessage} disabled={!chatInput.trim() || chatLoading}
                             className="w-7 h-7 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
                             <Send className="w-3 h-3" />
@@ -1726,27 +1734,27 @@ function EmailDetailPanel({
                 {activePanel === 'reply' && (
                   <div className="px-5 py-3 space-y-2">
                     <div className="flex items-center gap-2">
-                      <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400 flex-1">Reply to {detail.senderEmail}</p>
-                      {draftingReply && <Loader2 className="w-3 h-3 animate-spin text-ink-400" />}
+                      <p className="text-[11px] font-semibold text-[var(--t3)] flex-1">Reply to {detail.senderEmail}</p>
+                      {draftingReply && <Loader2 className="w-3 h-3 animate-spin text-[var(--t3)]" />}
                       {replySent && <span className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Sent</span>}
                     </div>
                     {!replySent && (
                       <>
                         <textarea value={replyText} onChange={e => setReplyText(e.target.value)} rows={5}
                           placeholder={draftingReply ? 'Drafting AI reply…' : 'Write your reply…'}
-                          className="w-full text-[12.5px] text-ink-800 dark:text-ink-100 bg-ink-50 dark:bg-ink-800 rounded-lg px-3 py-2.5 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-ink-400" />
+                          className="w-full text-[12.5px] text-[var(--t1)] bg-[var(--s3)] rounded-lg px-3 py-2.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
                         <div className="flex items-center gap-2 flex-wrap">
                           <button onClick={sendReply} disabled={sendingReply || !replyText.trim()}
-                            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 disabled:opacity-50 transition-colors">
+                            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
                             {sendingReply ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}Send
                           </button>
                           <button onClick={() => draftReply(detail)} disabled={draftingReply}
-                            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-ink-500 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-50 transition-colors">
+                            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
                             <Sparkles className="w-3 h-3" />AI Draft
                           </button>
                           {draft && (
                             <button onClick={() => draftReply(detail)} disabled={draftingReply}
-                              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-ink-500 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-50 transition-colors">
+                              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
                               <RotateCcw className="w-3 h-3" />Regen
                             </button>
                           )}
@@ -1765,20 +1773,20 @@ function EmailDetailPanel({
                 {/* ── Reply + Attach panel ── */}
                 {activePanel === 'reply-attach' && (
                   <div className="px-5 py-3 space-y-2">
-                    <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400">Reply to {detail.senderEmail} with attachments</p>
+                    <p className="text-[11px] font-semibold text-[var(--t3)]">Reply to {detail.senderEmail} with attachments</p>
                     <textarea value={replyAttachText} onChange={e => setReplyAttachText(e.target.value)} rows={4}
                       placeholder="Write your reply…"
-                      className="w-full text-[12.5px] text-ink-800 dark:text-ink-100 bg-ink-50 dark:bg-ink-800 rounded-lg px-3 py-2.5 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-ink-400" />
+                      className="w-full text-[12.5px] text-[var(--t1)] bg-[var(--s3)] rounded-lg px-3 py-2.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
                     {/* Suggested attachments */}
                     <div>
-                      <p className="text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide mb-1.5 flex items-center gap-2">
+                      <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1.5 flex items-center gap-2">
                         Suggested attachments from Outlook
                         {loadingSugg && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
                       </p>
                       {selectedAtts.length > 0 && (
                         <div className="flex flex-wrap gap-1.5 mb-2">
                           {selectedAtts.map((a, i) => (
-                            <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-brand-50 dark:bg-brand-900/20 text-brand-700 dark:text-brand-300 ring-1 ring-inset ring-brand-200 dark:ring-brand-600">
+                            <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
                               <FileText className="w-3 h-3 shrink-0" />
                               <span className="max-w-[140px] truncate">{a.attachmentName}</span>
                               <button onClick={() => setSelectedAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
@@ -1787,23 +1795,23 @@ function EmailDetailPanel({
                         </div>
                       )}
                       {!loadingSugg && attachSuggestions.length === 0 && (
-                        <p className="text-[11px] text-ink-400 dark:text-ink-500">No matching PDFs found in Outlook</p>
+                        <p className="text-[11px] text-[var(--t3)]">No matching PDFs found in Outlook</p>
                       )}
                       {attachSuggestions.filter(s => !selectedAtts.some(a => a.sourceEntryId === s.sourceEntryId && a.attachmentIndex === s.attachmentIndex)).map((s, i) => (
                         <button key={i} onClick={() => setSelectedAtts(prev => [...prev, s])}
-                          className="w-full flex items-center gap-2 px-2.5 py-1.5 mb-1 rounded-lg text-[11px] text-left hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors ring-1 ring-inset ring-ink-100 dark:ring-ink-700">
-                          <FileText className="w-3 h-3 text-brand-500 shrink-0" />
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 mb-1 rounded-lg text-[11px] text-left hover:bg-[var(--s3)] transition-colors ring-1 ring-inset ring-[var(--line)]">
+                          <FileText className="w-3 h-3 text-[var(--accent-text)] shrink-0" />
                           <span className="flex-1 min-w-0">
-                            <span className="font-medium text-ink-700 dark:text-ink-200 truncate block">{s.attachmentName}</span>
-                            <span className="text-ink-400 dark:text-ink-500 truncate block text-[10.5px]">{s.emailSubject} · {s.sender}</span>
+                            <span className="font-medium text-[var(--t2)] truncate block">{s.attachmentName}</span>
+                            <span className="text-[var(--t3)] truncate block text-[10.5px]">{s.emailSubject} · {s.sender}</span>
                           </span>
-                          <Plus className="w-3 h-3 text-ink-400 shrink-0" />
+                          <Plus className="w-3 h-3 text-[var(--t3)] shrink-0" />
                         </button>
                       ))}
                     </div>
                     <div className="flex items-center gap-2">
                       <button onClick={sendReplyWithAtts} disabled={sendingWithAtts || !replyAttachText.trim()}
-                        className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 disabled:opacity-50 transition-colors">
+                        className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
                         {sendingWithAtts ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
                         Send {selectedAtts.length > 0 ? `(${selectedAtts.length} file${selectedAtts.length > 1 ? 's' : ''})` : ''}
                       </button>
@@ -1891,8 +1899,8 @@ function _ImapSetupScreen_UNUSED({
       </div>
 
       <div>
-        <p className="text-[15px] font-semibold text-ink-900 dark:text-ink-50">Connect your Eaton inbox</p>
-        <p className="text-[12.5px] text-ink-500 dark:text-ink-400 mt-1 max-w-xs leading-relaxed">
+        <p className="text-[15px] font-semibold text-[var(--t1)]">Connect your Eaton inbox</p>
+        <p className="text-[12.5px] text-[var(--t3)] mt-1 max-w-xs leading-relaxed">
           Eaton blocks standard login for apps. You need a one-time <strong>App Password</strong> from Microsoft — it takes about 60 seconds.
         </p>
       </div>
@@ -1900,9 +1908,9 @@ function _ImapSetupScreen_UNUSED({
       {step === 'intro' && (
         <div className="w-full max-w-sm space-y-3">
           {/* Step 1 */}
-          <div className="rounded-xl bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 px-4 py-3 text-left space-y-2">
-            <p className="text-[10.5px] font-bold text-ink-400 uppercase tracking-wide">Step 1 — Open Microsoft Security</p>
-            <p className="text-[11.5px] text-ink-600 dark:text-ink-300 leading-relaxed">
+          <div className="rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] px-4 py-3 text-left space-y-2">
+            <p className="text-[10.5px] font-bold text-[var(--t3)] uppercase tracking-wide">Step 1 — Open Microsoft Security</p>
+            <p className="text-[11.5px] text-[var(--t2)] leading-relaxed">
               Click the button below. Sign in with your Eaton account if asked.
             </p>
             <a
@@ -1915,9 +1923,9 @@ function _ImapSetupScreen_UNUSED({
           </div>
 
           {/* Step 2 */}
-          <div className="rounded-xl bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 px-4 py-3 text-left space-y-1.5">
-            <p className="text-[10.5px] font-bold text-ink-400 uppercase tracking-wide">Step 2 — Create an App Password</p>
-            <ol className="text-[11.5px] text-ink-600 dark:text-ink-300 leading-relaxed list-decimal list-inside space-y-0.5">
+          <div className="rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] px-4 py-3 text-left space-y-1.5">
+            <p className="text-[10.5px] font-bold text-[var(--t3)] uppercase tracking-wide">Step 2 — Create an App Password</p>
+            <ol className="text-[11.5px] text-[var(--t2)] leading-relaxed list-decimal list-inside space-y-0.5">
               <li>Click <strong>+ Add sign-in method</strong></li>
               <li>Choose <strong>App password</strong> from the dropdown</li>
               <li>Name it anything (e.g. <em>Vector</em>)</li>
@@ -1936,7 +1944,7 @@ function _ImapSetupScreen_UNUSED({
 
           <div className="flex justify-end">
             <button onClick={onRetry}
-              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-ink-100 dark:bg-ink-800 text-ink-500 dark:text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-[var(--s3)] text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
               <RefreshCw className="w-3 h-3" /> Retry connection
             </button>
           </div>
@@ -1946,16 +1954,16 @@ function _ImapSetupScreen_UNUSED({
       {step === 'paste' && (
         <div className="w-full max-w-sm space-y-3">
           <div>
-            <label className="block text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide mb-1 text-left">Email</label>
+            <label className="block text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1 text-left">Email</label>
             <input
               type="email"
               value={email}
               onChange={e => setEmail(e.target.value)}
-              className="w-full h-9 px-3 rounded-lg text-[12.5px] bg-white dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 focus:outline-none focus:ring-violet-400"
+              className="w-full h-9 px-3 rounded-lg text-[12.5px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400"
             />
           </div>
           <div>
-            <label className="block text-[10.5px] font-semibold text-ink-400 uppercase tracking-wide mb-1 text-left">App Password</label>
+            <label className="block text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1 text-left">App Password</label>
             <input
               type="text"
               value={password}
@@ -1965,7 +1973,7 @@ function _ImapSetupScreen_UNUSED({
               autoFocus
               autoComplete="off"
               spellCheck={false}
-              className="w-full h-9 px-3 rounded-lg text-[12.5px] font-mono bg-white dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 placeholder:font-sans focus:outline-none focus:ring-violet-400"
+              className="w-full h-9 px-3 rounded-lg text-[12.5px] font-mono bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] placeholder:font-sans focus:outline-none focus:ring-violet-400"
             />
           </div>
 
@@ -1986,12 +1994,12 @@ function _ImapSetupScreen_UNUSED({
 
           <div className="flex items-center gap-2">
             <button onClick={() => { setStep('intro'); setError(''); }}
-              className="text-[11px] text-ink-400 hover:text-violet-600 dark:hover:text-violet-400 transition-colors">
+              className="text-[11px] text-[var(--t3)] hover:text-violet-600 dark:hover:text-violet-400 transition-colors">
               ← Back to instructions
             </button>
             <div className="flex-1" />
             <button onClick={onRetry}
-              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-ink-100 dark:bg-ink-800 text-ink-500 dark:text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-colors">
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-[var(--s3)] text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
               <RefreshCw className="w-3 h-3" /> Retry
             </button>
           </div>
@@ -2001,6 +2009,23 @@ function _ImapSetupScreen_UNUSED({
   );
 }
 
+
+// ─── List-row avatar helpers (mockup 3-pane look) ────────────────────────────
+const AVATAR_COLORS = ['#5b8cff', '#f87171', '#a78bfa', '#34d399', '#fbbf24', '#38bdf8', '#fb7185', '#818cf8'];
+function avatarColor(seed: string) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return AVATAR_COLORS[h % AVATAR_COLORS.length];
+}
+function avatarInitials(name: string) {
+  const parts = (name || '?').trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// Folder rail definitions — client-side filters over the loaded mailbox.
+type InboxFolder = 'inbox' | 'flagged' | 'attachments' | 'processed' | 'archive';
 
 // ─── Main component ──────────────────────────────────────────────────────────
 export function InboxPage({
@@ -2033,6 +2058,9 @@ export function InboxPage({
   const setSelectedId = (v: string) => { _selectedId = v; _setSelectedId(v); };
 
   const [unreadOnly, setUnreadOnly]     = useState(() => localStorage.getItem('inbox_unreadOnly') === 'true');
+  const [folder, setFolder]             = useState<InboxFolder>(() => (localStorage.getItem('inbox_folder') as InboxFolder) || 'inbox');
+  const [railDragOver, setRailDragOver] = useState<InboxFolder | null>(null);
+  const selectFolder = (f: InboxFolder) => { setFolder(f); localStorage.setItem('inbox_folder', f); };
   const [loadingEmails, setLoadingEmails] = useState(false);
   const [cacheAge, setCacheAge]         = useState('');
   const [emailLimit, setEmailLimit]     = useState(50);
@@ -2051,7 +2079,7 @@ export function InboxPage({
   // ── Resizable list panel — direct DOM to avoid re-render jank ───────────
   const [listWidth, setListWidth] = useState(() => {
     const saved = localStorage.getItem('inbox_list_width');
-    return saved ? parseInt(saved, 10) : 288;
+    return saved ? parseInt(saved, 10) : 344;
   });
   const listPaneRef      = useRef<HTMLDivElement>(null);
   const resizingRef      = useRef(false);
@@ -2332,11 +2360,42 @@ export function InboxPage({
     } catch (e: any) { toast('err', e.message); }
   }
 
+  // ── Move an email to a rail folder (drag-drop or context menu) ─────────────
+  // These folders are views over real Outlook state, so "moving" applies the
+  // matching backed action: Flagged→flag, Processed→mark read, Archive→category
+  // "Archived", Inbox→clear the Archived category.
+  async function moveToFolder(entryId: string, target: InboxFolder) {
+    setEmailMenu(null);
+    setCategoryMenuId(null);
+    if (target === 'attachments') return;   // derived — not a move target
+    try {
+      switch (target) {
+        case 'flagged':
+          if (!starredEmails.has(entryId)) {
+            const next = new Set(starredEmails); next.add(entryId); setStarredEmails(next);
+            await api.outlookFlag(entryId, true);
+          }
+          toast('ok', 'Moved to Flagged'); break;
+        case 'processed':
+          handleMarkRead(entryId);
+          toast('ok', 'Moved to Processed'); break;
+        case 'archive':
+          setEmailCategories(prev => ({ ...prev, [entryId]: 'Archived' }));
+          await api.outlookCategorize(entryId, 'Archived');
+          toast('ok', 'Archived'); break;
+        case 'inbox':
+          setEmailCategories(prev => { const n = { ...prev }; delete n[entryId]; return n; });
+          await api.outlookCategorize(entryId, '');
+          toast('ok', 'Moved to Inbox'); break;
+      }
+    } catch (e: any) { toast('err', e.message); }
+  }
+
   // ─── Unavailable state ─────────────────────────────────────────────────────
   if (available === null) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-5 h-5 animate-spin text-ink-400" />
+        <Loader2 className="w-5 h-5 animate-spin text-[var(--t3)]" />
       </div>
     );
   }
@@ -2361,18 +2420,18 @@ export function InboxPage({
           <Mail className="w-6 h-6 text-amber-500" />
         </div>
         <div>
-          <p className="text-[15px] font-semibold text-ink-900 dark:text-ink-50">Outlook not available</p>
-          <p className="text-[12.5px] text-ink-500 dark:text-ink-400 mt-1 max-w-sm leading-relaxed">
-            Make sure Classic Outlook is open and <code className="text-[11px] bg-ink-100 dark:bg-ink-800 px-1 rounded">pywin32</code> is installed.
+          <p className="text-[15px] font-semibold text-[var(--t1)]">Outlook not available</p>
+          <p className="text-[12.5px] text-[var(--t3)] mt-1 max-w-sm leading-relaxed">
+            Make sure Classic Outlook is open and <code className="text-[11px] bg-[var(--s3)] px-1 rounded">pywin32</code> is installed.
           </p>
         </div>
-        <div className="mt-1 px-4 py-3 rounded-xl bg-white dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 text-left max-w-sm w-full">
-          <p className="text-[11px] font-semibold text-ink-500 dark:text-ink-400 uppercase tracking-wide mb-2">Setup</p>
-          <p className="text-[12px] text-ink-700 dark:text-ink-200 font-mono bg-ink-50 dark:bg-ink-800 rounded px-2 py-1.5">pip install pywin32</p>
+        <div className="mt-1 px-4 py-3 rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-left max-w-sm w-full">
+          <p className="text-[11px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-2">Setup</p>
+          <p className="text-[12px] text-[var(--t2)] font-mono bg-[var(--s3)] rounded px-2 py-1.5">pip install pywin32</p>
           {availError && <p className="text-[11px] text-red-500 dark:text-red-400 mt-2">{availError}</p>}
         </div>
         <button onClick={retryStatus}
-          className="inline-flex items-center gap-2 h-8 px-4 rounded-lg text-[12px] font-medium bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 transition-colors">
+          className="inline-flex items-center gap-2 h-8 px-4 rounded-lg text-[12px] font-medium bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 transition-colors">
           <RefreshCw className="w-3.5 h-3.5" /> Retry
         </button>
       </div>
@@ -2380,15 +2439,45 @@ export function InboxPage({
   }
 
   // Filtered email list (search)
+  // Folder rail predicate (client-side view over the loaded mailbox).
+  // Plain function — NOT a hook — so it stays clear of the early returns above.
+  const isArchived = (id: string) => emailCategories[id] === 'Archived';
+  const inFolder = (e: typeof emails[number]) => {
+    // Archived mail only surfaces under Archive, never the other views.
+    if (folder !== 'archive' && isArchived(e.entryId)) return false;
+    switch (folder) {
+      case 'flagged':     return starredEmails.has(e.entryId);
+      case 'attachments': return e.attachments.length > 0;
+      case 'processed':   return !e.unread;
+      case 'archive':     return isArchived(e.entryId);
+      default:            return true;   // inbox
+    }
+  };
+
+  const folderCounts = {
+    inbox:       emails.filter(e => !isArchived(e.entryId)).length,
+    flagged:     emails.filter(e => starredEmails.has(e.entryId) && !isArchived(e.entryId)).length,
+    attachments: emails.filter(e => e.attachments.length > 0 && !isArchived(e.entryId)).length,
+    processed:   emails.filter(e => !e.unread && !isArchived(e.entryId)).length,
+    archive:     emails.filter(e => isArchived(e.entryId)).length,
+  };
+  const FOLDERS: { id: InboxFolder; label: string; Icon: any; count: number }[] = [
+    { id: 'inbox',       label: 'Inbox',            Icon: InboxIcon,  count: folderCounts.inbox },
+    { id: 'flagged',     label: 'Flagged',          Icon: Flag,       count: folderCounts.flagged },
+    { id: 'attachments', label: 'With attachments', Icon: Paperclip,  count: folderCounts.attachments },
+    { id: 'processed',   label: 'Processed',        Icon: Check,      count: folderCounts.processed },
+    { id: 'archive',     label: 'Archive',          Icon: Archive,    count: folderCounts.archive },
+  ];
+
   const sq = emailSearch.trim().toLowerCase();
-  const displayEmails = sq
+  const displayEmails = (sq
     ? emails.filter(e =>
         e.subject.toLowerCase().includes(sq) ||
         e.sender.toLowerCase().includes(sq) ||
         e.senderEmail.toLowerCase().includes(sq) ||
         e.bodyPreview.toLowerCase().includes(sq)
       )
-    : emails;
+    : emails).filter(inFolder);
 
   return (
     <div className="flex flex-col h-full">
@@ -2400,16 +2489,16 @@ export function InboxPage({
       {popoutId && (
         <div className="fixed inset-0 z-[9960] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
           onClick={e => { if (e.target === e.currentTarget) setPopoutId(null); }}>
-          <div className="w-full max-w-4xl bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-inset ring-ink-200 dark:ring-ink-700 flex flex-col overflow-hidden"
+          <div className="w-full max-w-4xl bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-inset ring-[var(--line-2)] flex flex-col overflow-hidden"
             style={{ height: 'min(90vh, 860px)' }}>
             {/* Popout header */}
-            <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-ink-200 dark:border-ink-700 bg-ink-50/60 dark:bg-ink-950/40">
-              <Mail className="w-4 h-4 text-ink-400 shrink-0" />
-              <p className="flex-1 text-[12.5px] font-semibold text-ink-700 dark:text-ink-200 truncate">
+            <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
+              <Mail className="w-4 h-4 text-[var(--t3)] shrink-0" />
+              <p className="flex-1 text-[12.5px] font-semibold text-[var(--t2)] truncate">
                 {emails.find(e => e.entryId === popoutId)?.subject || '…'}
               </p>
               <button onClick={() => setPopoutId(null)}
-                className="w-7 h-7 rounded-md flex items-center justify-center text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-800 transition-colors">
+                className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -2433,33 +2522,51 @@ export function InboxPage({
         <>
           <div className="fixed inset-0 z-[9990]" onClick={() => { setEmailMenu(null); setCategoryMenuId(null); }} />
           <div
-            className="fixed z-[9991] bg-white dark:bg-ink-900 rounded-xl shadow-xl ring-1 ring-inset ring-ink-200 dark:ring-ink-700 py-1 min-w-[176px] text-[12px]"
+            className="fixed z-[9991] bg-[var(--s1)] rounded-xl shadow-xl ring-1 ring-inset ring-[var(--line-2)] py-1 min-w-[176px] text-[12px]"
             style={{ top: emailMenu.y, left: emailMenu.x }}>
             <button onClick={() => handleFlag(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
-              <Star className={cn('w-3.5 h-3.5', starredEmails.has(emailMenu.id) ? 'text-amber-400 fill-amber-400' : 'text-ink-400')} />
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
+              <Star className={cn('w-3.5 h-3.5', starredEmails.has(emailMenu.id) ? 'text-amber-400 fill-amber-400' : 'text-[var(--t3)]')} />
               {starredEmails.has(emailMenu.id) ? 'Unflag' : 'Flag'}
             </button>
             <button onClick={() => handleMarkUnread(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
-              <Mail className="w-3.5 h-3.5 text-ink-400" />
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
+              <Mail className="w-3.5 h-3.5 text-[var(--t3)]" />
               Mark as Unread
             </button>
+            {/* Move to folder */}
+            <div className="px-3 pt-1.5 pb-1">
+              <p className="text-[9.5px] font-semibold uppercase tracking-[0.06em] text-[var(--t4)] mb-1">Move to</p>
+              <div className="flex flex-wrap gap-1">
+                {([
+                  { id: 'inbox' as InboxFolder,    label: 'Inbox',     Icon: InboxIcon },
+                  { id: 'flagged' as InboxFolder,  label: 'Flagged',   Icon: Flag },
+                  { id: 'processed' as InboxFolder,label: 'Processed', Icon: Check },
+                  { id: 'archive' as InboxFolder,  label: 'Archive',   Icon: Archive },
+                ]).map(m => (
+                  <button key={m.id} onClick={() => moveToFolder(emailMenu.id, m.id)}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-medium bg-[var(--s3)] text-[var(--t2)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent-text)] transition-colors">
+                    <m.Icon className="w-3 h-3" />{m.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <hr className="my-1 border-[var(--line)]" />
             <button onClick={() => handleForward(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
-              <Forward className="w-3.5 h-3.5 text-ink-400" />
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
+              <Forward className="w-3.5 h-3.5 text-[var(--t3)]" />
               Forward
             </button>
             <button onClick={() => handleOpenInOutlook(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
-              <ExternalLink className="w-3.5 h-3.5 text-ink-400" />
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
+              <ExternalLink className="w-3.5 h-3.5 text-[var(--t3)]" />
               Open in Outlook
             </button>
             <button onClick={() => setCategoryMenuId(categoryMenuId === emailMenu.id ? null : emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
-              <FolderOpen className="w-3.5 h-3.5 text-ink-400" />
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
+              <FolderOpen className="w-3.5 h-3.5 text-[var(--t3)]" />
               <span className="flex-1">Categorize</span>
-              <ChevronRight className="w-3 h-3 text-ink-400" />
+              <ChevronRight className="w-3 h-3 text-[var(--t3)]" />
             </button>
             {categoryMenuId === emailMenu.id && (
               <div className="px-3 pb-2 flex flex-wrap gap-1.5">
@@ -2469,14 +2576,14 @@ export function InboxPage({
                       'px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors',
                       emailCategories[emailMenu.id] === cat
                         ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
-                        : 'bg-ink-50 dark:bg-ink-800 text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-700 hover:bg-ink-100 dark:hover:bg-ink-700',
+                        : 'bg-[var(--s3)] text-[var(--t2)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
                     )}>
                     {cat}
                   </button>
                 ))}
               </div>
             )}
-            <hr className="my-1 border-ink-100 dark:border-ink-800" />
+            <hr className="my-1 border-[var(--line)]" />
             <button onClick={() => handleDelete(emailMenu.id)}
               className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-red-600 dark:text-red-400">
               <Trash2 className="w-3.5 h-3.5" />
@@ -2487,7 +2594,7 @@ export function InboxPage({
       )}
 
       {/* ── Top bar ─────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-white dark:bg-ink-900 border-b border-ink-200 dark:border-ink-700">
+      <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-[var(--s1)] border-b border-[var(--line-2)]">
 
         {/* Mailbox tabs */}
         <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
@@ -2497,8 +2604,8 @@ export function InboxPage({
             className={cn(
               'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium whitespace-nowrap transition-colors',
               storeId === 'default'
-                ? 'bg-ink-900 dark:bg-white text-white dark:text-ink-900'
-                : 'text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800',
+                ? 'bg-[var(--t1)] text-[var(--bg)]'
+                : 'text-[var(--t3)] hover:bg-[var(--s3)]',
             )}>
             <InboxIcon className="w-3 h-3 shrink-0" />
             Personal
@@ -2510,8 +2617,8 @@ export function InboxPage({
               className={cn(
                 'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium whitespace-nowrap transition-colors',
                 storeId === m.storeId
-                  ? 'bg-ink-900 dark:bg-white text-white dark:text-ink-900'
-                  : 'text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800',
+                  ? 'bg-[var(--t1)] text-[var(--bg)]'
+                  : 'text-[var(--t3)] hover:bg-[var(--s3)]',
               )}>
               <Users className="w-3 h-3 shrink-0" />
               {m.name}
@@ -2528,7 +2635,7 @@ export function InboxPage({
             'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors',
             unreadOnly
               ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-200 dark:ring-violet-700/40'
-              : 'text-ink-500 ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800',
+              : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
           )}>
           <Filter className="w-3 h-3" />
           Unread
@@ -2537,7 +2644,7 @@ export function InboxPage({
         {/* Compose */}
         <button
           onClick={() => setComposeOpen(true)}
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors">
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] transition-colors">
           <PenLine className="w-3 h-3" />
           Compose
         </button>
@@ -2546,30 +2653,63 @@ export function InboxPage({
         <button
           onClick={() => loadEmails(storeId, unreadOnly, true)}
           disabled={loadingEmails}
-          className="w-7 h-7 rounded-md flex items-center justify-center text-ink-500 hover:bg-ink-100 dark:hover:bg-ink-800 disabled:opacity-40 transition-colors">
+          className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-40 transition-colors">
           <RefreshCw className={cn('w-3.5 h-3.5', loadingEmails && 'animate-spin')} />
         </button>
       </div>
 
-      {/* ── Content: email list + detail split pane ── */}
+      {/* ── Content: folder rail + email list + detail split pane ── */}
       <div className="flex-1 flex min-h-0">
 
+        {/* ── Folder rail (far left) ───────────────────────────────────────── */}
+        <div className="shrink-0 w-[190px] flex flex-col gap-0.5 border-r border-[var(--line)] bg-[var(--s1)] p-3 overflow-y-auto vec-scroll">
+          {FOLDERS.map(f => {
+            const active = folder === f.id;
+            const dropTarget = f.id !== 'attachments';   // 'attachments' is a derived view, not movable-to
+            const over = railDragOver === f.id;
+            return (
+              <button key={f.id} onClick={() => selectFolder(f.id)}
+                onDragOver={dropTarget ? (e => { if (e.dataTransfer.types.includes('vector/email-row')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setRailDragOver(f.id); } }) : undefined}
+                onDragLeave={dropTarget ? (() => setRailDragOver(cur => cur === f.id ? null : cur)) : undefined}
+                onDrop={dropTarget ? (e => {
+                  e.preventDefault();
+                  const id = e.dataTransfer.getData('vector/email-row');
+                  setRailDragOver(null);
+                  if (id) moveToFolder(id, f.id);
+                }) : undefined}
+                title={dropTarget ? `Drag an email here to move it to ${f.label}` : undefined}
+                className={cn(
+                  'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[9px] text-[12.5px] transition-colors',
+                  over ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] font-semibold ring-1 ring-inset ring-[var(--accent-line)]'
+                    : active ? 'bg-[var(--s3)] text-[var(--t1)] font-semibold'
+                    : 'text-[var(--t2)] font-medium hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+                )}>
+                <f.Icon className="w-4 h-4 shrink-0 opacity-85" />
+                <span className="flex-1 text-left">{f.label}</span>
+                {f.count > 0 && (
+                  <span className="text-[10.5px] tabular-nums" style={{ color: active ? 'var(--t2)' : 'var(--t4)' }}>{f.count}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
         {/* ── Email list (left) ────────────────────────────────────────────── */}
-        <div ref={listPaneRef} className="shrink-0 flex flex-col border-r border-ink-200 dark:border-ink-700 bg-white dark:bg-ink-900" style={{ width: listWidth }}>
+        <div ref={listPaneRef} className="shrink-0 flex flex-col border-r border-[var(--line-2)] bg-[var(--s1)]" style={{ width: listWidth }}>
 
           {/* Search + open-all-PDF toolbar */}
-          <div className="shrink-0 px-2 py-1.5 border-b border-ink-100 dark:border-ink-700 flex items-center gap-1.5">
-            <div className="flex-1 flex items-center gap-1.5 h-7 px-2 rounded-md bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200/70 dark:ring-ink-700/50 focus-within:ring-violet-400/60">
-              <Search className="w-3 h-3 text-ink-400 shrink-0" />
+          <div className="shrink-0 px-2 py-1.5 border-b border-[var(--line)] flex items-center gap-1.5">
+            <div className="flex-1 flex items-center gap-1.5 h-7 px-2 rounded-md bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] focus-within:ring-violet-400/60">
+              <Search className="w-3 h-3 text-[var(--t3)] shrink-0" />
               <input
                 type="text"
                 value={emailSearch}
                 onChange={e => setEmailSearch(e.target.value)}
                 placeholder="Search…"
-                className="flex-1 bg-transparent text-[11.5px] text-ink-700 dark:text-ink-200 placeholder:text-ink-400 outline-none min-w-0"
+                className="flex-1 bg-transparent text-[11.5px] text-[var(--t2)] placeholder:text-[var(--t3)] outline-none min-w-0"
               />
               {emailSearch && (
-                <button onClick={() => setEmailSearch('')} className="text-ink-400 hover:text-ink-600 dark:hover:text-ink-200">
+                <button onClick={() => setEmailSearch('')} className="text-[var(--t3)] hover:text-[var(--t1)]">
                   <X className="w-3 h-3" />
                 </button>
               )}
@@ -2577,19 +2717,19 @@ export function InboxPage({
             <button
               onClick={openAllPdf}
               title="Open all emails with PDFs as tabs"
-              className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/30 transition-colors">
+              className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--accent-text)] hover:bg-[var(--accent-soft)] transition-colors">
               <FolderOpen className="w-3.5 h-3.5" />
             </button>
           </div>
 
           {loadingEmails ? (
             <div className="flex-1 flex items-center justify-center">
-              <Loader2 className="w-5 h-5 animate-spin text-ink-300" />
+              <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" />
             </div>
           ) : displayEmails.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
-              <Mail className="w-8 h-8 text-ink-200 dark:text-ink-700" />
-              <p className="text-[12px] text-ink-400 dark:text-ink-500">
+              <Mail className="w-8 h-8 text-[var(--t4)]" />
+              <p className="text-[12px] text-[var(--t3)]">
                 {emailSearch ? 'No emails match your search' : unreadOnly ? 'No unread emails' : 'No emails found'}
               </p>
             </div>
@@ -2606,49 +2746,57 @@ export function InboxPage({
                   onClick={() => openEmail(email.entryId)}
                   onDoubleClick={() => setPopoutId(email.entryId)}
                   className={cn(
-                    'w-full flex flex-col gap-0.5 px-3 py-2.5 text-left border-b border-ink-100 dark:border-ink-700 transition-colors cursor-pointer select-none relative group',
+                    'w-full flex gap-2.5 items-start px-3 py-2.5 text-left border-b border-[var(--line)] transition-colors cursor-pointer select-none relative group',
                     email.entryId === selectedId
-                      ? 'bg-ink-100 dark:bg-ink-800 border-l-2 border-l-violet-500 dark:border-l-violet-400 pl-[10px]'
-                      : 'hover:bg-ink-50 dark:hover:bg-ink-800/40',
+                      ? 'bg-[var(--s3)] border-l-2 border-l-violet-500 dark:border-l-violet-400 pl-[10px]'
+                      : 'hover:bg-[var(--s3)]',
                   )}>
                   {/* Three-dot menu */}
                   <button
                     onClick={e => { e.stopPropagation(); setEmailMenu({ id: email.entryId, x: e.clientX, y: e.clientY }); }}
-                    className="absolute right-2 top-2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 text-ink-400 hover:bg-ink-200 dark:hover:bg-ink-700 transition-all z-10">
+                    className="absolute right-2 top-2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 text-[var(--t3)] hover:bg-[var(--s-hover)] transition-all z-10">
                     <MoreHorizontal className="w-3 h-3" />
                   </button>
-                  <div className="flex items-center gap-1.5 min-w-0 pr-5">
-                    {email.unread && (
-                      <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />
-                    )}
-                    {starredEmails.has(email.entryId) && (
-                      <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
-                    )}
-                    <p className={cn(
-                      'text-[12px] truncate flex-1',
-                      email.unread ? 'font-semibold text-ink-900 dark:text-ink-50' : 'font-medium text-ink-700 dark:text-ink-300',
-                    )}>
-                      {email.subject}
-                    </p>
-                    {emailCategories[email.entryId] && (
-                      <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 truncate max-w-[64px]">
-                        {emailCategories[email.entryId]}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-ink-500 dark:text-ink-400 truncate">{email.sender}</p>
-                  <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-[10.5px] text-ink-400 dark:text-ink-500 flex-1">{fmtDate(email.received)}</span>
-                    {email.hasPdf && (
-                      <span className="inline-flex items-center gap-0.5 text-[10px] text-brand-600 dark:text-brand-400 font-medium">
-                        <FileText className="w-2.5 h-2.5" /> PDF
-                      </span>
-                    )}
-                    {email.attachments.length > 0 && !email.hasPdf && (
-                      <span className="inline-flex items-center gap-0.5 text-[10px] text-ink-400">
-                        <Paperclip className="w-2.5 h-2.5" /> {email.attachments.length}
-                      </span>
-                    )}
+                  {/* Round avatar */}
+                  <span className="w-[30px] h-[30px] mt-0.5 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold text-white select-none"
+                    style={{ background: avatarColor(email.senderEmail || email.sender) }}>
+                    {avatarInitials(email.sender)}
+                  </span>
+                  <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                    <div className="flex items-center gap-1.5 min-w-0 pr-5">
+                      {email.unread && (
+                        <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />
+                      )}
+                      {starredEmails.has(email.entryId) && (
+                        <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                      )}
+                      <p className={cn(
+                        'text-[12px] truncate flex-1',
+                        email.unread ? 'font-semibold text-[var(--t1)]' : 'font-medium text-[var(--t2)]',
+                      )}>
+                        {email.sender}
+                      </p>
+                      <span className="text-[10px] text-[var(--t3)] shrink-0 tabular-nums">{fmtDate(email.received)}</span>
+                    </div>
+                    <p className={cn('text-[11.5px] truncate', email.unread ? 'font-medium text-[var(--t2)]' : 'text-[var(--t3)]')}>{email.subject}</p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10.5px] text-[var(--t3)] truncate flex-1">{email.bodyPreview || ' '}</span>
+                      {emailCategories[email.entryId] && (
+                        <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 truncate max-w-[64px]">
+                          {emailCategories[email.entryId]}
+                        </span>
+                      )}
+                      {email.hasPdf && (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] text-[var(--accent-text)] font-medium shrink-0">
+                          <FileText className="w-2.5 h-2.5" /> PDF
+                        </span>
+                      )}
+                      {email.attachments.length > 0 && !email.hasPdf && (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] text-[var(--t3)] shrink-0">
+                          <Paperclip className="w-2.5 h-2.5" /> {email.attachments.length}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -2665,8 +2813,8 @@ export function InboxPage({
             </div>
           )}
           {emails.length > 0 && (
-            <div className="shrink-0 px-3 py-2 border-t border-ink-100 dark:border-ink-700 flex items-center justify-between">
-              <p className="text-[10.5px] text-ink-400 dark:text-ink-500">
+            <div className="shrink-0 px-3 py-2 border-t border-[var(--line)] flex items-center justify-between">
+              <p className="text-[10.5px] text-[var(--t3)]">
                 {sq ? `${displayEmails.length} of ${emails.length}` : (
                   emails.filter(e => e.unread).length > 0
                     ? `${emails.filter(e => e.unread).length} unread · ${emails.length}`
@@ -2674,7 +2822,7 @@ export function InboxPage({
                 )}
               </p>
               {cacheAge && (
-                <p className="text-[10px] text-ink-300 dark:text-ink-600">Updated {cacheAge}</p>
+                <p className="text-[10px] text-[var(--t4)]">Updated {cacheAge}</p>
               )}
             </div>
           )}
@@ -2685,7 +2833,7 @@ export function InboxPage({
           role="separator"
           aria-orientation="vertical"
           title="Drag to resize"
-          className="group relative w-2 shrink-0 cursor-col-resize flex items-center justify-center bg-ink-100/60 dark:bg-ink-800/60 hover:bg-violet-100 dark:hover:bg-violet-900/30 transition-colors"
+          className="group relative w-2 shrink-0 cursor-col-resize flex items-center justify-center bg-[var(--s3)] hover:bg-violet-100 dark:hover:bg-violet-900/30 transition-colors"
           onMouseDown={e => {
             resizingRef.current = true;
             resizeStartX.current = e.clientX;
@@ -2696,7 +2844,7 @@ export function InboxPage({
           }}
           onDoubleClick={() => { setListWidth(288); localStorage.setItem('inbox_list_width', '288'); if (listPaneRef.current) listPaneRef.current.style.width = '288px'; }}
         >
-          <span className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-ink-200 dark:bg-ink-700 group-hover:bg-violet-400 dark:group-hover:bg-violet-500" />
+          <span className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-[var(--s3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500" />
           <span className="relative flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
             <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
             <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
@@ -2709,11 +2857,11 @@ export function InboxPage({
 
           {/* Tab bar */}
           {openTabs.length > 0 && (
-            <div className="shrink-0 flex items-center border-b border-ink-200 dark:border-ink-700 bg-ink-50/60 dark:bg-ink-950/40">
+            <div className="shrink-0 flex items-center border-b border-[var(--line-2)] bg-[var(--s1)]">
               {/* Scroll-left arrow */}
               <button
                 onClick={() => scrollTabBar('left')}
-                className="shrink-0 w-6 h-full flex items-center justify-center text-ink-400 hover:text-ink-600 dark:hover:text-ink-200 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors border-r border-ink-200/40 dark:border-ink-800/40">
+                className="shrink-0 w-6 h-full flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors border-r border-[var(--line)]">
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
 
@@ -2768,10 +2916,10 @@ export function InboxPage({
                     onClick={() => { setActiveTabId(t.id); setSelectedId(t.id); }}
                     onContextMenu={e => { e.preventDefault(); setTabCtxMenu({ id: t.id, x: e.clientX, y: e.clientY }); }}
                     className={cn(
-                      'group relative flex items-center gap-1.5 px-3 py-2 border-r border-ink-200/40 dark:border-ink-700/40 shrink-0 cursor-grab active:cursor-grabbing min-w-[80px] max-w-[200px] transition-colors select-none',
+                      'group relative flex items-center gap-1.5 px-3 py-2 border-r border-[var(--line)] shrink-0 cursor-grab active:cursor-grabbing min-w-[80px] max-w-[200px] transition-colors select-none',
                       t.id === activeTabId
-                        ? 'bg-white dark:bg-ink-900 text-ink-800 dark:text-ink-100 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-violet-500'
-                        : 'text-ink-500 dark:text-ink-400 hover:bg-white/70 dark:hover:bg-ink-900/50',
+                        ? 'bg-[var(--s1)] text-[var(--t1)] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-violet-500'
+                        : 'text-[var(--t3)] hover:bg-white/70 dark:hover:bg-[var(--s-hover)]',
                       dragOverIdx === tabIdx && dragTabIdx !== null && dragTabIdx !== tabIdx
                         ? 'ring-1 ring-inset ring-violet-400 dark:ring-violet-500 bg-violet-50/60 dark:bg-violet-900/20'
                         : '',
@@ -2788,7 +2936,7 @@ export function InboxPage({
                       <button
                         onClick={e => { e.stopPropagation(); closeTab(t.id); }}
                         title="Close tab"
-                        className="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-ink-200 dark:hover:bg-ink-700 transition-all shrink-0 ml-0.5">
+                        className="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-[var(--s-hover)] transition-all shrink-0 ml-0.5">
                         <X className="w-2.5 h-2.5" />
                       </button>
                     )}
@@ -2799,7 +2947,7 @@ export function InboxPage({
               {/* Scroll-right arrow */}
               <button
                 onClick={() => scrollTabBar('right')}
-                className="shrink-0 w-6 h-full flex items-center justify-center text-ink-400 hover:text-ink-600 dark:hover:text-ink-200 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors border-l border-ink-200/40 dark:border-ink-800/40">
+                className="shrink-0 w-6 h-full flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors border-l border-[var(--line)]">
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -2810,13 +2958,13 @@ export function InboxPage({
             <>
               <div className="fixed inset-0 z-[9990]" onClick={() => setTabCtxMenu(null)} />
               <div
-                className="fixed z-[9991] bg-white dark:bg-ink-900 rounded-lg shadow-xl ring-1 ring-inset ring-ink-200/80 dark:ring-ink-700/50 py-1 min-w-[140px] text-[12px]"
+                className="fixed z-[9991] bg-[var(--s1)] rounded-lg shadow-xl ring-1 ring-inset ring-[var(--line)] py-1 min-w-[140px] text-[12px]"
                 style={{ top: tabCtxMenu.y, left: tabCtxMenu.x }}>
                 <button
                   onClick={() => togglePinTab(tabCtxMenu.id)}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-ink-50 dark:hover:bg-ink-800 transition-colors text-ink-700 dark:text-ink-200">
+                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
                   {openTabs.find(t => t.id === tabCtxMenu.id)?.pinned
-                    ? <><PinOff className="w-3.5 h-3.5 text-ink-400" /> Unpin tab</>
+                    ? <><PinOff className="w-3.5 h-3.5 text-[var(--t3)]" /> Unpin tab</>
                     : <><Pin className="w-3.5 h-3.5 text-violet-500" /> Pin tab</>}
                 </button>
                 {!openTabs.find(t => t.id === tabCtxMenu.id)?.pinned && (
@@ -2833,10 +2981,10 @@ export function InboxPage({
           {/* Empty state */}
           {openTabs.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
-              <div className="w-12 h-12 rounded-2xl bg-ink-100 dark:bg-ink-800 flex items-center justify-center">
-                <Mail className="w-5 h-5 text-ink-400" />
+              <div className="w-12 h-12 rounded-2xl bg-[var(--s3)] flex items-center justify-center">
+                <Mail className="w-5 h-5 text-[var(--t3)]" />
               </div>
-              <p className="text-[13px] text-ink-500 dark:text-ink-400">Select an email to read and analyse</p>
+              <p className="text-[13px] text-[var(--t3)]">Select an email to read and analyse</p>
             </div>
           )}
 

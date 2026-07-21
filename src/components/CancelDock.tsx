@@ -15,9 +15,9 @@ export function CancelDock() {
       {tasks.map(t => (
         <div
           key={t.id}
-          className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-white/95 dark:bg-ink-900/95 backdrop-blur ring-1 ring-inset ring-ink-200 dark:ring-ink-700 shadow-lg animate-fade-up">
+          className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-[var(--s1)] backdrop-blur ring-1 ring-inset ring-[var(--line-2)] shadow-lg animate-fade-up">
           <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-500 shrink-0" />
-          <span className="text-[12px] text-ink-700 dark:text-ink-200 truncate flex-1">{t.label}</span>
+          <span className="text-[12px] text-[var(--t2)] truncate flex-1">{t.label}</span>
           <button
             onClick={() => cancelTask(t.id)}
             className="shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-medium text-ink-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">

@@ -12,19 +12,19 @@ const DOCS = [
     id: 'bidman_urls', type: 'pdf' as const,
     title: 'BidMan URLs — DualGuard Configurator',
     desc:  'Production, QA and anonymous configurator URLs for BidManager DualGuard-S. Internal use — registered user and public access links.',
-    pages: '6 pages', date: 'Feb 2025', color: 'bg-brand-800',
+    pages: '6 pages', date: 'Feb 2025', color: 'bg-[var(--accent)]',
   },
   {
     id: 'commissioning', type: 'pdf' as const,
     title: 'Service & Commissioning Information',
     desc:  'Delivery, commissioning procedure, pre-commission checklist, service terms and important installation notes.',
-    pages: '2 pages', date: 'Current', color: 'bg-brand-600',
+    pages: '2 pages', date: 'Current', color: 'bg-[var(--accent)]',
   },
   {
     id: 'terms_and_conditions', type: 'pdf' as const,
     title: 'UK Terms & Conditions',
     desc:  'Standard Terms and Conditions of Sale for Eaton Electrical Sector UK. SP090392EN.',
-    pages: '5 pages', date: 'Mar 2022', color: 'bg-ink-700',
+    pages: '5 pages', date: 'Mar 2022', color: 'bg-[var(--t3)]',
   },
   {
     id: 'commission_calculators', type: 'xlsx' as const,
@@ -41,7 +41,7 @@ function fmtSize(b: number) {
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
 const EXT_COLOR: Record<string, string> = {
-  pdf: 'bg-brand-600', xlsx: 'bg-emerald-700', xls: 'bg-emerald-700',
+  pdf: 'bg-[var(--accent)]', xlsx: 'bg-emerald-700', xls: 'bg-emerald-700',
   docx: 'bg-sky-700', doc: 'bg-sky-700',
   png: 'bg-violet-700', jpg: 'bg-violet-700', jpeg: 'bg-violet-700', gif: 'bg-violet-700', webp: 'bg-violet-700',
 };
@@ -86,7 +86,7 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
   return (
     <div className="max-w-4xl space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[12px] text-ink-500 dark:text-ink-400">Standard Eaton documents — open inline or download. Add your own with the button.</p>
+        <p className="text-[12px] text-[var(--t3)]">Standard Eaton documents — open inline or download. Add your own with the button.</p>
         <input ref={fileRef} type="file" multiple accept=".pdf,.xlsx,.xls,.doc,.docx,image/*"
           className="hidden" onChange={e => { onPick(e.target.files); e.target.value = ''; }} />
         <Button tone="primary" size="sm" Icon={uploading ? Loader2 : Plus}
@@ -108,28 +108,28 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
                 <Pill tone="neutral" className="!bg-white/15 !text-white !ring-white/20">{d.type.toUpperCase()}</Pill>
               </div>
               <div className="p-4 flex-1 flex flex-col gap-3">
-                <p className="text-[11.5px] text-ink-500 dark:text-ink-400 leading-relaxed">{d.desc}</p>
-                <div className="flex items-center gap-2 text-[10px] text-ink-400 mt-auto">
+                <p className="text-[11.5px] text-[var(--t3)] leading-relaxed">{d.desc}</p>
+                <div className="flex items-center gap-2 text-[10px] text-[var(--t3)] mt-auto">
                   <Pill tone="neutral">{d.pages}</Pill>
                   <Pill tone="neutral">{d.date}</Pill>
                 </div>
                 <div className="flex gap-2 pt-2">
                   {d.type === 'pdf' && (
                     <button onClick={() => setViewing(v => v === key ? null : key)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-ink-100 dark:bg-ink-800 hover:bg-ink-200 dark:hover:bg-ink-700 text-ink-700 dark:text-ink-200 transition-colors">
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--s3)] hover:bg-[var(--s-hover)] text-[var(--t2)] transition-colors">
                       <FileText className="w-3.5 h-3.5" />
                       {open ? 'Close' : 'View'}
                     </button>
                   )}
                   <a href={d.type === 'xlsx' ? `/api/docs-xlsx/${d.id}` : `/api/docs/${d.id}`} download
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-brand-600 hover:bg-brand-700 text-white transition-colors">
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors">
                     <Download className="w-3.5 h-3.5" />
                     Download
                   </a>
                 </div>
               </div>
               {open && (
-                <div className="border-t border-ink-200/70 dark:border-ink-800">
+                <div className="border-t border-[var(--line)]">
                   <iframe src={`/api/docs/${d.id}`} className="w-full" style={{ height: '70vh' }} title={d.title} />
                 </div>
               )}
@@ -144,7 +144,7 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
           const canView = VIEW_EXTS.has(d.ext);
           return (
             <Card key={key} padded={false} className="overflow-hidden flex flex-col">
-              <div className={cn(EXT_COLOR[d.ext] || 'bg-ink-700', 'px-4 py-3 flex items-center gap-2')}>
+              <div className={cn(EXT_COLOR[d.ext] || 'bg-[var(--t3)]', 'px-4 py-3 flex items-center gap-2')}>
                 <BookOpen className="w-4 h-4 text-white shrink-0" />
                 <span className="text-white text-[12px] font-semibold flex-1 leading-tight truncate" title={d.title}>{d.title}</span>
                 <Pill tone="neutral" className="!bg-white/15 !text-white !ring-white/20">{d.ext.toUpperCase()}</Pill>
@@ -154,8 +154,8 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
                 </button>
               </div>
               <div className="p-4 flex-1 flex flex-col gap-3">
-                <p className="text-[11.5px] text-ink-500 dark:text-ink-400 leading-relaxed truncate" title={d.origName}>{d.origName}</p>
-                <div className="flex items-center gap-2 text-[10px] text-ink-400 mt-auto">
+                <p className="text-[11.5px] text-[var(--t3)] leading-relaxed truncate" title={d.origName}>{d.origName}</p>
+                <div className="flex items-center gap-2 text-[10px] text-[var(--t3)] mt-auto">
                   <Pill tone="neutral">{d.category}</Pill>
                   <Pill tone="neutral">{fmtSize(d.size)}</Pill>
                   <Pill tone="neutral">{new Date(d.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</Pill>
@@ -163,23 +163,23 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
                 <div className="flex gap-2 pt-2">
                   {canView && (
                     <button onClick={() => setViewing(v => v === key ? null : key)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-ink-100 dark:bg-ink-800 hover:bg-ink-200 dark:hover:bg-ink-700 text-ink-700 dark:text-ink-200 transition-colors">
+                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--s3)] hover:bg-[var(--s-hover)] text-[var(--t2)] transition-colors">
                       <FileText className="w-3.5 h-3.5" />
                       {open ? 'Close' : 'View'}
                     </button>
                   )}
                   <a href={`/api/docs/user/${d.id}`} download={d.origName}
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-brand-600 hover:bg-brand-700 text-white transition-colors">
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors">
                     <Download className="w-3.5 h-3.5" />
                     Download
                   </a>
                 </div>
               </div>
               {open && canView && (
-                <div className="border-t border-ink-200/70 dark:border-ink-800">
+                <div className="border-t border-[var(--line)]">
                   {d.ext === 'pdf'
                     ? <iframe src={`/api/docs/user/${d.id}`} className="w-full" style={{ height: '70vh' }} title={d.title} />
-                    : <img src={`/api/docs/user/${d.id}`} alt={d.title} className="w-full max-h-[70vh] object-contain bg-ink-50 dark:bg-ink-950" />}
+                    : <img src={`/api/docs/user/${d.id}`} alt={d.title} className="w-full max-h-[70vh] object-contain bg-[var(--s1)]" />}
                 </div>
               )}
             </Card>
@@ -188,7 +188,7 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
       </div>
 
       {userDocs.length === 0 && (
-        <p className="text-[11px] text-ink-400 dark:text-ink-500 text-center pt-2">
+        <p className="text-[11px] text-[var(--t3)] text-center pt-2">
           No custom documents yet — click <span className="font-medium">Add Document</span> to upload PDFs, images, Word or Excel files.
         </p>
       )}

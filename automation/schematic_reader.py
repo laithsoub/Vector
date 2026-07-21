@@ -20,7 +20,7 @@ Output: JSON to stdout
     "extracted_count": <n>
   }
 """
-import sys, json, os, re, base64, argparse, ssl
+import sys, json, os, re, base64, argparse, ssl, math
 import urllib.request, urllib.error
 
 # Corporate SSL inspection proxies: don't verify certificates (same as Node.js server)
@@ -111,14 +111,16 @@ def load_pricelist():
             except Exception:
                 list_p = ntp = 0.0
 
-            desc   = str(row.get('Description English', '') or '').strip()
-            family = str(row.get('Family', '') or '').strip()
-            status = str(row.get('Status', '') or '').strip()
+            desc      = str(row.get('Description English', '') or '').strip()
+            family    = str(row.get('Family', '') or '').strip()
+            subfamily = str(row.get('Sub-family', '') or '').strip()
+            status    = str(row.get('Status', '') or '').strip()
 
             entry = {
                 'cat_no':      cat,
                 'description': desc,
                 'family':      family,
+                'subfamily':   subfamily,
                 'list_price':  list_p,
                 'ntp':         ntp,
                 'status':      status,
@@ -128,12 +130,188 @@ def load_pricelist():
             seen[cat] = entry
 
         entries = list(seen.values())
+        build_scoring_index(entries)   # attach _tok sets + populate the IDF map
         sys.stderr.write(f'[pricelist] loaded {len(df)} rows, {len(entries)} unique part numbers\n')
         return lookup, entries
 
     except Exception as e:
         sys.stderr.write(f'[pricelist] ERROR loading price list: {e}\n')
         return {}, []
+
+
+# ── Weighted description scoring ───────────────────────────────────────────────
+# The old scorer counted raw word overlap (1 point per shared word). Two very
+# different descriptions could both land on the same high-frequency generic entry
+# because common words ("led", "230v", "luminaire") scored the same as the one
+# distinctive word that actually tells products apart ("HIGH OUTPUT", "SURFACE",
+# "ESCAPE"). This scorer:
+#   • weights each token by IDF, so rare/distinctive words dominate;
+#   • applies concept discriminators that reward matching — and penalise
+#     contradicting — the mutually-exclusive product concepts;
+#   • length-normalises so a long description can't win on volume alone;
+#   • breaks ties deterministically (never by dict iteration order).
+
+_TOKEN_RE = re.compile(r'[a-z0-9]+')
+_IDF: dict[str, float] = {}   # token -> inverse document frequency (populated on load)
+
+# Product concepts used to steer matching. Two kinds:
+#   • STRUCTURAL discriminators (mounting, output, optic, battery type) — these
+#     genuinely separate products, so a query/entry mismatch is penalised.
+#   • UBIQUITOUS status words (maintained / non-maintained / self-contained) —
+#     true of nearly every line and stated INCONSISTENTLY in the terse sheet
+#     rows, so their ABSENCE means nothing: bonus when both agree, NO penalty
+#     for absence (penalty 0 / anti 0). Otherwise a correct terse row like
+#     "Micropoint2 Open Area" gets wrongly punished for not spelling them out.
+# `penalty`  = query has the concept, entry lacks it.
+# `anti`     = entry has the concept, query lacks it (only for exclusive variants).
+_CONCEPTS: list[dict] = [
+    {'name': 'high_output', 'tokens': {'high', 'output', 'power', 'hi'},          'bonus': 4.0, 'penalty': 5.0, 'anti': 3.5},
+    {'name': 'surface',     'tokens': {'surface'},                                'bonus': 3.5, 'penalty': 4.0, 'anti': 3.5},
+    {'name': 'recessed',    'tokens': {'recessed', 'flush'},                      'bonus': 2.0, 'penalty': 0.0, 'anti': 0.0},
+    {'name': 'escape',      'tokens': {'escape'},                                 'bonus': 2.5, 'penalty': 2.0, 'anti': 0.0},
+    {'name': 'open_area',   'tokens': {'open', 'antipanic', 'symmetric'},         'bonus': 2.5, 'penalty': 2.0, 'anti': 0.0},
+    {'name': 'central',     'tokens': {'central', 'cps', 'cgline', 'slave', 'zb'},'bonus': 2.0, 'penalty': 2.5, 'anti': 2.5},
+    {'name': 'intellem',    'tokens': {'intellem'},                              'bonus': 2.0, 'penalty': 0.0, 'anti': 1.5},
+    {'name': 'cgs',         'tokens': {'cgs'},                                    'bonus': 1.5, 'penalty': 0.0, 'anti': 0.0},
+    # Ubiquitous status — bonus only, never penalise absence.
+    {'name': 'maintained',  'tokens': {'maintained'},                            'bonus': 0.8, 'penalty': 0.0, 'anti': 0.0},
+    {'name': 'nonmaint',    'tokens': {'nonmaintained', 'nm'},                    'bonus': 0.8, 'penalty': 0.0, 'anti': 0.0},
+    {'name': 'selfcont',    'tokens': {'selfcontained', 'sc'},                    'bonus': 0.8, 'penalty': 0.0, 'anti': 0.0},
+]
+
+
+# Words that appear on virtually EVERY emergency-lighting line (a customer legend
+# and the sheet alike). They carry almost no product-discriminating signal, yet
+# because the sheet's descriptions are terse and inconsistent, some of them are
+# RARE in the sheet corpus → they'd get a misleadingly high IDF and hijack the
+# match toward whichever one row happens to spell them out. Drop them from
+# scoring so the real discriminators (mounting, optic, output, IP, lumen) decide.
+# NOTE: concept-bearing tokens (maintained, surface, escape, open, high, output,
+# central, slave, …) are deliberately NOT here — the concept layer needs them.
+_EL_STOP = {
+    'led', 'emergency', 'luminaire', 'luminaires', 'light', 'lights', 'lighting',
+    'lamp', 'integral', 'invertor', 'inverter', 'duration', 'battery', 'batteries',
+    'finish', 'downlight', 'self', 'contained', 'hour', 'hours', 'hr', 'lux',
+    'decorative', 'module', 'supply', 'technology', 'incl', 'inclusive', 'format',
+    'legend', 'indicating', 'cw', 'with', 'and', 'for', 'the', 'safety', 'eaton',
+    'lighting', 'range', 'white', 'grey', 'gray', 'black', 'non', 'or', 'of',
+}
+
+
+# Every token used by a concept discriminator. These must NOT also add to the raw
+# IDF overlap — otherwise ubiquitous descriptors like "non-maintained self-contained"
+# (present on nearly every line, but rare in the sheet's terse rows → high IDF)
+# double-count and hijack the match. The concept layer already scores them.
+_CONCEPT_TOKENS: set[str] = {t for c in _CONCEPTS for t in c['tokens']}
+
+
+def _score_tokens(text: str) -> set[str]:
+    """Tokenise + fold multi-word concept phrases into single tokens so the
+    concept discriminators can test membership cheaply, then drop EL-ubiquitous
+    stop words so only discriminating tokens remain.
+    e.g. 'non-maintained' → {'nonmaintained'} (raw 'non'/'maintained' kept for the
+         'maintained' concept); 'self contained' → {'selfcontained','sc'};
+         'high output' → {'high','output'}."""
+    low = (text or '').lower()
+    toks = set(t for t in _TOKEN_RE.findall(low) if len(t) >= 2)
+    # Glue known two-word concepts that tokenise apart.
+    if 'non' in toks and 'maintained' in toks:       toks.add('nonmaintained')
+    if re.search(r'non[\s\-]*maintained', low):       toks.add('nonmaintained')
+    if re.search(r'self[\s\-]*contained', low):       toks.update({'selfcontained', 'sc'})
+    if re.search(r'anti[\s\-]*panic', low):           toks.add('antipanic')
+    if re.search(r'cg[\s\-]*s', low):                  toks.add('cgs')
+    if re.search(r'high[\s\-]*(output|power)', low):  toks.update({'high', 'output'})
+    return toks - _EL_STOP
+
+
+# Concept tokens derived from catalogue-number MORPHOLOGY, not the row's prose.
+# Some sheet rows encode the distinguishing variant only in the part number
+# (e.g. MP2HI3H is the HIGH-OUTPUT Micropoint 2, but its description is the same
+# generic "10,8 lux Non-maintained 3 Hour self-contained" as the standard MP2E3H).
+# Without this, high-output rows are indistinguishable from standard ones. Keep
+# this list tight and specific to avoid false positives.
+_CATNO_CONCEPTS: list[tuple[re.Pattern, set[str]]] = [
+    (re.compile(r'MP2?HI'), {'high', 'output'}),   # Micropoint 2 High output/power
+]
+
+
+def build_scoring_index(entries: list[dict]) -> None:
+    """Attach a cached token set to every entry and (re)build the global IDF map."""
+    _IDF.clear()
+    n = len(entries) or 1
+    df_count: dict[str, int] = {}
+    for e in entries:
+        combined = ' '.join([
+            e.get('description', '') or '', e.get('family', '') or '',
+            e.get('subfamily', '') or '', e.get('cat_no', '') or '',
+        ])
+        tok = _score_tokens(combined)
+        cat_up = (e.get('cat_no', '') or '').upper()
+        for pat, extra in _CATNO_CONCEPTS:
+            if pat.search(cat_up):
+                tok |= extra
+        e['_tok'] = tok
+        for t in tok:
+            df_count[t] = df_count.get(t, 0) + 1
+    for t, dfc in df_count.items():
+        _IDF[t] = math.log((n + 1) / (dfc + 1)) + 1.0
+
+
+def _idf(tok: str) -> float:
+    # Unknown token (never seen in the sheet) is maximally distinctive.
+    return _IDF.get(tok, math.log(len(_IDF) + 1) + 1.0 if _IDF else 1.0)
+
+
+def score_entry(query_tokens: set[str], entry: dict) -> float:
+    """Weighted relevance of one price-list entry to a tokenised query.
+    Higher is better; entries scoring ≤ 0 are non-matches."""
+    etok = entry.get('_tok') or _score_tokens(' '.join([
+        entry.get('description', '') or '', entry.get('family', '') or '',
+        entry.get('subfamily', '') or '', entry.get('cat_no', '') or '',
+    ]))
+    if not query_tokens or not etok:
+        return 0.0
+
+    # Raw overlap EXCLUDING concept tokens (those are scored by the concept layer
+    # below; counting them here too would let ubiquitous descriptors dominate).
+    overlap = (query_tokens & etok) - _CONCEPT_TOKENS
+    score = sum(_idf(t) for t in overlap)
+
+    # Concept discriminators — reward alignment, punish contradiction.
+    for c in _CONCEPTS:
+        q_has = bool(c['tokens'] & query_tokens)
+        e_has = bool(c['tokens'] & etok)
+        if q_has and e_has:
+            score += c['bonus']
+        elif q_has and not e_has:
+            score -= c['penalty']
+        elif e_has and not q_has:
+            score -= c['anti']
+
+    # Length-normalise: a long generic description shouldn't win on volume of
+    # low-value tokens. Divide by a soft function of entry size.
+    score /= (1.0 + 0.25 * math.log(1 + len(etok)))
+
+    # Status nudge — prefer Active over Discontinued/Obsolete (small, only a
+    # tie-breaker so it never overrides a genuinely better description match).
+    status = (entry.get('status') or '').lower()
+    if 'active' in status:
+        score += 0.15
+    elif 'discontinued' in status or 'obsolete' in status:
+        score -= 0.4
+
+    return score
+
+
+def _best_entry(query_tokens: set[str], entries: list[dict]) -> tuple['dict | None', float]:
+    """Return (best_entry, score) with a deterministic tie-break."""
+    best, best_score = None, 0.0
+    for e in entries:
+        s = score_entry(query_tokens, e)
+        if s > best_score or (best is not None and abs(s - best_score) < 1e-9 and s > 0
+                              and (e.get('cat_no') or '') < (best.get('cat_no') or '')):
+            best, best_score = e, s
+    return best, best_score
 
 
 def match_item_with_type(cat_no: str, lookup: dict) -> tuple['dict | None', str]:
@@ -209,40 +387,103 @@ def match_item(cat_no: str, lookup: dict) -> 'dict | None':
     return match_item_with_type(cat_no, lookup)[0]
 
 
-def match_by_description(text: str, entries: list[dict]) -> tuple['dict | None', str]:
-    """Search price list entries by description or family name keywords.
-    Returns (match, 'description') or (None, '').
-    """
-    text_lower = text.lower().strip()
-    if not text_lower:
-        return None, ''
-    is_ip65 = bool(re.match(r'i[-\s]*p65|ip65', text_lower))
-    words = [w for w in re.split(r'[\s\-_/]+', text_lower) if len(w) >= 3]
-    if not words:
-        return None, ''
+def reconcile_family_hint(match: dict, mtype: str, family_hint: str, desc: str,
+                          entries: list[dict]) -> tuple[dict, str, str]:
+    """Guard against distinct items collapsing onto the same catalogue number.
 
-    best_score = 0
-    best_entry = None
+    A cat-no can exact-match a price-list row whose product CONCEPT contradicts the
+    range header the item sat under — e.g. a standard "MICROPOINT 2" line that was
+    (wrongly) tagged with the HIGH-OUTPUT part number MP2HI3H. When the section
+    header carries a distinctive, mutually-exclusive concept the matched row lacks
+    (or vice-versa), re-resolve to the best-aligned sibling in the SAME family.
+
+    Returns (match, match_type, note) — note is '' when nothing changed."""
+    if not match or not (family_hint or '').strip():
+        return match, mtype, ''
+
+    hint_tok  = _score_tokens(family_hint)
+    query_tok = _score_tokens((family_hint or '') + ' ' + (desc or ''))
+    m_tok     = match.get('_tok') or _score_tokens(' '.join([
+        match.get('description', '') or '', match.get('family', '') or '',
+        match.get('subfamily', '') or '', match.get('cat_no', '') or '',
+    ]))
+
+    # Detect a contradiction on a STRUCTURAL concept (one that penalises mismatch
+    # both ways — anti > 0). Ubiquitous status words never trigger a flag.
+    contradiction = None
+    for c in _CONCEPTS:
+        if c.get('anti', 0) <= 0:
+            continue
+        q_has = bool(c['tokens'] & query_tok)
+        m_has = bool(c['tokens'] & m_tok)
+        if q_has != m_has:
+            contradiction = c['name']
+            break
+    if not contradiction:
+        return match, mtype, ''
+
+    # Re-resolve within the same family (the header names the family, so we trust
+    # it) and pick the best-scoring sibling for the full query.
+    fam = (match.get('family', '') or '').lower()
+    siblings = [e for e in entries if (e.get('family', '') or '').lower() == fam] or entries
+    best, best_score = _best_entry(query_tok, siblings)
+    cur_score = score_entry(query_tok, match)
+    if best and best.get('cat_no') != match.get('cat_no') and best_score > cur_score + 0.5:
+        # A sibling genuinely fits the header + description better → swap.
+        note = (f'Range header "{family_hint.strip()}" contradicted extracted part '
+                f'{match.get("cat_no")} on "{contradiction}" — re-matched to {best.get("cat_no")}.')
+        sys.stderr.write(f'[reconcile] swap {match.get("cat_no")} -> {best.get("cat_no")}\n')
+        return best, 'description', note
+
+    # No better-aligned row exists (the sheet can't tell them apart by text) — do
+    # NOT silently swap to a wrong part. Flag it so the engineer verifies instead.
+    concept = contradiction.replace('_', ' ')
+    q_has = bool(next(c for c in _CONCEPTS if c['name'] == contradiction)['tokens'] & query_tok)
+    if q_has:
+        note = (f'⚠ Range header "{family_hint.strip()}" indicates a "{concept}" variant, '
+                f'but {match.get("cat_no")} is the closest priced match — verify this part.')
+    else:
+        note = (f'⚠ {match.get("cat_no")} is a "{concept}" variant, but range header '
+                f'"{family_hint.strip()}" does not indicate that — verify this part.')
+    sys.stderr.write(f'[reconcile] flag {match.get("cat_no")} on {contradiction}\n')
+    return match, mtype, note
+
+
+def match_by_description(text: str, entries: list[dict], family_hint: str = '') -> tuple['dict | None', str]:
+    """Search price list entries by description / family keywords using the
+    weighted scorer. `family_hint` is the range/section header the item sat under
+    (e.g. "MICROPOINT 2 HIGH OUTPUT") — folded into the query so its distinctive
+    tokens ("HIGH OUTPUT", "SURFACE") steer the match. Returns (match, 'description')
+    or (None, '')."""
+    qtokens = _score_tokens((text or '') + ' ' + (family_hint or ''))
+    if not qtokens:
+        return None, ''
+    # i-P65 family boost (kept from the old heuristic — the token 'p65' is highly
+    # distinctive so IDF already helps, but nudge the family match explicitly).
+    is_ip65 = bool(re.search(r'i[-\s]*p65|ip65', ((text or '') + ' ' + (family_hint or '')).lower()))
+    # The range/section header names the product FAMILY — the strongest signal.
+    # Boost entries whose family/sub-family matches the header so a "MICROPOINT 2"
+    # line can't drift to a GuideLed just because a few description words overlap.
+    fam_hint_tok = _score_tokens(family_hint) if family_hint else set()
+
+    best, best_score = None, 0.0
     for entry in entries:
-        combined = (
-            (entry.get('description', '') or '') + ' ' +
-            (entry.get('family', '') or '') + ' ' +
-            (entry.get('cat_no', '') or '')
-        ).lower()
-        score = sum(1 for w in words if w in combined)
-        # Boost i-P65 family entries when query looks like an i-P65 item
-        if is_ip65 and 'p65' in (entry.get('family', '') or '').lower():
-            score += 5
-        # Penalise Style/Style LED family when query is i-P65
-        if is_ip65 and re.search(r'\bstyle\b', (entry.get('family', '') or ''), re.I):
-            score = max(0, score - 3)
-        if score > best_score:
-            best_score = score
-            best_entry = entry
+        s = score_entry(qtokens, entry)
+        fam = (entry.get('family', '') or '').lower()
+        if fam_hint_tok:
+            efam = _score_tokens((entry.get('family', '') or '') + ' ' + (entry.get('subfamily', '') or ''))
+            s += 3.0 * sum(_idf(t) for t in (fam_hint_tok & efam))
+        if is_ip65 and 'p65' in fam:
+            s += 4.0
+        if is_ip65 and re.search(r'\bstyle\b', fam):
+            s -= 3.0
+        if s > best_score or (best is not None and abs(s - best_score) < 1e-9 and s > 0
+                              and (entry.get('cat_no') or '') < (best.get('cat_no') or '')):
+            best, best_score = entry, s
 
-    threshold = max(1, len(words) // 2)
-    if best_score >= threshold:
-        return best_entry, 'description'
+    # Require the winner to clear a small absolute bar AND meaningfully beat noise.
+    if best is not None and best_score >= 1.5:
+        return best, 'description'
     return None, ''
 
 
@@ -285,7 +526,16 @@ def extract_from_image(image_path: str, api_key: str) -> list[dict]:
         'Extract EVERY emergency lighting item from this image that belongs to Eaton '
         'or any Eaton-group brand (Cooper Safety, Menvier, Ceag, Merel, Exloc, etc.).\n\n'
         'Return ONLY a JSON array. Each item:\n'
-        '{"cat_no": "...", "description": "...", "qty": <number>, "ref": "..."}\n\n'
+        '{"cat_no": "...", "description": "...", "family": "...", "qty": <number>, "ref": "..."}\n\n'
+        '"family" = the RANGE / section header the row sits under, verbatim '
+        '(e.g. "MICROPOINT 2 HIGH OUTPUT", "OUTDOOR WALL", "FLEXITECH EC"). '
+        'Rows under DIFFERENT headers are DIFFERENT products even when their description '
+        'text is identical — never copy one row\'s cat_no onto a row under another header.\n'
+        'CRITICAL: if a row has NO explicit catalogue/part number printed (e.g. a symbol '
+        'legend giving only a description + a product range), set "cat_no" to "" (empty) and '
+        'put the FULL descriptive text in "description" (keep every detail: lumen output, '
+        'recessed/surface/wall/ceiling, IP rating, maintained/non-maintained, escape/open area). '
+        'Do NOT invent, guess or derive a part number — an empty cat_no is matched by description downstream.\n\n'
         'Eaton/Cooper EL families: ' + ', '.join(EL_FAMILIES) + '\n\n'
         'Catalogue number formats: MP2ES230CGS, NXL100, LUM22216, 40071354592, and Cooper formats.\n\n'
         'RULES — follow strictly:\n'
@@ -585,38 +835,25 @@ def keyword_pool(text: str, entries: list[dict], n: int = 40) -> list[dict]:
     if not base_words:
         return []
 
-    expanded: set[str] = set()
+    # Expand natural-language terms into price-list vocabulary, then tokenise the
+    # whole expanded bag so the weighted scorer sees the extra signal.
+    expanded: set[str] = set(base_words)
     for w in base_words:
-        expanded.add(w)
         for boost in KEYWORD_EXPANSIONS.get(w, []):
             expanded.add(boost.lower())
-    # Also strip hyphens to catch "self-contained" → "selfcontained"
-    expanded.update({w.replace('-', '') for w in expanded if '-' in w})
+    qtokens = _score_tokens(' '.join(expanded))
+    if not qtokens:
+        return []
 
-    scored: list[tuple[int, dict]] = []
+    scored: list[tuple[float, str, dict]] = []
     for entry in entries:
-        combined = (
-            (entry.get('description', '') or '') + ' ' +
-            (entry.get('family', '') or '')      + ' ' +
-            (entry.get('cat_no', '') or '')
-        ).lower()
-        if not combined.strip():
-            continue
-        score = 0
-        for w in expanded:
-            if w in combined:
-                score += 1
-        # Prefer Active over Discontinued
-        status = (entry.get('status') or '').lower()
-        if 'active' in status:
-            score += 1
-        elif 'discontinued' in status or 'obsolete' in status:
-            score -= 2
-        if score > 0:
-            scored.append((score, entry))
+        s = score_entry(qtokens, entry)
+        if s > 0:
+            scored.append((s, entry.get('cat_no') or '', entry))
 
-    scored.sort(key=lambda x: -x[0])
-    return [e for _, e in scored[:n]]
+    # Sort by score desc, then cat_no asc for a deterministic, stable pool.
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [e for _, _, e in scored[:n]]
 
 
 def rerank_pricelist_candidates(
@@ -940,7 +1177,16 @@ def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
         'Extract EVERY emergency lighting item from this document that belongs to Eaton '
         'or any Eaton-group brand (Cooper Safety, Menvier, Ceag, Merel, Exloc, etc.).\n\n'
         'Return ONLY a JSON array. Each item:\n'
-        '{"cat_no": "...", "description": "...", "qty": <number>, "ref": "..."}\n\n'
+        '{"cat_no": "...", "description": "...", "family": "...", "qty": <number>, "ref": "..."}\n\n'
+        '"family" = the RANGE / section header the row sits under, verbatim '
+        '(e.g. "MICROPOINT 2 HIGH OUTPUT", "OUTDOOR WALL", "FLEXITECH EC"). '
+        'Rows under DIFFERENT headers are DIFFERENT products even when their description '
+        'text is identical — never copy one row\'s cat_no onto a row under another header.\n'
+        'CRITICAL: if a row has NO explicit catalogue/part number printed (e.g. a symbol '
+        'legend giving only a description + a product range), set "cat_no" to "" (empty) and '
+        'put the FULL descriptive text in "description" (keep every detail: lumen output, '
+        'recessed/surface/wall/ceiling, IP rating, maintained/non-maintained, escape/open area). '
+        'Do NOT invent, guess or derive a part number — an empty cat_no is matched by description downstream.\n\n'
         'Eaton/Cooper EL families: ' + ', '.join(EL_FAMILIES) + '\n\n'
         'Catalogue number formats: MP2ES230CGS, NXL100, LUM22216, 40071354592, and Cooper formats.\n\n'
         'RULES — follow strictly:\n'
@@ -1094,6 +1340,14 @@ def extract_from_excel(path: str) -> list[dict]:
                 desc = ' '.join(c for c in cells if c != cat)
                 out.append({'cat_no': cat, 'description': desc, 'qty': qty, 'ref': ''})
 
+    # Sanity cap: a real EL material list is small (tens–low-hundreds of lines).
+    # Huge sheets are pricing models / customer tables, not lists — pricing every
+    # junk row would be O(rows × pricelist) and hang. Cap so we fail fast/cleanly.
+    EXCEL_ROW_CAP = 800
+    if len(out) > EXCEL_ROW_CAP:
+        sys.stderr.write(f'[excel] {len(out)} rows exceeds cap — truncating to {EXCEL_ROW_CAP} (not a material list?)\n')
+        out = out[:EXCEL_ROW_CAP]
+
     sys.stderr.write(f'[excel] extracted {len(out)} rows\n')
     return out
 
@@ -1232,23 +1486,17 @@ def parse_material_list(text: str) -> list[dict]:
 
 def find_closest_matches(cat_no: str, desc: str, entries: list, n: int = 4) -> list:
     """Return up to n closest catalogue entries for an unmatched item (for UI suggestions)."""
-    search_text = (cat_no + ' ' + desc).lower().strip()
-    words = [w for w in re.split(r'[\s\-_/]+', search_text) if len(w) >= 3]
-    if not words:
+    qtokens = _score_tokens(cat_no + ' ' + desc)
+    if not qtokens:
         return []
     scored = []
     for entry in entries:
-        combined = (
-            (entry.get('description', '') or '') + ' ' +
-            (entry.get('family', '') or '') + ' ' +
-            (entry.get('cat_no', '') or '')
-        ).lower()
-        score = sum(1 for w in words if w in combined)
-        if score > 0:
-            scored.append((score, entry))
-    scored.sort(key=lambda x: -x[0])
+        s = score_entry(qtokens, entry)
+        if s > 0:
+            scored.append((s, entry.get('cat_no') or '', entry))
+    scored.sort(key=lambda x: (-x[0], x[1]))
     seen, result = set(), []
-    for _, entry in scored:
+    for _, _cat, entry in scored:
         cat = entry.get('cat_no', '')
         if cat not in seen:
             seen.add(cat)
@@ -1275,15 +1523,24 @@ def price_items(raw_items: list[dict], lookup: dict, entries: list[dict]) -> dic
         qty    = max(1, int(item.get('qty') or 1))
         ref    = str(item.get('ref', '') or '')
         desc   = str(item.get('description', '') or '')
+        # Range/section header the item sat under (e.g. "MICROPOINT 2 HIGH OUTPUT").
+        fam_hint = str(item.get('family', '') or item.get('family_hint', '') or '')
 
         match, mtype = match_item_with_type(cat_no, lookup) if cat_no else (None, '')
 
         # If cat_no lookup failed, try searching by description/family in the sheet
-        if not match and cat_no:
-            search_text = cat_no + (' ' + desc if desc else '')
-            match, mtype = match_by_description(search_text, entries)
+        if not match:
+            search_text = (cat_no + ' ' + desc).strip()
+            match, mtype = match_by_description(search_text, entries, fam_hint)
             if match:
-                sys.stderr.write(f'[price] description match: "{cat_no}" → {match["cat_no"]}\n')
+                sys.stderr.write(f'[price] description match: "{cat_no or desc[:30]}" → {match["cat_no"]}\n')
+
+        reconcile_note = ''
+        # Only reconcile description/fuzzy guesses. An EXACT catalogue-number match
+        # is authoritative — trust it; a header mismatch there is surfaced (if real)
+        # by the cross-line collision detector below, not by overriding the part.
+        if match and mtype != 'exact':
+            match, mtype, reconcile_note = reconcile_family_hint(match, mtype, fam_hint, desc, entries)
 
         if match:
             line_ntp  = round(match['ntp'] * qty, 4)
@@ -1301,6 +1558,8 @@ def price_items(raw_items: list[dict], lookup: dict, entries: list[dict]) -> dic
                 'matched':     True,
                 'match_type':  mtype,
                 'original_input': cat_no if mtype != 'exact' else '',
+                'search_note':    reconcile_note,
+                '_fam_hint':      fam_hint,
             })
         else:
             closest = find_closest_matches(cat_no, desc, entries)
@@ -1321,11 +1580,37 @@ def price_items(raw_items: list[dict], lookup: dict, entries: list[dict]) -> dic
             })
             unmatched.append(cat_no)
 
+    flag_catno_collisions(priced)
+    for pi in priced:
+        pi.pop('_fam_hint', None)
+
     return {
         'items':      priced,
         'unmatched':  unmatched,
         'total_ntp':  round(total_ntp, 2),
     }
+
+
+def flag_catno_collisions(priced: list[dict]) -> None:
+    """Mutates `priced`: when two+ matched lines share a catalogue number but sat
+    under DIFFERENT range headers, the extraction almost certainly reused one part
+    across distinct products. Flag every colliding line so the engineer verifies —
+    this is exactly the "two items, same price, different product" case."""
+    from collections import defaultdict
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for pi in priced:
+        if pi.get('matched') and pi.get('cat_no'):
+            groups[pi['cat_no']].append(pi)
+    for cat, rows in groups.items():
+        hints = {(r.get('_fam_hint') or '').strip().lower() for r in rows if (r.get('_fam_hint') or '').strip()}
+        if len(rows) > 1 and len(hints) > 1:
+            refs = ', '.join(r.get('ref') or '?' for r in rows)
+            headers = ' / '.join(sorted({(r.get('_fam_hint') or '').strip() for r in rows if (r.get('_fam_hint') or '').strip()}))
+            msg = (f'⚠ {cat} was matched to {len(rows)} lines ({refs}) sitting under different '
+                   f'range headers ({headers}) — likely different products; verify.')
+            for r in rows:
+                existing = r.get('search_note') or ''
+                r['search_note'] = (existing + ' ' + msg).strip() if existing else msg
 
 
 def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -> dict:
@@ -1529,6 +1814,56 @@ def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -
     return result
 
 
+def run_search(text: str, lookup: dict, entries: list, limit: int = 8) -> dict:
+    """Offline price-sheet search for chat context — NO Gemini, NO web.
+
+    Combines (a) exact/fuzzy catalogue-number matches parsed out of the query with
+    (b) the top weighted description matches. Every row carries a `source` and a
+    `score` so the caller can be honest about provenance and confidence. This is
+    what lets the assistant answer "is X in the price sheet?" from the ACTUAL sheet
+    instead of guessing."""
+    text = (text or '').strip()
+    out: list[dict] = []
+    seen: set[str] = set()
+
+    def push(entry: dict, mtype: str, score: float) -> None:
+        cat = entry.get('cat_no', '')
+        if not cat or cat in seen:
+            return
+        seen.add(cat)
+        out.append({
+            'cat_no':      cat,
+            'description': entry.get('description', ''),
+            'family':      entry.get('family', ''),
+            'list_price':  entry.get('list_price', 0.0),
+            'ntp':         entry.get('ntp', 0.0),
+            'status':      entry.get('status', ''),
+            'match_type':  mtype,
+            'score':       round(float(score), 2),
+            'source':      'price_sheet',
+        })
+
+    # (a) explicit catalogue numbers in the query → exact/fuzzy
+    for it in parse_material_list(text):
+        cat = str(it.get('cat_no', '')).strip()
+        if not cat:
+            continue
+        m, mt = match_item_with_type(cat, lookup)
+        if m:
+            push(m, mt, 99.0 if mt == 'exact' else 50.0)
+
+    # (b) weighted description matches
+    qtokens = _score_tokens(text)
+    if qtokens:
+        scored = [(score_entry(qtokens, e), e.get('cat_no') or '', e) for e in entries]
+        scored = [t for t in scored if t[0] > 1.0]
+        scored.sort(key=lambda x: (-x[0], x[1]))
+        for s, _cat, e in scored[:limit]:
+            push(e, 'description', s)
+
+    return {'query': text, 'matches': out[:limit]}
+
+
 def emit(obj: dict) -> None:
     """Write one NDJSON progress event and flush immediately so the Node
     server can forward it to the browser the moment it's produced."""
@@ -1608,10 +1943,15 @@ def _stream_price_items(
         desc   = str(raw.get('description', '')).strip()
         qty    = max(1, int(raw.get('qty') or 1))
         ref    = str(raw.get('ref', '') or '')
+        fam_hint = str(raw.get('family', '') or raw.get('family_hint', '') or '')
 
         match, mtype = (match_item_with_type(cat_no, lookup) if cat_no else (None, ''))
         if not match:   # cat-no miss OR description-only row → try the sheet text
-            match, mtype = match_by_description((cat_no + ' ' + desc).strip(), entries)
+            match, mtype = match_by_description((cat_no + ' ' + desc).strip(), entries, fam_hint)
+
+        reconcile_note = ''
+        if match and mtype != 'exact':
+            match, mtype, reconcile_note = reconcile_family_hint(match, mtype, fam_hint, desc, entries)
 
         if match:
             line_ntp   = round(match['ntp'] * qty, 4)
@@ -1622,6 +1962,8 @@ def _stream_price_items(
                 'ntp': match['ntp'], 'line_ntp': line_ntp, 'status': match['status'],
                 'matched': True, 'match_type': mtype,
                 'original_input': (cat_no or desc) if mtype != 'exact' else '',
+                'search_note': reconcile_note,
+                '_fam_hint': fam_hint,
             }
         else:
             pi = {
@@ -1632,7 +1974,7 @@ def _stream_price_items(
             }
             unmatched_idx.append(idx)
         priced.append(pi)
-        emit({'t': 'item', 'i': idx, 'n': total, 'item': pi})
+        emit({'t': 'item', 'i': idx, 'n': total, 'item': {k: v for k, v in pi.items() if not k.startswith('_')}})
 
     # ── Pass 2: AI-resolve each unmatched row, one call at a time ──────────────
     if api_key and unmatched_idx:
@@ -1689,6 +2031,11 @@ def _stream_price_items(
             'list_price': c.get('list_price'), 'ntp': c.get('ntp'), 'status': c.get('status'),
             'suggested_qty': desc_qty,
         } for c in raw_candidates]
+
+    # Cross-line check: same cat-no reused across differing range headers → flag.
+    flag_catno_collisions(priced)
+    for pi in priced:
+        pi.pop('_fam_hint', None)
 
     unmatched = [pi['cat_no'] for pi in priced if not pi['matched']]
     emit({'t': 'done', 'items': priced, 'unmatched': unmatched,
@@ -1764,7 +2111,7 @@ def run_unified_stream(manifest_path: str, lookup: dict, entries: list, api_key:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['pdf', 'list', 'image', 'unified'], required=True)
+    parser.add_argument('--mode', choices=['pdf', 'list', 'image', 'unified', 'lookup', 'search'], required=True)
     parser.add_argument('--input', required=True, help='Path for pdf/image/list-text/unified-manifest')
     parser.add_argument('--stream', action='store_true', help='Emit NDJSON per-item progress (list mode)')
     args = parser.parse_args()
@@ -1776,6 +2123,39 @@ def main():
 
     cfg     = load_config()
     api_key = cfg.get('gemini_key') or os.environ.get('GEMINI_API_KEY', '')
+
+    # ── Lookup mode: offline exact/fuzzy cat-no match ONLY ────────────────────
+    # For light-weight price-sheet context (e.g. email chat). No description
+    # guessing, no Gemini/web second pass — so it never injects a wrong price.
+    if args.mode == 'lookup':
+        text = open(args.input, encoding='utf-8').read() if os.path.exists(args.input) else args.input
+        seen: dict = {}
+        for it in parse_material_list(text):
+            cat = str(it.get('cat_no', '')).strip()
+            if not cat:
+                continue
+            m, mt = match_item_with_type(cat, lookup)
+            # Exact only — fuzzy/prefix/substring rules are too loose to trust
+            # when the price is going straight into a customer-facing answer.
+            if m and mt == 'exact' and m['cat_no'] not in seen:
+                seen[m['cat_no']] = {
+                    'cat_no':      m['cat_no'],
+                    'description': m['description'],
+                    'list_price':  m['list_price'],
+                    'ntp':         m['ntp'],
+                    'status':      m['status'],
+                    'match_type':  mt,
+                }
+        print(json.dumps({'matches': list(seen.values())}))
+        return
+
+    # ── Search mode: exact cat-no + weighted description matches, offline ──────
+    # Richer than 'lookup' — also returns description matches with scores so chat
+    # can answer "is this in the sheet / any alternatives?" from the real sheet.
+    if args.mode == 'search':
+        text = open(args.input, encoding='utf-8').read() if os.path.exists(args.input) else args.input
+        print(json.dumps(run_search(text, lookup, entries)))
+        return
 
     # ── Streaming modes: NDJSON per-item progress ─────────────────────────────
     if args.stream and args.mode == 'list':

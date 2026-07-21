@@ -85,7 +85,8 @@ export const api = {
   outlookEmails:      (storeId: string, limit = 30, unread = false, signal?: AbortSignal) =>
                         axios.get<{ emails: any[]; error?: string }>('/api/outlook/emails', { params: { storeId, limit, unread }, timeout: 60_000, signal }).then(r => r.data),
   outlookEmail:       (id: string, signal?: AbortSignal) => axios.get<any>(`/api/outlook/email/${encodeURIComponent(id)}`, { timeout: 15_000, signal }).then(r => r.data),
-  outlookAnalyze:        (email: any, signal?: AbortSignal) => axios.post<{ analysis: string | null; error?: string }>('/api/outlook/analyze', email, { timeout: 60_000, signal }).then(r => r.data),
+  outlookSummarize:      (payload: any, signal?: AbortSignal) => axios.post<{ summary: string | null; cached?: boolean; imagesRead?: number; error?: string }>('/api/outlook/summarize', payload, { timeout: 90_000, signal }).then(r => r.data),
+  outlookGetSummary:     (entryId: string, signal?: AbortSignal) => axios.get<{ summary: string | null; includedIndices?: number[]; ts?: string }>(`/api/outlook/summary/${encodeURIComponent(entryId)}`, { timeout: 15_000, signal }).then(r => r.data),
   outlookSaveAttachment: (entryId: string) => axios.post<{ saved: any[]; count: number; error?: string }>('/api/outlook/save-attachment', { entryId }, { timeout: 30_000 }).then(r => r.data),
   outlookDraftReply:     (payload: any, signal?: AbortSignal) => axios.post<{ draft: string | null; error?: string }>('/api/outlook/draft-reply', payload, { timeout: 60_000, signal }).then(r => r.data),
   outlookSendReply:      (entryId: string, body: string) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/send-reply', { entryId, body }, { timeout: 30_000 }).then(r => r.data),
@@ -93,7 +94,19 @@ export const api = {
   feedback:              (payload: { message: string; category?: string; page?: string; userName?: string | null; userEmail?: string | null }) =>
                            axios.post<{ ok?: boolean; stored?: boolean; emailed?: boolean; error?: string }>('/api/feedback', payload, { timeout: 30_000 }).then(r => r.data),
   outlookChat:           (payload: any, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/outlook/chat', payload, { timeout: 60_000, signal }).then(r => r.data),
-  outlookBriefing:       (emails: any[], signal?: AbortSignal) => axios.post<{ briefing: any[] | null; error?: string }>('/api/outlook/briefing', { emails }, { timeout: 120_000, signal }).then(r => r.data),
+  // EL Internal Info tab
+  elInternalList:        (signal?: AbortSignal) => axios.get<{ emails: any[]; digest: string | null; digestAt: string | null; lastRefreshAt: string | null }>('/api/el-internal/list', { timeout: 15_000, signal }).then(r => r.data),
+  elInternalRefresh:     (signal?: AbortSignal) => axios.post<{ added: number; total: number; emails: any[]; lastRefreshAt: string; error?: string }>('/api/el-internal/refresh', {}, { timeout: 120_000, signal }).then(r => r.data),
+  elInternalDigest:      (signal?: AbortSignal) => axios.post<{ digest: string | null; digestAt?: string; error?: string }>('/api/el-internal/digest', {}, { timeout: 90_000, signal }).then(r => r.data),
+  elInternalChat:        (payload: { history: any[]; question: string }, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/el-internal/chat', payload, { timeout: 60_000, signal }).then(r => r.data),
+  // Fenton KB tab
+  fentonList:            (signal?: AbortSignal) => axios.get<{ cards: any[]; lastRefreshAt: string | null }>('/api/fenton/list', { timeout: 15_000, signal }).then(r => r.data),
+  fentonRefresh:         (force = false, signal?: AbortSignal) => axios.post<{ added: number; total: number; cards: any[]; lastRefreshAt: string; error?: string }>('/api/fenton/refresh', { force }, { timeout: 180_000, signal }).then(r => r.data),
+  fentonChat:            (payload: { history: any[]; question: string }, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/fenton/chat', payload, { timeout: 60_000, signal }).then(r => r.data),
+  // Quick Quote (Inbox proposal generator)
+  quoteDetectCbu:        (body: string, systems: string[], signal?: AbortSignal) => axios.post<{ system: string }>('/api/quote/detect-cbu', { body, systems }, { timeout: 30_000, signal }).then(r => r.data),
+  quoteLuminaires:       (body: string, signal?: AbortSignal) => axios.post<{ items: any[]; unmatched?: number; error?: string }>('/api/quote/luminaires', { body }, { timeout: 120_000, signal }).then(r => r.data),
+  quoteGenerate:         (payload: { header: any; lines: any[]; appendComm?: boolean; appendTC?: boolean }, signal?: AbortSignal) => axios.post<{ id?: string; error?: string }>('/api/quote/generate', payload, { timeout: 130_000, signal }).then(r => r.data),
   outlookFlag:           (entryId: string, flagged: boolean) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/flag', { entryId, flagged }, { timeout: 15_000 }).then(r => r.data),
   outlookMarkUnread:     (entryId: string) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/mark-unread', { entryId }, { timeout: 15_000 }).then(r => r.data),
   outlookDelete:         (entryId: string) => axios.delete<{ ok?: boolean; error?: string }>(`/api/outlook/email/${encodeURIComponent(entryId)}`, { timeout: 15_000 }).then(r => r.data),

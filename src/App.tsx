@@ -127,9 +127,9 @@ function ToastList({ toasts, remove }: { toasts: Toast[]; remove: (id: number) =
             initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
             className={cn(
               'pointer-events-auto flex items-center gap-2.5 px-3.5 py-2 rounded-lg shadow-lg ring-1 ring-inset text-[12px] max-w-xs',
-              t.type === 'ok'   ? 'bg-white dark:bg-ink-800 ring-emerald-200 dark:ring-emerald-700/40 text-emerald-700 dark:text-emerald-300' :
-              t.type === 'err'  ? 'bg-white dark:bg-ink-800 ring-red-200 dark:ring-red-700/40 text-red-700 dark:text-red-300' :
-                                  'bg-white dark:bg-ink-800 ring-ink-200 dark:ring-ink-700 text-ink-700 dark:text-ink-200',
+              t.type === 'ok'   ? 'bg-[var(--s2)] ring-emerald-200 dark:ring-emerald-700/40 text-emerald-700 dark:text-emerald-300' :
+              t.type === 'err'  ? 'bg-[var(--s2)] ring-red-200 dark:ring-red-700/40 text-red-700 dark:text-red-300' :
+                                  'bg-[var(--s2)] ring-[var(--line-2)] text-[var(--t2)]',
             )}>
             {t.type === 'ok'  ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> :
              t.type === 'err' ? <AlertCircle  className="w-3.5 h-3.5 shrink-0" /> :
@@ -145,7 +145,7 @@ function ToastList({ toasts, remove }: { toasts: Toast[]; remove: (id: number) =
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 function Sidebar({
-  tab, setTab, queueCount, inboxUnread, userInitials, userEmail,
+  tab, setTab, queueCount, inboxUnread, userInitials, userName, userEmail,
   pinned, setPinned, hovered, setHovered,
 }: {
   tab: TabId;
@@ -153,6 +153,7 @@ function Sidebar({
   queueCount: number;
   inboxUnread: number;
   userInitials: string;
+  userName: string | null;
   userEmail: string | null;
   pinned: boolean;
   setPinned: (v: boolean) => void;
@@ -160,43 +161,53 @@ function Sidebar({
   setHovered: (v: boolean) => void;
 }) {
   const { t } = useLang();
+  // Active-nav item: layered surface + inset accent bar on the left edge.
+  const activeShadow = { boxShadow: 'inset 3px 0 0 -1px var(--accent), var(--highlight)' };
+  const navBtn = (active: boolean, locked: boolean) => cn(
+    'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[9px] text-[12.5px] cursor-pointer transition-colors',
+    active
+      ? 'bg-[var(--s3)] text-[var(--t1)] font-[550]'
+      : cn('font-medium hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+           locked ? 'text-[var(--t3)]' : 'text-[var(--t2)]'),
+  );
   return (
     <aside
       onMouseEnter={() => { if (!pinned) setHovered(true); }}
       onMouseLeave={() => { if (!pinned) setHovered(false); }}
       className={cn(
-        'w-[220px] h-full flex flex-col border-r border-ink-200/70 dark:border-ink-800 bg-white dark:bg-ink-900 transition-transform duration-200 ease-out',
+        'w-[250px] h-full flex flex-col border-r border-[var(--line)] bg-[var(--s1)] transition-transform duration-200 ease-out',
         pinned ? 'shrink-0 relative' : 'absolute inset-y-0 left-0 z-50 shadow-2xl',
         !pinned && !hovered && '-translate-x-full',
       )}>
-      <div className="h-14 flex items-center gap-2.5 px-4 border-b border-ink-200/70 dark:border-ink-800">
-        <div className="relative">
-          <div className="w-7 h-7 rounded-md bg-brand-600 flex items-center justify-center">
-            <span className="text-white text-[14px] font-black leading-none tracking-tighter select-none">V</span>
+      <div className="h-[60px] shrink-0 flex items-center gap-[11px] px-4 border-b border-[var(--line)]">
+        <div className="relative w-[30px] h-[30px] shrink-0">
+          <div className="w-[30px] h-[30px] rounded-[9px] flex items-center justify-center v3-glow"
+            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6))' }}>
+            <span className="text-[15px] font-bold leading-none tracking-[-0.06em] select-none" style={{ color: 'var(--accent-ink)' }}>V</span>
           </div>
-          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-ink-900" />
+          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[var(--s1)]" />
         </div>
-        <div className="leading-none min-w-0 flex-1">
-          <p className="text-[12.5px] font-semibold tracking-tight truncate">Vector</p>
-          <p className="text-[9.5px] text-ink-400 dark:text-ink-500 mt-0.5 truncate">Quote Automation · v2.0</p>
+        <div className="leading-tight min-w-0 flex-1">
+          <p className="text-[13.5px] font-semibold tracking-[-0.02em] truncate">Vector</p>
+          <p className="text-[10px] text-[var(--t3)] mt-0.5 truncate">Quote Automation · v3.0</p>
         </div>
         <button
           onClick={() => { setPinned(!pinned); setHovered(false); }}
           title={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
           className={cn(
-            'shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-colors',
+            'shrink-0 w-7 h-7 rounded-[8px] flex items-center justify-center transition-colors',
             pinned
-              ? 'text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800 hover:text-ink-700 dark:hover:text-ink-200'
-              : 'text-brand-600 dark:text-brand-300 bg-brand-50 dark:bg-brand-900/30',
+              ? 'text-[var(--t3)] hover:bg-[var(--s3)] hover:text-[var(--t1)]'
+              : 'text-[var(--accent-text)] bg-[var(--accent-soft)]',
           )}>
           {pinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto py-3 px-2 space-y-5">
+      <nav className="flex-1 overflow-y-auto py-3.5 px-2.5 flex flex-col gap-[18px] vec-scroll">
         {Object.entries(NAV_STRUCTURE).map(([key, sec]) => (
-          <div key={key} className="space-y-0.5">
-            <div className="px-2.5 pb-1.5 text-[10px] font-semibold tracking-[0.14em] uppercase text-ink-400 dark:text-ink-500">
+          <div key={key} className="flex flex-col gap-0.5">
+            <div className="px-2.5 pb-[7px] text-[10px] font-semibold tracking-[0.13em] uppercase text-[var(--t3)]">
               {t[sec.labelKey]}
             </div>
             {sec.items.map(it => {
@@ -206,47 +217,35 @@ function Sidebar({
               return (
                 <button key={it.id} onClick={() => setTab(it.id)}
                   title={locked ? 'Coming soon' : undefined}
-                  className={cn(
-                    'w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[12.5px] font-medium transition-colors',
-                    active
-                      ? 'bg-ink-900 text-white dark:bg-white dark:text-ink-900'
-                      : locked
-                        ? 'text-ink-400 dark:text-ink-600 hover:bg-ink-100/50 dark:hover:bg-ink-800/40'
-                        : 'text-ink-600 dark:text-ink-300 hover:bg-ink-100/70 dark:hover:bg-ink-800/60',
-                  )}>
-                  <it.Icon className="w-3.5 h-3.5 shrink-0" strokeWidth={active ? 2.2 : 1.75} />
+                  style={active ? activeShadow : undefined}
+                  className={navBtn(active, locked)}>
+                  <it.Icon className="w-[17px] h-[17px] shrink-0" style={key === 'tools' && !active ? { opacity: 0.7 } : undefined} strokeWidth={1.7} />
                   <span className="flex-1 text-left truncate">{t[it.labelKey]}</span>
-                  {locked && <Lock className="w-3 h-3 shrink-0 opacity-60" />}
+                  {locked && <Lock className="w-3 h-3 shrink-0 opacity-50" />}
                   {!locked && badge > 0 && (
-                    <span className={cn(
-                      'min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-semibold flex items-center justify-center shrink-0',
-                      active ? 'bg-white/15 text-white dark:bg-ink-900/10 dark:text-ink-900'
-                             : 'bg-brand-600 text-white',
-                    )}>{badge}</span>
+                    <span className="min-w-[19px] h-[19px] px-1.5 rounded-full text-[10px] font-semibold flex items-center justify-center shrink-0"
+                      style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>{badge}</span>
                   )}
                 </button>
               );
             })}
           </div>
         ))}
-      </div>
+      </nav>
 
-      <div className="px-2 pb-3 pt-2 border-t border-ink-200/70 dark:border-ink-800 space-y-0.5">
+      <div className="px-2.5 pb-3 pt-2 border-t border-[var(--line)] flex flex-col gap-0.5">
         <button onClick={() => setTab('Settings')}
-          className={cn(
-            'w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-md text-[12.5px] font-medium transition-colors',
-            tab === 'Settings'
-              ? 'bg-ink-900 text-white dark:bg-white dark:text-ink-900'
-              : 'text-ink-600 dark:text-ink-300 hover:bg-ink-100/70 dark:hover:bg-ink-800/60',
-          )}>
-          <SettingsIcon className="w-3.5 h-3.5 shrink-0" />
+          style={tab === 'Settings' ? activeShadow : undefined}
+          className={navBtn(tab === 'Settings', false)}>
+          <SettingsIcon className="w-[17px] h-[17px] shrink-0" strokeWidth={1.7} />
           <span className="flex-1 text-left">{t.settings}</span>
         </button>
-        <div className="flex items-center gap-2 px-2 py-2 mt-1.5 min-w-0">
-          <div className="w-6 h-6 rounded-full bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-[10px] font-bold text-white shrink-0">{userInitials}</div>
-          <div className="min-w-0 flex-1">
-            <p className="text-[11px] font-medium truncate leading-none">{userEmail ? userEmail.split('@')[0] : 'Not connected'}</p>
-            <p className="text-[9.5px] text-ink-400 dark:text-ink-500 leading-none mt-1 truncate">{userEmail || '—'}</p>
+        <div className="flex items-center gap-2.5 px-2.5 pt-2.5 pb-1 min-w-0">
+          <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0"
+            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 50%, #8b5cf6))', color: 'var(--accent-ink)' }}>{userInitials}</div>
+          <div className="min-w-0 flex-1 leading-tight">
+            <p className="text-[12px] font-medium truncate">{userName || (userEmail ? userEmail.split('@')[0] : 'Not connected')}</p>
+            <p className="text-[10px] text-[var(--t3)] truncate mt-0.5">{userEmail || '—'}</p>
           </div>
         </div>
       </div>
@@ -284,70 +283,71 @@ function Header({
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
+  const iconBtn = 'w-8 h-8 shrink-0 rounded-[9px] flex items-center justify-center border border-[var(--line-2)] bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s-hover)] hover:text-[var(--t1)] transition-colors';
   return (
-    <header className="h-14 shrink-0 flex items-center gap-4 px-6 bg-white dark:bg-ink-900 border-b border-ink-200/70 dark:border-ink-800">
+    <header className="h-[60px] shrink-0 flex items-center gap-3.5 px-[22px] border-b border-[var(--line)] z-[5]"
+      style={{ background: 'color-mix(in oklab, var(--s1) 82%, transparent)', backdropFilter: 'blur(12px)' }}>
       <div className="min-w-0">
-        <h1 className="text-[14px] font-semibold leading-none tracking-tight">{cur.t}</h1>
-        <p className="text-[11px] text-ink-500 dark:text-ink-400 mt-1.5 leading-none truncate">{cur.s}</p>
+        <h1 className="text-[15px] font-semibold leading-none tracking-[-0.02em]">{cur.t}</h1>
+        <p className="text-[11.5px] text-[var(--t3)] mt-[3px] leading-none truncate">{cur.s}</p>
       </div>
 
       <div className="flex-1" />
 
       {sessionElapsed && (
-        <div className="hidden lg:flex items-center gap-1.5 text-[11px] text-ink-500 dark:text-ink-400 num">
-          <Clock className="w-3 h-3" />
+        <div className="hidden lg:flex items-center gap-1.5 text-[11.5px] text-[var(--t3)] num pr-0.5">
+          <Clock className="w-[13px] h-[13px]" />
           {sessionElapsed}
         </div>
       )}
 
       <button onClick={onConnect} disabled={connecting}
+        style={connected && !connecting
+          ? { border: '1px solid color-mix(in oklab, var(--ok) 32%, transparent)', background: 'var(--ok-soft)', color: 'var(--ok)' }
+          : undefined}
         className={cn(
-          'h-8 px-2.5 rounded-lg text-[11.5px] font-semibold flex items-center gap-1.5 ring-1 ring-inset transition-colors',
+          'h-8 px-[11px] rounded-[9px] text-[11.5px] font-semibold flex items-center gap-[7px] transition-colors border',
           connecting
-            ? 'bg-ink-100 dark:bg-ink-800 ring-ink-200 dark:ring-ink-700 text-ink-400 cursor-not-allowed'
-            : connected
-              ? 'bg-emerald-50 dark:bg-emerald-900/30 ring-emerald-200/70 dark:ring-emerald-700/40 text-emerald-700 dark:text-emerald-300'
-              : 'bg-ink-100 dark:bg-ink-800 ring-ink-200 dark:ring-ink-700 text-ink-700 dark:text-ink-200',
+            ? 'border-[var(--line-2)] bg-[var(--s2)] text-[var(--t3)] cursor-not-allowed'
+            : !connected && 'border-[var(--line-2)] bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s-hover)]',
         )}
         title={connecting ? tr.connecting : (userName || 'Click to connect to JOE')}>
         {connecting
           ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          : <span className={cn('w-1.5 h-1.5 rounded-full', connected ? 'bg-emerald-500' : 'bg-ink-400')} />}
+          : <span className="w-1.5 h-1.5 rounded-full" style={{ background: connected ? 'var(--ok)' : 'var(--t3)' }} />}
         {connecting ? tr.connecting : connected ? (userName ? userName.split(' ')[0] : tr.connected) : tr.connectJoe}
-        {connected && !connecting && <RefreshCw className="w-3 h-3 opacity-50" />}
+        {connected && !connecting && <RefreshCw className="w-3 h-3 opacity-60" />}
       </button>
 
       <button onClick={onFeedback} title="Send feedback"
-        className="h-8 px-2.5 rounded-lg text-[11.5px] font-medium flex items-center gap-1.5 text-ink-600 dark:text-ink-300 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors">
+        className="h-8 px-[11px] rounded-[9px] text-[11.5px] font-medium flex items-center gap-[7px] border border-[var(--line-2)] bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s-hover)] hover:text-[var(--t1)] transition-colors">
         <MessageSquarePlus className="w-3.5 h-3.5" />
         <span className="hidden sm:inline">Feedback</span>
       </button>
 
-      <button onClick={() => setDark((d: boolean) => !d)}
-        className="w-8 h-8 rounded-lg flex items-center justify-center text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800">
-        {dark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+      <button onClick={() => setDark((d: boolean) => !d)} title="Toggle theme" className={iconBtn}>
+        {dark ? <Sun className="w-[15px] h-[15px]" /> : <Moon className="w-[15px] h-[15px]" />}
       </button>
 
       <div ref={notifRef} className="relative">
-        <button onClick={() => { setNotifOpen(o => !o); clearNew(); }}
-          className="relative w-8 h-8 rounded-lg flex items-center justify-center text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800">
-          <Bell className="w-3.5 h-3.5" />
-          {hasNew && <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-red-500 ring-2 ring-white dark:ring-ink-900" />}
+        <button onClick={() => { setNotifOpen(o => !o); clearNew(); }} className={cn(iconBtn, 'relative')}>
+          <Bell className="w-[15px] h-[15px]" />
+          {hasNew && <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-[var(--err)] border-[1.5px] border-[var(--s2)]" />}
         </button>
         <AnimatePresence>
           {notifOpen && (
             <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
-              className="absolute right-0 top-10 w-72 bg-white dark:bg-ink-900 ring-1 ring-ink-200 dark:ring-ink-700 rounded-xl shadow-xl z-50 overflow-hidden">
-              <p className="px-4 py-2.5 text-[10px] font-semibold text-ink-400 uppercase tracking-widest border-b border-ink-100 dark:border-ink-800">Activity</p>
-              <div className="max-h-60 overflow-y-auto">
+              className="absolute right-0 top-10 w-72 rounded-xl z-50 overflow-hidden v3-pop bg-[var(--s2)] border border-[var(--line)]">
+              <p className="px-4 py-2.5 text-[10px] font-semibold text-[var(--t3)] uppercase tracking-widest border-b border-[var(--line)]">Activity</p>
+              <div className="max-h-60 overflow-y-auto vec-scroll">
                 {notifs.length === 0
-                  ? <p className="px-4 py-5 text-[11.5px] text-ink-400 text-center">No recent activity</p>
+                  ? <p className="px-4 py-5 text-[11.5px] text-[var(--t3)] text-center">No recent activity</p>
                   : notifs.map(t => (
-                    <div key={t.id} className="flex items-start gap-2 px-4 py-2 border-b border-ink-50 dark:border-ink-800/50 last:border-0">
-                      {t.type === 'ok'  ? <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 mt-0.5 shrink-0" /> :
-                       t.type === 'err' ? <AlertCircle  className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" /> :
-                                          <Info         className="w-3.5 h-3.5 text-brand-500 mt-0.5 shrink-0" />}
-                      <p className="text-[11.5px] text-ink-700 dark:text-ink-200">{t.msg}</p>
+                    <div key={t.id} className="flex items-start gap-2 px-4 py-2 border-b border-[var(--line)] last:border-0">
+                      {t.type === 'ok'  ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--ok)' }} /> :
+                       t.type === 'err' ? <AlertCircle  className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--err)' }} /> :
+                                          <Info         className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />}
+                      <p className="text-[11.5px] text-[var(--t2)]">{t.msg}</p>
                     </div>
                   ))}
               </div>
@@ -368,19 +368,19 @@ function SplashScreen({
   connecting: boolean;
 }) {
   return (
-    <div className="h-screen flex flex-col items-center justify-center bg-white dark:bg-ink-950 relative select-none">
+    <div className="h-screen flex flex-col items-center justify-center bg-[var(--bg)] relative select-none">
       <ToastList toasts={[]} remove={() => {}} />
       {/* Logo */}
-      <div className="w-20 h-20 rounded-3xl bg-brand-600 flex items-center justify-center mb-5 shadow-xl ring-4 ring-brand-500/20">
+      <div className="w-20 h-20 rounded-3xl bg-[var(--accent)] flex items-center justify-center mb-5 shadow-xl ring-4 ring-[var(--accent-line)]">
         <span className="text-white text-[40px] font-black leading-none tracking-tighter">V</span>
       </div>
-      <h1 className="text-[26px] font-bold tracking-tight text-ink-900 dark:text-ink-50">Vector</h1>
-      <p className="text-[12.5px] text-ink-400 dark:text-ink-500 mt-1 mb-10">Quote Automation · v2.0</p>
+      <h1 className="text-[26px] font-bold tracking-tight text-[var(--t1)]">Vector</h1>
+      <p className="text-[12.5px] text-[var(--t3)] mt-1 mb-10">Quote Automation · v2.0</p>
 
       <button
         onClick={onConnect}
         disabled={connecting}
-        className="h-11 px-8 rounded-xl text-[13.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 disabled:opacity-60 flex items-center gap-2.5 transition-colors shadow-sm">
+        className="h-11 px-8 rounded-xl text-[13.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-60 flex items-center gap-2.5 transition-colors shadow-sm">
         {connecting
           ? <Loader2 className="w-4 h-4 animate-spin" />
           : <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />}
@@ -389,11 +389,11 @@ function SplashScreen({
 
       <button
         onClick={onSkip}
-        className="mt-4 text-[11.5px] text-ink-400 hover:text-ink-600 dark:hover:text-ink-300 transition-colors underline-offset-2 hover:underline">
+        className="mt-4 text-[11.5px] text-[var(--t3)] hover:text-[var(--t2)] transition-colors underline-offset-2 hover:underline">
         Skip — enter without connection
       </button>
 
-      <p className="absolute bottom-8 left-0 right-0 text-center text-[11px] text-ink-300 dark:text-ink-600 px-8">
+      <p className="absolute bottom-8 left-0 right-0 text-center text-[11px] text-[var(--t4)] px-8">
         Connects to the Eaton JOE SharePoint environment.
         Make sure you're on the Eaton network or VPN.
       </p>
@@ -424,23 +424,23 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}>
       <motion.div initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.94 }}
         onClick={e => e.stopPropagation()}
-        className="bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-ink-200 dark:ring-ink-700 p-5 w-80">
+        className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-[var(--line-2)] p-5 w-80">
         <div className="flex items-center gap-2 mb-4">
-          <Keyboard className="w-4 h-4 text-ink-400" />
+          <Keyboard className="w-4 h-4 text-[var(--t3)]" />
           <span className="text-[13px] font-semibold flex-1">Keyboard Shortcuts</span>
-          <button onClick={onClose} className="w-6 h-6 flex items-center justify-center text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
+          <button onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
         <div className="space-y-1.5">
           {SHORTCUTS.map(s => (
-            <div key={s.key} className="flex items-center justify-between py-1 border-b border-ink-50 dark:border-ink-800/50 last:border-0">
-              <span className="text-[12px] text-ink-600 dark:text-ink-300">{s.desc}</span>
-              <kbd className="px-2 py-0.5 rounded-md bg-ink-100 dark:bg-ink-800 text-[10.5px] font-mono text-ink-700 dark:text-ink-200 border border-ink-200 dark:border-ink-700">{s.key}</kbd>
+            <div key={s.key} className="flex items-center justify-between py-1 border-b border-[var(--line)] last:border-0">
+              <span className="text-[12px] text-[var(--t2)]">{s.desc}</span>
+              <kbd className="px-2 py-0.5 rounded-md bg-[var(--s3)] text-[10.5px] font-mono text-[var(--t2)] border border-[var(--line-2)]">{s.key}</kbd>
             </div>
           ))}
         </div>
-        <p className="mt-3 text-[10.5px] text-ink-400 text-center">Press <kbd className="px-1.5 py-0.5 rounded bg-ink-100 dark:bg-ink-800 text-[10px] font-mono border border-ink-200 dark:border-ink-700">?</kbd> anytime to toggle</p>
+        <p className="mt-3 text-[10.5px] text-[var(--t3)] text-center">Press <kbd className="px-1.5 py-0.5 rounded bg-[var(--s3)] text-[10px] font-mono border border-[var(--line-2)]">?</kbd> anytime to toggle</p>
       </motion.div>
     </div>
   );
@@ -521,25 +521,25 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
             exit={{   opacity: 0, scale: 0.93, y: 12  }}
             transition={{ duration: 0.15 }}
             className="fixed bottom-16 right-5 w-[340px] h-[420px] z-[9998] flex flex-col
-                       bg-white dark:bg-ink-900 rounded-2xl shadow-2xl
-                       ring-1 ring-ink-200 dark:ring-ink-700 overflow-hidden">
+                       bg-[var(--s1)] rounded-2xl shadow-2xl
+                       ring-1 ring-[var(--line-2)] overflow-hidden">
 
             {/* Header */}
-            <div className="flex items-center gap-2 px-3.5 py-2 border-b border-ink-100 dark:border-ink-800 shrink-0">
-              <div className="w-5 h-5 rounded-md bg-brand-600 flex items-center justify-center shrink-0">
+            <div className="flex items-center gap-2 px-3.5 py-2 border-b border-[var(--line)] shrink-0">
+              <div className="w-5 h-5 rounded-md bg-[var(--accent)] flex items-center justify-center shrink-0">
                 <span className="text-white text-[11px] font-black leading-none">V</span>
               </div>
               <span className="flex-1 text-[12px] font-semibold">Ask Vector</span>
               <button onClick={() => { onOpenFull(); setOpen(false); }}
-                className="text-[10.5px] text-brand-600 hover:text-brand-700 dark:text-brand-400 font-medium mr-1">
+                className="text-[10.5px] text-[var(--accent-text)] hover:text-[var(--accent-text)] font-medium mr-1">
                 Full view →
               </button>
               <button onClick={() => setMsgs([])} title="Clear chat"
-                className="w-5 h-5 flex items-center justify-center text-ink-400 hover:text-ink-600 dark:hover:text-ink-200">
+                className="w-5 h-5 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
                 <RefreshCw className="w-3 h-3" />
               </button>
               <button onClick={() => setOpen(false)}
-                className="w-5 h-5 flex items-center justify-center text-ink-400 hover:text-ink-600 dark:hover:text-ink-200">
+                className="w-5 h-5 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
                 <X className="w-3 h-3" />
               </button>
             </div>
@@ -548,11 +548,11 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
             <div ref={bodyRef} className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
               {msgs.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center gap-2 text-center px-4">
-                  <div className="w-9 h-9 rounded-xl bg-brand-50 dark:bg-brand-900/30 flex items-center justify-center">
-                    <Sparkles className="w-4 h-4 text-brand-500" />
+                  <div className="w-9 h-9 rounded-xl bg-[var(--accent-soft)] flex items-center justify-center">
+                    <Sparkles className="w-4 h-4 text-[var(--accent-text)]" />
                   </div>
-                  <p className="text-[11.5px] font-medium text-ink-700 dark:text-ink-200">How can I help?</p>
-                  <p className="text-[10.5px] text-ink-400 leading-snug">Ask anything about quotes, specs, or projects.</p>
+                  <p className="text-[11.5px] font-medium text-[var(--t2)]">How can I help?</p>
+                  <p className="text-[10.5px] text-[var(--t3)] leading-snug">Ask anything about quotes, specs, or projects.</p>
                 </div>
               )}
               {msgs.map((m, i) => (
@@ -560,15 +560,15 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
                   <div className={cn(
                     'max-w-[85%] px-2.5 py-1.5 rounded-xl text-[11.5px] leading-relaxed whitespace-pre-wrap break-words',
                     m.role === 'user'
-                      ? 'bg-brand-600 text-white rounded-br-sm'
-                      : 'bg-ink-100 dark:bg-ink-800 text-ink-800 dark:text-ink-100 rounded-bl-sm',
+                      ? 'bg-[var(--accent)] text-white rounded-br-sm'
+                      : 'bg-[var(--s3)] text-[var(--t1)] rounded-bl-sm',
                   )}>{m.text}</div>
                 </div>
               ))}
               {loading && (
                 <div className="flex justify-start">
-                  <div className="bg-ink-100 dark:bg-ink-800 px-2.5 py-2 rounded-xl rounded-bl-sm">
-                    <Loader2 className="w-3 h-3 text-ink-400 animate-spin" />
+                  <div className="bg-[var(--s3)] px-2.5 py-2 rounded-xl rounded-bl-sm">
+                    <Loader2 className="w-3 h-3 text-[var(--t3)] animate-spin" />
                   </div>
                 </div>
               )}
@@ -576,16 +576,16 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
 
             {/* Escalation banner */}
             {shouldEscalate && (
-              <div className="px-3 py-1.5 bg-brand-50 dark:bg-brand-900/20 border-t border-brand-100 dark:border-brand-800/40 flex items-center gap-2 shrink-0">
-                <Sparkles className="w-3 h-3 text-brand-500 shrink-0" />
-                <p className="text-[10.5px] text-brand-700 dark:text-brand-300 flex-1">Getting complex — try full view.</p>
+              <div className="px-3 py-1.5 bg-[var(--accent-soft)] border-t border-[var(--accent-line)] flex items-center gap-2 shrink-0">
+                <Sparkles className="w-3 h-3 text-[var(--accent-text)] shrink-0" />
+                <p className="text-[10.5px] text-[var(--accent-text)] flex-1">Getting complex — try full view.</p>
                 <button onClick={() => { onOpenFull(); setOpen(false); }}
-                  className="text-[10.5px] font-semibold text-brand-600 hover:text-brand-700 whitespace-nowrap">Open →</button>
+                  className="text-[10.5px] font-semibold text-[var(--accent-text)] hover:text-[var(--accent-text)] whitespace-nowrap">Open →</button>
               </div>
             )}
 
             {/* Input */}
-            <div className="px-3 py-2 border-t border-ink-100 dark:border-ink-800 shrink-0 flex gap-2 items-end">
+            <div className="px-3 py-2 border-t border-[var(--line)] shrink-0 flex gap-2 items-end">
               <textarea
                 ref={inputRef}
                 rows={2}
@@ -593,14 +593,14 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
                 placeholder="Ask anything… (Enter to send)"
-                className="flex-1 resize-none text-[11.5px] bg-transparent outline-none text-ink-800 dark:text-ink-100 placeholder:text-ink-400 leading-relaxed py-0.5"
+                className="flex-1 resize-none text-[11.5px] bg-transparent outline-none text-[var(--t1)] placeholder:text-[var(--t3)] leading-relaxed py-0.5"
               />
               <button onClick={send} disabled={!input.trim() || loading}
                 className={cn(
                   'w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-colors mb-0.5',
                   input.trim() && !loading
-                    ? 'bg-brand-600 text-white hover:bg-brand-700'
-                    : 'bg-ink-100 dark:bg-ink-800 text-ink-400 cursor-not-allowed',
+                    ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]'
+                    : 'bg-[var(--s3)] text-[var(--t3)] cursor-not-allowed',
                 )}>
                 <Send className="w-3 h-3" />
               </button>
@@ -622,7 +622,7 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
               'w-14 h-14 rounded-full flex items-center justify-center transition-colors duration-100',
               overDismiss
                 ? 'bg-red-500 text-white shadow-lg shadow-red-500/30'
-                : 'bg-white/90 dark:bg-ink-800/90 backdrop-blur text-ink-400 ring-1 ring-ink-200 dark:ring-ink-600',
+                : 'bg-white/90 dark:bg-[var(--s2)] backdrop-blur text-[var(--t3)] ring-1 ring-[var(--line-2)]',
             )}>
             <X className="w-5 h-5" />
           </motion.div>
@@ -641,15 +641,15 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
         whileTap={!isDragging ? { scale: 0.9 } : {}}
         onClick={() => { if (dragMoved.current) { dragMoved.current = false; return; } setOpen(o => !o); }}
         className={cn(
-          'w-9 h-9 rounded-xl bg-brand-600 text-white shadow-lg z-[9999]',
-          'flex items-center justify-center hover:bg-brand-700 transition-colors',
+          'w-9 h-9 rounded-xl bg-[var(--accent)] text-white shadow-lg z-[9999]',
+          'flex items-center justify-center hover:bg-[var(--accent-hover)] transition-colors',
           isDragging ? 'cursor-grabbing opacity-80' : 'cursor-grab',
         )}>
         {open
           ? <X className="w-4 h-4" />
           : <span className="text-[15px] font-black leading-none tracking-tighter select-none">V</span>}
         {hasUnread && !open && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-white dark:ring-ink-900" />
+          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-[var(--s1)]" />
         )}
       </motion.button>
     </>
@@ -669,28 +669,29 @@ function fmtElapsed(iso: string | null) {
 // ─── Coming Soon (locked feature wall) ───────────────────────────────────────
 function ComingSoon({ title, desc }: { title: string; desc: string }) {
   return (
-    <div className="relative h-full min-h-[420px] w-full overflow-hidden rounded-xl">
+    <div className="relative h-full min-h-[460px] w-full overflow-hidden rounded-[18px] border border-[var(--line)]">
       {/* Blurred faux content behind the wall */}
-      <div aria-hidden className="absolute inset-0 blur-[6px] opacity-50 pointer-events-none select-none p-6 space-y-4">
-        <div className="h-8 w-1/3 rounded-lg bg-ink-200 dark:bg-ink-800" />
-        <div className="grid grid-cols-3 gap-4">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-28 rounded-xl bg-ink-100 dark:bg-ink-800/70 ring-1 ring-ink-200/60 dark:ring-ink-700/40" />
+      <div aria-hidden className="absolute inset-0 blur-[7px] opacity-40 pointer-events-none select-none p-[26px]">
+        <div className="h-[34px] w-1/3 rounded-[10px] bg-[var(--s3)] mb-[18px]" />
+        <div className="grid grid-cols-3 gap-4 mb-[18px]">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="h-[110px] rounded-[14px] bg-[var(--s2)] border border-[var(--line)]" />
           ))}
         </div>
-        <div className="h-40 rounded-xl bg-ink-100 dark:bg-ink-800/70 ring-1 ring-ink-200/60 dark:ring-ink-700/40" />
+        <div className="h-[180px] rounded-[14px] bg-[var(--s2)] border border-[var(--line)]" />
       </div>
       {/* Overlay card */}
-      <div className="absolute inset-0 flex items-center justify-center bg-white/40 dark:bg-ink-950/40 backdrop-blur-[2px]">
-        <div className="text-center max-w-sm px-8 py-9 rounded-2xl bg-white/90 dark:bg-ink-900/90 ring-1 ring-ink-200 dark:ring-ink-700 shadow-xl">
-          <div className="w-12 h-12 mx-auto rounded-2xl bg-brand-50 dark:bg-brand-900/30 flex items-center justify-center mb-4">
-            <Rocket className="w-5 h-5 text-brand-500" />
+      <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[2px]"
+        style={{ background: 'color-mix(in oklab, var(--bg) 45%, transparent)' }}>
+        <div className="text-center max-w-[400px] px-9 py-[38px] rounded-[20px] v3-pop bg-[var(--s2)] border border-[var(--line)]">
+          <div className="w-[52px] h-[52px] mx-auto rounded-[15px] bg-[var(--accent-soft)] text-[var(--accent-text)] flex items-center justify-center mb-4">
+            <Rocket className="w-6 h-6" />
           </div>
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-ink-100 dark:bg-ink-800 text-[10.5px] font-semibold tracking-wide uppercase text-ink-500 dark:text-ink-400 mb-3">
+          <div className="inline-flex items-center gap-1.5 px-[11px] py-1 rounded-full bg-[var(--s3)] border border-[var(--line)] text-[10px] font-semibold tracking-wide uppercase text-[var(--t2)] mb-3.5 whitespace-nowrap">
             <Lock className="w-3 h-3" /> Coming soon
           </div>
-          <h2 className="text-[16px] font-semibold tracking-tight text-ink-900 dark:text-ink-50">{title}</h2>
-          <p className="text-[12.5px] text-ink-500 dark:text-ink-400 mt-2 leading-relaxed">{desc}</p>
+          <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-[var(--t1)]">{title}</h2>
+          <p className="text-[12.5px] text-[var(--t2)] mt-2.5 leading-relaxed">{desc}</p>
         </div>
       </div>
     </div>
@@ -738,11 +739,11 @@ function FeedbackModal({
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
       <motion.div initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.94 }}
         onClick={e => e.stopPropagation()}
-        className="bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-ink-200 dark:ring-ink-700 p-5 w-[400px]">
+        className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-[var(--line-2)] p-5 w-[400px]">
         <div className="flex items-center gap-2 mb-4">
-          <MessageSquarePlus className="w-4 h-4 text-brand-500" />
+          <MessageSquarePlus className="w-4 h-4 text-[var(--accent-text)]" />
           <span className="text-[13px] font-semibold flex-1">Send feedback</span>
-          <button onClick={onClose} className="w-6 h-6 flex items-center justify-center text-ink-400 hover:text-ink-700 dark:hover:text-ink-200">
+          <button onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -753,8 +754,8 @@ function FeedbackModal({
               className={cn(
                 'px-2.5 py-1 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
                 category === c
-                  ? 'bg-ink-900 text-white dark:bg-white dark:text-ink-900 ring-transparent'
-                  : 'bg-white dark:bg-ink-900 text-ink-600 dark:text-ink-300 ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800',
+                  ? 'bg-[var(--t1)] text-[var(--bg)] ring-transparent'
+                  : 'bg-[var(--s1)] text-[var(--t2)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
               )}>{c}</button>
           ))}
         </div>
@@ -766,17 +767,17 @@ function FeedbackModal({
           onChange={e => setMessage(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } }}
           placeholder="What's working, what's broken, what you'd love to see…"
-          className="w-full resize-none text-[12.5px] rounded-xl bg-ink-50 dark:bg-ink-800/60 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 p-3 outline-none focus:ring-brand-400 text-ink-800 dark:text-ink-100 placeholder:text-ink-400 leading-relaxed"
+          className="w-full resize-none text-[12.5px] rounded-xl bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] p-3 outline-none focus:ring-[var(--accent-line)] text-[var(--t1)] placeholder:text-[var(--t3)] leading-relaxed"
         />
 
         <div className="flex items-center justify-between mt-4">
-          <span className="text-[10.5px] text-ink-400">Goes to the Vector team</span>
+          <span className="text-[10.5px] text-[var(--t3)]">Goes to the Vector team</span>
           <button onClick={submit} disabled={!message.trim() || sending}
             className={cn(
               'h-9 px-4 rounded-xl text-[12.5px] font-semibold flex items-center gap-2 transition-colors',
               message.trim() && !sending
-                ? 'bg-brand-600 text-white hover:bg-brand-700'
-                : 'bg-ink-100 dark:bg-ink-800 text-ink-400 cursor-not-allowed',
+                ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]'
+                : 'bg-[var(--s3)] text-[var(--t3)] cursor-not-allowed',
             )}>
             {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
             {sending ? 'Sending…' : 'Send'}
@@ -800,31 +801,31 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/55 backdrop-blur-sm">
       <motion.div initial={{ opacity: 0, scale: 0.94, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.94 }}
-        className="bg-white dark:bg-ink-900 rounded-2xl shadow-2xl ring-1 ring-ink-200 dark:ring-ink-700 p-6 w-[440px]">
+        className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-[var(--line-2)] p-6 w-[440px]">
         <div className="flex flex-col items-center text-center mb-5">
-          <div className="w-14 h-14 rounded-2xl bg-brand-600 flex items-center justify-center mb-3 shadow-lg ring-4 ring-brand-500/20">
+          <div className="w-14 h-14 rounded-2xl bg-[var(--accent)] flex items-center justify-center mb-3 shadow-lg ring-4 ring-[var(--accent-line)]">
             <span className="text-white text-[28px] font-black leading-none tracking-tighter">V</span>
           </div>
-          <h2 className="text-[18px] font-bold tracking-tight text-ink-900 dark:text-ink-50">Welcome to Vector</h2>
-          <p className="text-[12px] text-ink-400 dark:text-ink-500 mt-1">Eaton Quote &amp; PMO automation · v2.0</p>
+          <h2 className="text-[18px] font-bold tracking-tight text-[var(--t1)]">Welcome to Vector</h2>
+          <p className="text-[12px] text-[var(--t3)] mt-1">Eaton Quote &amp; PMO automation · v2.0</p>
         </div>
 
         <div className="space-y-2.5 mb-6">
           {steps.map(s => (
-            <div key={s.title} className="flex items-start gap-3 p-2.5 rounded-xl bg-ink-50 dark:bg-ink-800/50">
-              <div className="w-8 h-8 rounded-lg bg-white dark:bg-ink-900 ring-1 ring-ink-200 dark:ring-ink-700 flex items-center justify-center shrink-0">
-                <s.Icon className="w-4 h-4 text-brand-500" />
+            <div key={s.title} className="flex items-start gap-3 p-2.5 rounded-xl bg-[var(--s3)]">
+              <div className="w-8 h-8 rounded-lg bg-[var(--s1)] ring-1 ring-[var(--line-2)] flex items-center justify-center shrink-0">
+                <s.Icon className="w-4 h-4 text-[var(--accent-text)]" />
               </div>
               <div className="min-w-0">
-                <p className="text-[12.5px] font-semibold text-ink-800 dark:text-ink-100">{s.title}</p>
-                <p className="text-[11.5px] text-ink-500 dark:text-ink-400 leading-snug mt-0.5">{s.body}</p>
+                <p className="text-[12.5px] font-semibold text-[var(--t1)]">{s.title}</p>
+                <p className="text-[11.5px] text-[var(--t3)] leading-snug mt-0.5">{s.body}</p>
               </div>
             </div>
           ))}
         </div>
 
         <button onClick={onClose}
-          className="w-full h-11 rounded-xl text-[13.5px] font-semibold bg-ink-900 dark:bg-white text-white dark:text-ink-900 hover:bg-ink-700 dark:hover:bg-ink-100 transition-colors">
+          className="w-full h-11 rounded-xl text-[13.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 transition-colors">
           Get started
         </button>
       </motion.div>
@@ -1066,14 +1067,15 @@ export default function App() {
       ) : (
 
       <>
-      <div className="flex h-screen min-h-0 relative">
+      <div className="flex h-screen min-h-0 relative text-[var(--t1)]"
+        style={{ backgroundColor: 'var(--bg)', backgroundImage: 'radial-gradient(120% 90% at 100% 0%, var(--bg-grad) 0%, var(--bg) 55%)' }}>
         {/* Auto-hide hover trigger — thin rail at the left edge when unpinned */}
         {!sidebarPinned && !sidebarHover && (
           <div className="absolute inset-y-0 left-0 w-2.5 z-40" onMouseEnter={() => setSidebarHover(true)} />
         )}
         <Sidebar
           tab={tab} setTab={setTab} queueCount={queueCount} inboxUnread={inboxUnread}
-          userInitials={userInitials} userEmail={userEmail}
+          userInitials={userInitials} userName={userName} userEmail={userEmail}
           pinned={sidebarPinned} setPinned={setSidebarPinned}
           hovered={sidebarHover} setHovered={setSidebarHover}
         />
@@ -1088,7 +1090,7 @@ export default function App() {
             onFeedback={() => setFeedbackOpen(true)}
           />
           {/* All visited pages stay mounted — outer div always in DOM, hidden via inline style */}
-          <main className="flex-1 min-h-0 bg-ink-50 dark:bg-ink-950 flex flex-col overflow-hidden">
+          <main className="flex-1 min-h-0 flex flex-col overflow-hidden vec-scroll">
             {VALID_TABS.map(t => {
               const active  = t === tab;
               const isInbox = t === 'Inbox';
@@ -1108,7 +1110,7 @@ export default function App() {
                     <InboxPage toast={toast} setTab={t2 => setTab(t2 as TabId)} onUnreadCount={setInboxUnread} />
                   ) : (
                     <div className="p-6 w-full">
-                      <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-ink-400"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
+                      <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
                       {t === 'Analytics'  && <AnalyticsPage />}
                       {t === 'History'    && <HistoryPage      toast={toast} />}

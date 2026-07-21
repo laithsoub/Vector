@@ -125,7 +125,10 @@ VECTOR/
 │   │
 │   └── pages/
 │       ├── Dashboard.tsx      ← PDF queue, job runner, stats, archive
-│       ├── Inbox.tsx          ← Outlook email reader + AI triage + EL Pricer inline
+│       ├── Inbox.tsx          ← Outlook reader + Summarize (vision) + EL Pricer + Quick Quote
+│       ├── ELInfo.tsx         ← EL Internal Info tab (updates digest + chat)
+│       ├── FentonKB.tsx       ← Ask Fenton tab (Q&A knowledge cards + chat)
+│       ├── QuickQuote.tsx     ← Inbox Quick Quote panel (CBU BOM + luminaires → PDF)
 │       ├── Assistant.tsx      ← AI assistant + SharePoint search
 │       ├── Schematics.tsx     ← EL Material Pricer (standalone page)
 │       ├── Analytics.tsx      ← Quote volume charts and trends
@@ -242,40 +245,19 @@ export async function runStreamingScript(endpoint, { onLine }) {
 ---
 
 ### 6.3 Inbox — Email Triage
-Full Outlook integration via COM automation. Features:
+Full Outlook integration via COM automation. Email-detail action bar: **Summarize · Reply · + Attach · EL Pricer · CBU Sheet · Quick Quote**. Features:
 - **Multi-mailbox** — personal inbox + shared mailboxes shown as tabs
 - **15-minute cache** — emails cached client-side, auto-refresh
-- **AI Analysis** — Gemini analyses each email, detects action type, suggests tabs
+- **Summarize** (replaces the old Analyze + Chat + Briefing, 2026-07-16) — one panel: a structured AI summary (Summary / What's Requested / Type / Key Data / Next Steps) plus an inline follow-up chat, in the same panel. **Vision**: reads photos/diagrams/scanned tables inside the email — inline body images automatically (logos < 12 KB skipped), attachments and PDFs when you tick them in the "Feed to AI" row (applies to both the summary and the chat). Summaries **persist** per email in SQLite (`email_summaries`), so reopening (even after restart) is instant and free; Refresh regenerates.
 - **AI Reply Draft** — one-click draft with feedback loop (sends/liked/disliked saved to DB)
-- **Inline Chat** — ask follow-up questions about any email
-- **Morning Briefing** — reads up to 30 emails, returns AI-prioritised action cards grouped by High/Medium/Low
-- **Inline EL Pricer** — appears automatically when email contains EL material items
+- **Inline images render in the body** — `<img src="cid:…">` refs are rewritten to `/api/outlook/attachment-view/:entryId/:index` using each attachment's Content-ID (see `resolveCidImages` in Inbox.tsx).
+- **Inline EL Pricer** — appears in the email detail; prices attached PDFs, **images and Excel/CSV** (Excel routed through a `--mode unified` manifest).
+- **Quick Quote** — see §6.9.
 - **PDF Queue** — one-click to queue PDF attachments from SR00 emails
 
-**Module-level state** — tab switches don't lose data:
-```typescript
-// State declared at module level, survives React remounts
-let _available: boolean | null = null;
-let _mailboxes: Mailbox[] = [];
-let _briefingItems: BriefingItem[] = [];
-let _analysisCache: Record<string, string> = {};
+**Module-level state** — tab switches don't lose data (`_available`, `_mailboxes`, `_summaryCache`, …). Wrapper setters keep the module var in sync with React state.
 
-// Wrapper setters keep module var in sync
-const [available, _setAvailable] = useState<boolean | null>(_available);
-const setAvailable = (v: boolean | null) => { _available = v; _setAvailable(v); };
-```
-
-**Briefing short-ID trick** — avoids Outlook's 140-char entryIds blowing the AI token budget:
-```typescript
-// server.ts — /api/outlook/briefing
-const idMap = emails.map((e, i) => ({ idx: i + 1, entryId: e.entryId }));
-// Prompt uses: "id": 1–30 (not full entryIds)
-// After parsing, maps back:
-const briefing = parsed.map(item => ({
-  ...item,
-  entryId: idMap.find(m => m.idx === item.id)?.entryId ?? '',
-})).filter(item => item.entryId);
-```
+**Resize handles** use a full-screen transparent drag-shield (`resizeMode` state → fixed `inset-0` overlay) so the email iframe can't swallow `mousemove` mid-drag.
 
 ---
 
@@ -345,6 +327,17 @@ const setTab = useCallback((t: TabId) => {
 
 ---
 
+### 6.9 EL Internal Info (EL Info tab) — added 2026-07-16
+Aggregates the recurring internal update emails from `EATON_Emergency_Lighting_INTERNAL@Eaton.com` (this year, Inbox) into one AI hub. **Refresh** fetches + stores them in SQLite (`el_internal`), incremental. A consolidated **"current state" AI digest** (New / Discontinued / Stock / Technical, cached in `el_internal_meta`) and an **ask-AI chat** across all updates. Attachments open via `/api/outlook/attachment-view`.
+Endpoints: `GET /api/el-internal/list`, `POST /api/el-internal/refresh|digest|chat`. Python: `outlook_reader.py --action emails-from --sender <substr> --since <date>` (Inbox, win32).
+
+### 6.10 Ask Fenton (Fenton tab) — added 2026-07-16
+Turns Mark Fenton's (`MarkAFenton@eaton.com`) answers — emails to `laithal-soub`/`UKQuoteFactoryEL`, past year — into a searchable AI knowledge base. **Refresh** fetches (via `emails-from` with the new `--recipient` filter) + AI-extracts each into a **Q&A card** (topic / question / answer / tags) in one batched Gemini call; cards stored in `fenton_kb`. Client-side search + **ask-AI chat** grounded on the cards. **Rebuild** re-extracts all.
+Endpoints: `GET /api/fenton/list`, `POST /api/fenton/refresh|chat`.
+
+### 6.11 Quick Quote (Inbox panel) — added 2026-07-16
+Generates a quick UK **proposal PDF** (not Bidman) from an email. AI-detects the LoadStar/CBU system (`/api/quote/detect-cbu`), auto-pulls its BOM lines from the shared `src/lib/cbuData.ts` (extracted from `CBUCalculator.tsx`) minus relays, and pulls priced luminaires from the email (`/api/quote/luminaires` → `schematic_reader --mode list` on `extractMaterialHints` output, shared in `src/lib/elHints.ts`). All lines editable (list price), free-form **+ Add line**, then `/api/quote/generate` → `quote_export.py` (openpyxl → LibreOffice → pypdf-merge Commissioning + T&C) → download. Component: `src/pages/QuickQuote.tsx`.
+
 ### 6.8 LocalStorage Persistence
 | Key | Value | Purpose |
 |---|---|---|
@@ -410,7 +403,7 @@ const text = response.text;
 ### 7.3 Robust JSON Array Extraction
 Gemini sometimes wraps JSON in markdown fences or adds trailing text. This parser handles all cases:
 ```typescript
-// server.ts — used for briefing + other AI responses
+// server.ts — `firstJsonArray()`, used for Fenton card extraction + other AI responses
 function extractArray(text: string): any[] | null {
   // 1. Strip markdown fences, try full parse
   const stripped = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
@@ -440,7 +433,7 @@ function extractArray(text: string): any[] | null {
 
 ### 7.4 Gemini 502 Retry Logic
 ```typescript
-// server.ts — /api/outlook/briefing
+// server.ts — pattern for AI endpoints (transient 5xx from Gemini)
 let lastErr = '';
 for (let attempt = 1; attempt <= 3; attempt++) {
   try {
@@ -454,7 +447,7 @@ for (let attempt = 1; attempt <= 3; attempt++) {
     await new Promise(r => setTimeout(r, 2000 * attempt)); // 2s, 4s
   }
 }
-res.json({ briefing: null, error: 'Gemini error: ' + lastErr });
+res.json({ error: 'Gemini error: ' + lastErr });
 ```
 
 ### 7.5 Python Spawning Pattern
@@ -578,13 +571,21 @@ All endpoints are on `http://localhost:3000`.
 | GET | `/api/outlook/mailboxes` | List personal + shared mailboxes |
 | GET | `/api/outlook/emails` | List emails (`?storeId=&limit=&unread=`) |
 | GET | `/api/outlook/email/:id` | Get full email with body + attachments |
-| POST | `/api/outlook/analyze` | AI analysis of one email |
+| GET | `/api/outlook/summary/:entryId` | Load persisted summary (no AI spend) |
+| POST | `/api/outlook/summarize` | AI summary + vision over inline/opted-in images; persists |
 | POST | `/api/outlook/draft-reply` | AI draft reply |
 | POST | `/api/outlook/send-reply` | Send reply via Outlook COM |
 | POST | `/api/outlook/save-attachment` | Save PDF attachments to queue |
-| POST | `/api/outlook/feedback` | Save analysis feedback to DB |
-| POST | `/api/outlook/chat` | Inline chat about an email |
-| POST | `/api/outlook/briefing` | Morning briefing — prioritise up to 30 emails |
+| POST | `/api/outlook/feedback` | Save summary/reply feedback to DB |
+| POST | `/api/outlook/chat` | Inline chat about an email (+ image context) |
+| GET | `/api/outlook/attachment-view/:id/:index` | Stream an attachment inline (image/PDF; used for cid: body images) |
+
+### EL Internal Info / Ask Fenton / Quick Quote
+| Method | Endpoint | Description |
+|---|---|---|
+| GET/POST | `/api/el-internal/list` · `/refresh` · `/digest` · `/chat` | EL Info tab |
+| GET/POST | `/api/fenton/list` · `/refresh` · `/chat` | Ask Fenton tab |
+| POST | `/api/quote/detect-cbu` · `/luminaires` · `/generate` | Quick Quote (+ `GET /api/download/quote/:id`) |
 
 ### EL Material Pricer
 | Method | Endpoint | Body | Description |
@@ -704,6 +705,13 @@ CREATE TABLE email_feedback (
 );
 ```
 
+### Feature tables (added 2026-07-16)
+| Table | Purpose |
+|---|---|
+| `email_summaries` | Persisted Inbox AI summary per email (entryId PK, summary, includedIndices, ts) |
+| `el_internal` / `el_internal_meta` | EL Info stored updates + cached digest |
+| `fenton_kb` / `fenton_meta` | Ask Fenton stored emails + extracted Q&A cards |
+
 The database is saved to disk every time it's written (sql.js writes the whole file). Loaded on server start. Persists across restarts.
 
 ---
@@ -714,8 +722,8 @@ The database is saved to disk every time it's written (sql.js writes the whole f
 - **App renamed** to Vector with V logo
 - **Splash screen** — standalone "Connect to JOE" screen on launch
 - **Internal tab architecture** — all visited pages stay mounted; no state loss on navigation
-- **Inbox feature** — full Outlook integration: read, analyse, draft reply, send, chat, briefing
-- **Morning Briefing** — AI prioritises 30 emails into action cards (High/Medium/Low)
+- **Inbox feature** — full Outlook integration: read, Summarize (vision + inline chat, persisted), draft reply, send
+- **EL Info / Ask Fenton / Quick Quote** — see §6.9–6.11 (added 2026-07-16; Summarize replaced the old Analyze/Chat/Briefing)
 - **Inline EL Pricer** — EL Pricer appears inside email detail when detected
 - **i-P65 normaliser** — handles OCR variants like "i-P65 O CG-S" → correct catalogue number
 - **Match confidence** — `⋯` feedback menu on fuzzy/description matches in EL Pricer

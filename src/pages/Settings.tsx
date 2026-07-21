@@ -35,27 +35,27 @@ function LogViewer() {
   useEffect(() => { refresh(); }, []);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [lines]);
 
-  function lineColor(l: string) {
-    if (l.includes('[ERR]') || l.includes('[retry]')) return 'text-red-500 dark:text-red-400';
-    if (l.includes('[WARN]')) return 'text-amber-500 dark:text-amber-400';
-    if (l.includes('✓') || l.includes('ok') || l.includes('Success')) return 'text-emerald-600 dark:text-emerald-400';
-    return 'text-ink-600 dark:text-ink-300';
+  function lineColor(l: string): string {
+    if (l.includes('[ERR]') || l.includes('[retry]')) return 'var(--err)';
+    if (l.includes('[WARN]')) return 'var(--warn)';
+    if (l.includes('✓') || l.includes('ok') || l.includes('Success')) return 'var(--ok)';
+    return 'var(--t2)';
   }
 
   return (
     <Card padded={false}>
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-ink-200/70 dark:border-ink-800">
+      <div className="flex items-center gap-2 px-[18px] py-3 border-b border-[var(--line)]">
         <span className="flex-1 text-[13px] font-semibold">Server Log</span>
-        <span className="text-[10.5px] text-ink-400">{lines.length} lines</span>
+        <span className="text-[10.5px] text-[var(--t3)]">{lines.length} lines</span>
         <Button tone="outline" size="md" Icon={loading ? RefreshCw : RefreshCw} onClick={refresh}>Refresh</Button>
       </div>
-      <div className="h-64 overflow-y-auto bg-ink-950 dark:bg-ink-950 p-3 font-mono text-[10.5px] leading-relaxed rounded-b-xl">
-        {error && <p className="text-red-400 mb-2">[Error loading log: {error}]</p>}
+      <div className="h-64 overflow-y-auto p-4 mono text-[10.5px] leading-[1.7] rounded-b-[16px] vec-scroll" style={{ background: 'var(--term)' }}>
+        {error && <p className="mb-2" style={{ color: 'var(--err)' }}>[Error loading log: {error}]</p>}
         {lines.length === 0 && !error && !loading && (
-          <p className="text-ink-500">No log file yet — runs Step 1 or Step 2 to generate entries.</p>
+          <p className="text-[var(--t3)]">No log file yet — runs Step 1 or Step 2 to generate entries.</p>
         )}
         {lines.map((l, i) => (
-          <div key={i} className={cn('whitespace-pre-wrap break-all', lineColor(l))}>{l}</div>
+          <div key={i} className="whitespace-pre-wrap break-all" style={{ color: lineColor(l) }}>{l}</div>
         ))}
         <div ref={bottomRef} />
       </div>
@@ -89,7 +89,7 @@ function RetryQueue() {
   return (
     <Card>
       <div className="flex items-center gap-2 mb-3">
-        <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+        <AlertCircle className="w-4 h-4 shrink-0" style={{ color: 'var(--warn)' }} />
         <span className="text-[13px] font-semibold flex-1">Pending Retries</span>
         <Button tone="primary" size="md" Icon={running ? RefreshCw : RotateCcw} onClick={retryNow} disabled={running}>
           {running ? 'Retrying…' : 'Retry Now'}
@@ -97,13 +97,13 @@ function RetryQueue() {
       </div>
       <div className="space-y-2">
         {items.map(item => (
-          <div key={item.id} className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-200 dark:ring-amber-800/40">
+          <div key={item.id} className="flex items-start gap-2 p-2.5 rounded-[11px]" style={{ background: 'var(--warn-soft)', border: '1px solid color-mix(in oklab, var(--warn) 35%, transparent)' }}>
             <div className="flex-1 min-w-0">
-              <p className="text-[11.5px] font-medium text-amber-800 dark:text-amber-200">{item.script} — attempt {item.attempts}/{item.maxAttempts}</p>
-              <p className="text-[10.5px] text-amber-600 dark:text-amber-400 truncate mt-0.5">{item.lastError}</p>
-              <p className="text-[10px] text-amber-500 mt-0.5">{new Date(item.timestamp).toLocaleString()}</p>
+              <p className="text-[11.5px] font-medium" style={{ color: 'var(--warn)' }}>{item.script} — attempt {item.attempts}/{item.maxAttempts}</p>
+              <p className="text-[10.5px] text-[var(--t2)] truncate mt-0.5">{item.lastError}</p>
+              <p className="text-[10px] text-[var(--t3)] mt-0.5">{new Date(item.timestamp).toLocaleString()}</p>
             </div>
-            <button onClick={() => dismiss(item.id)} className="text-amber-400 hover:text-amber-600 mt-0.5">
+            <button onClick={() => dismiss(item.id)} className="text-[var(--t3)] hover:text-[var(--warn)] mt-0.5">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -139,21 +139,21 @@ function RemoteConnect() {
     setBusy(true); await api.sessionClearCookies(); await check(); setMsg(null); setBusy(false);
   }
 
-  const inp = 'w-full h-16 px-2.5 py-1.5 rounded-md text-[10.5px] mono break-all ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800 focus:ring-brand-400 focus:outline-none resize-none';
+  const inp = 'w-full h-16 px-2.5 py-1.5 rounded-[10px] text-[10.5px] mono break-all border border-[var(--line-2)] bg-[var(--s1)] text-[var(--t2)] focus:border-[var(--accent-line)] focus:outline-none resize-none';
   return (
     <Card>
       <CardTitle title="Connect to SharePoint (this session)"
         sub="For remote/web use — supply your own JOE cookies. They stay bound to your browser session only." />
       <div className="flex items-center gap-2 mb-3 text-[12px]">
-        <span className={cn('w-2 h-2 rounded-full', conn?.connected ? 'bg-emerald-500' : 'bg-ink-300 dark:bg-ink-600')} />
-        <span className="text-ink-700 dark:text-ink-200">
+        <span className="w-2 h-2 rounded-full" style={{ background: conn?.connected ? 'var(--ok)' : 'var(--t4)' }} />
+        <span className="text-[var(--t2)]">
           {conn?.connected ? `Connected as ${conn.name}` : 'Not connected this session (using local fallback if available)'}
         </span>
-        {conn?.connected && <button onClick={disconnect} disabled={busy} className="ml-2 text-[11px] text-ink-400 hover:text-red-500">Disconnect</button>}
+        {conn?.connected && <button onClick={disconnect} disabled={busy} className="ml-2 text-[11px] text-[var(--t3)] hover:text-[var(--err)]">Disconnect</button>}
       </div>
       <details className="mb-3">
-        <summary className="text-[11px] text-brand-600 dark:text-brand-300 cursor-pointer">How to get your cookies</summary>
-        <ol className="text-[11px] text-ink-500 dark:text-ink-400 mt-1.5 ml-4 list-decimal space-y-0.5">
+        <summary className="text-[11px] cursor-pointer" style={{ color: 'var(--accent-text)' }}>How to get your cookies</summary>
+        <ol className="text-[11px] text-[var(--t3)] mt-1.5 ml-4 list-decimal space-y-0.5">
           <li>Sign in to JOE / eaton.sharepoint.com in your browser.</li>
           <li>Open DevTools (F12) → Application → Cookies → <span className="mono">eaton.sharepoint.com</span>.</li>
           <li>Copy the <span className="mono">FedAuth</span> and <span className="mono">rtFa</span> values, paste below, Connect.</li>
@@ -163,7 +163,7 @@ function RemoteConnect() {
         <textarea className={inp} placeholder="FedAuth=…" value={fed} onChange={e => setFed(e.target.value.replace(/^FedAuth=/, ''))} spellCheck={false} />
         <textarea className={inp} placeholder="rtFa=…" value={rt} onChange={e => setRt(e.target.value.replace(/^rtFa=/, ''))} spellCheck={false} />
       </div>
-      {msg && <p className={cn('text-[11px] mt-2', msg.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500')}>{msg.text}</p>}
+      {msg && <p className="text-[11px] mt-2" style={{ color: msg.ok ? 'var(--ok)' : 'var(--err)' }}>{msg.text}</p>}
       <div className="mt-3">
         <Button tone="primary" size="md" Icon={Check} onClick={connect} disabled={busy}>{busy ? 'Connecting…' : 'Connect this session'}</Button>
       </div>
@@ -219,7 +219,7 @@ function SecretField({ label, hint, value, onChange }: {
 
   return (
     <div>
-      <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">{label}</label>
+      <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)] mb-2">{label}</label>
       <div className="relative">
         <input
           type={show ? 'text' : 'password'}
@@ -227,21 +227,21 @@ function SecretField({ label, hint, value, onChange }: {
           autoComplete="off"
           spellCheck={false}
           onChange={e => onChange(e.target.value)}
-          className="w-full h-8 pl-2.5 pr-9 rounded-md text-[11.5px] mono ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800 focus:ring-brand-400 focus:outline-none" />
+          className="w-full h-[34px] pl-2.5 pr-9 rounded-[9px] text-[11.5px] mono border border-[var(--line-2)] bg-[var(--s1)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
         <button
           type="button"
           onClick={onEye}
           aria-label={show ? 'Hide key' : 'Reveal key (requires code)'}
           title={show ? 'Hide' : 'Reveal (code required)'}
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-400 hover:text-ink-600 dark:hover:text-ink-200">
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--t3)] hover:text-[var(--t1)]">
           {show ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
         </button>
       </div>
-      <p className="text-[10px] text-ink-400 mt-2 leading-relaxed">{hint}</p>
+      <p className="text-[10px] text-[var(--t4)] mt-2 leading-relaxed">{hint}</p>
 
       {mode && (
-        <div className="mt-2 p-2.5 rounded-md ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800/60">
-          <p className="text-[10.5px] font-medium text-ink-700 dark:text-ink-200 mb-1.5">{promptLabel}</p>
+        <div className="mt-2 p-2.5 rounded-[10px] border border-[var(--line-2)] bg-[var(--s1)]">
+          <p className="text-[10.5px] font-medium text-[var(--t2)] mb-1.5">{promptLabel}</p>
           <div className="flex items-center gap-2">
             <input
               type="password"
@@ -252,14 +252,14 @@ function SecretField({ label, hint, value, onChange }: {
               onChange={e => { setPin(e.target.value.replace(/\D/g, '').slice(0, 6)); setErr(''); }}
               onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { setMode(null); setPin(''); setErr(''); } }}
               placeholder="••••••"
-              className="w-28 h-8 px-2.5 rounded-md text-[13px] tracking-[0.3em] text-center mono ring-1 ring-inset ring-ink-300 dark:ring-ink-600 bg-white dark:bg-ink-900 focus:ring-brand-400 focus:outline-none" />
+              className="w-28 h-[34px] px-2.5 rounded-[9px] text-[13px] tracking-[0.3em] text-center mono border border-[var(--line-3)] bg-[var(--s2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
             <Button tone="primary" size="md" onClick={submit}>
               {mode === 'enter' ? 'Unlock' : mode === 'confirm' ? 'Confirm' : 'Next'}
             </Button>
             <button type="button" onClick={() => { setMode(null); setPin(''); setErr(''); }}
-              className="text-[10.5px] text-ink-400 hover:text-ink-600 dark:hover:text-ink-200">Cancel</button>
+              className="text-[10.5px] text-[var(--t3)] hover:text-[var(--t1)]">Cancel</button>
           </div>
-          {err && <p className="text-[10px] text-red-500 mt-1.5">{err}</p>}
+          {err && <p className="text-[10px] mt-1.5" style={{ color: 'var(--err)' }}>{err}</p>}
         </div>
       )}
     </div>
@@ -335,24 +335,22 @@ export function SettingsPage({
         </div>
 
         {/* Language */}
-        <div className="mt-5 pt-4 border-t border-ink-200/70 dark:border-ink-800">
-          <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-2">{t.language}</label>
+        <div className="mt-5 pt-4 border-t border-[var(--line)]">
+          <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)] mb-2">{t.language}</label>
           <div className="flex gap-2">
             {(Object.keys(LANG_LABELS) as Lang[]).map(l => (
               <button key={l} onClick={() => setLang(l)}
-                className={cn(
-                  'px-4 py-1.5 text-[11.5px] font-semibold rounded-lg ring-1 ring-inset transition-all',
-                  lang === l
-                    ? 'bg-ink-900 dark:bg-white text-white dark:text-ink-900 ring-transparent'
-                    : 'bg-white dark:bg-ink-800 text-ink-500 dark:text-ink-300 ring-ink-200 dark:ring-ink-700 hover:ring-ink-400 dark:hover:ring-ink-500',
-                )}>
+                style={lang === l
+                  ? { background: 'var(--t1)', color: 'var(--bg)', border: '1px solid transparent' }
+                  : { background: 'var(--s1)', color: 'var(--t3)', border: '1px solid var(--line-2)' }}
+                className="px-4 py-1.5 text-[11.5px] font-semibold rounded-[9px] transition-all">
                 {LANG_LABELS[l]}
               </button>
             ))}
           </div>
         </div>
 
-        <div className="flex gap-2 mt-5 pt-4 border-t border-ink-200/70 dark:border-ink-800">
+        <div className="flex gap-2 mt-5 pt-4 border-t border-[var(--line)]">
           <Button tone="primary" Icon={Check} size="lg" onClick={save} disabled={saving}>
             {saving ? t.settings_saving : saved ? t.settings_saved : t.settings_save}
           </Button>
@@ -366,35 +364,33 @@ export function SettingsPage({
         <div className="flex items-center gap-3 mb-4">
           <button
             onClick={() => setSched(s => ({ ...s, enabled: !s.enabled }))}
-            className={cn(
-              'relative w-10 h-5 rounded-full transition-colors',
-              sched.enabled ? 'bg-brand-600' : 'bg-ink-200 dark:bg-ink-700',
-            )}>
+            style={{ background: sched.enabled ? 'var(--accent)' : 'var(--line-3)' }}
+            className="relative w-10 h-[22px] rounded-full transition-colors">
             <span className={cn(
-              'absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform',
+              'absolute top-0.5 w-[18px] h-[18px] rounded-full bg-white shadow transition-transform',
               sched.enabled ? 'translate-x-5' : 'translate-x-0.5',
             )} />
           </button>
-          <span className="text-[12px] text-ink-700 dark:text-ink-200">
+          <span className="text-[12px] text-[var(--t2)]">
             {sched.enabled ? 'Schedule active' : 'Manual control (current)'}
           </span>
         </div>
         <div className={cn('grid grid-cols-2 gap-4 transition-opacity', !sched.enabled && 'opacity-40 pointer-events-none')}>
           <div>
-            <label className="flex items-center gap-1.5 text-[11.5px] font-semibold text-ink-700 dark:text-ink-200 mb-1.5">
-              <Sun className="w-3.5 h-3.5 text-amber-500" /> Light mode from
+            <label className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[var(--t2)] mb-1.5">
+              <Sun className="w-3.5 h-3.5" style={{ color: 'var(--warn)' }} /> Light mode from
             </label>
             <input type="time" value={sched.lightFrom}
               onChange={e => setSched(s => ({ ...s, lightFrom: e.target.value }))}
-              className="w-full h-8 px-2.5 rounded-md text-[11.5px] mono ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800 focus:ring-brand-400 focus:outline-none" />
+              className="w-full h-[34px] px-2.5 rounded-[9px] text-[11.5px] mono border border-[var(--line-2)] bg-[var(--s1)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
           </div>
           <div>
-            <label className="flex items-center gap-1.5 text-[11.5px] font-semibold text-ink-700 dark:text-ink-200 mb-1.5">
-              <Moon className="w-3.5 h-3.5 text-indigo-400" /> Dark mode from
+            <label className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[var(--t2)] mb-1.5">
+              <Moon className="w-3.5 h-3.5" style={{ color: 'var(--violet)' }} /> Dark mode from
             </label>
             <input type="time" value={sched.darkFrom}
               onChange={e => setSched(s => ({ ...s, darkFrom: e.target.value }))}
-              className="w-full h-8 px-2.5 rounded-md text-[11.5px] mono ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800 focus:ring-brand-400 focus:outline-none" />
+              className="w-full h-[34px] px-2.5 rounded-[9px] text-[11.5px] mono border border-[var(--line-2)] bg-[var(--s1)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
           </div>
         </div>
       </Card>

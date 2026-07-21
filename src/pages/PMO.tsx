@@ -137,7 +137,7 @@ Best,`;
         <Card>
           <div className="mb-4">
             <h2 className="text-[13px] font-semibold tracking-tight">Raise PMO</h2>
-            <p className="text-[11.5px] text-ink-500 dark:text-ink-400 mt-1">Upload quote, DOCU and PO. Returns filled Word document.</p>
+            <p className="text-[11.5px] text-[var(--t3)] mt-1">Upload quote, DOCU and PO. Returns filled Word document.</p>
           </div>
 
           <div className="space-y-2">
@@ -156,7 +156,7 @@ Best,`;
                 </div>
                 {docuPdfs.length > 1 && (
                   <button onClick={() => setDocuPdfs(prev => prev.filter((_, j) => j !== i))}
-                    className="p-1.5 rounded-md text-ink-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 shrink-0">
+                    className="p-1.5 rounded-md text-[var(--t3)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 shrink-0">
                     <X className="w-3.5 h-3.5" />
                   </button>
                 )}
@@ -165,11 +165,11 @@ Best,`;
 
             <div className="flex items-center gap-3 mt-1 pt-1">
               <button onClick={() => setDocuPdfs(prev => [...prev, null])}
-                className="flex items-center gap-1 text-[11px] font-medium text-brand-600 hover:text-brand-700">
+                className="flex items-center gap-1 text-[11px] font-medium text-[var(--accent-text)] hover:text-[var(--accent-text)]">
                 <Upload className="w-3 h-3" /> Add one
               </button>
-              <span className="text-ink-300">|</span>
-              <label className="flex items-center gap-1 text-[11px] font-medium text-brand-600 hover:text-brand-700 cursor-pointer">
+              <span className="text-[var(--t4)]">|</span>
+              <label className="flex items-center gap-1 text-[11px] font-medium text-[var(--accent-text)] hover:text-[var(--accent-text)] cursor-pointer">
                 <FolderOpen className="w-3 h-3" />
                 Bulk upload ({docuPdfs.filter(Boolean).length} loaded)
                 <input type="file" accept=".pdf" multiple className="hidden"
@@ -191,7 +191,7 @@ Best,`;
               </label>
               {docuPdfs.some(Boolean) && (
                 <>
-                  <span className="text-ink-300">|</span>
+                  <span className="text-[var(--t4)]">|</span>
                   <button onClick={() => setDocuPdfs([null])}
                     className="text-[11px] font-medium text-red-400 hover:text-red-500 flex items-center gap-1">
                     <X className="w-3 h-3" /> Clear all
@@ -205,14 +205,14 @@ Best,`;
           </div>
 
           <div className="mt-4">
-            <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-ink-400 dark:text-ink-500 mb-1.5">Sequence number <span className="normal-case font-normal">(optional)</span></label>
+            <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)] mb-1.5">Sequence number <span className="normal-case font-normal">(optional)</span></label>
             <input value={seqOverride} onChange={e => setSeqOverride(e.target.value)}
               placeholder="CBU…"
-              className="w-full h-8 px-2.5 rounded-md text-[12px] mono ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50 dark:bg-ink-800 focus:ring-brand-400 focus:outline-none" />
+              className="w-full h-8 px-2.5 rounded-md text-[12px] mono ring-1 ring-inset ring-[var(--line-2)] bg-[var(--s3)] focus:ring-[var(--accent-line)] focus:outline-none" />
           </div>
 
           {!allReady && (
-            <p className="text-[11px] text-ink-500 dark:text-ink-400 mt-3">
+            <p className="text-[11px] text-[var(--t3)] mt-3">
               {[!quotePdf && 'Quote PDF', !docuPdfs.some(f=>!!f) && 'DOCU_ID PDF', !poPdf && 'PO PDF'].filter(Boolean).join(', ')} still needed
             </p>
           )}
@@ -221,8 +221,8 @@ Best,`;
             className={cn(
               'w-full mt-4 h-10 rounded-lg text-[12.5px] font-semibold flex items-center justify-center gap-2 transition-all',
               allReady && !running
-                ? 'bg-brand-600 hover:bg-brand-700 text-white shadow-sm shadow-brand-200 dark:shadow-brand-900/40'
-                : 'bg-ink-100 dark:bg-ink-800 text-ink-400 cursor-not-allowed',
+                ? 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white v3-glow'
+                : 'bg-[var(--s3)] text-[var(--t3)] cursor-not-allowed',
             )}>
             {running
               ? <><Loader2 className="w-4 h-4 animate-spin" /> Processing…</>
@@ -233,14 +233,14 @@ Best,`;
         {/* Log */}
         {lines.length > 0 && (
           <Card padded={false}>
-            <div className="px-4 py-2 border-b border-ink-200/70 dark:border-ink-800 text-[10px] font-semibold uppercase tracking-widest text-ink-500">Log</div>
+            <div className="px-4 py-2 border-b border-[var(--line)] text-[10px] font-semibold uppercase tracking-widest text-[var(--t3)]">Log</div>
             <div ref={logRef} className="px-4 py-2 max-h-52 overflow-y-auto mono text-[11px] space-y-0.5">
               {lines.map((l, i) => (
                 <p key={i} className={cn(
                   l.startsWith('[ERR]')  ? 'text-red-500' :
                   l.startsWith('[OK]')   ? 'text-emerald-600 dark:text-emerald-400' :
                   l.startsWith('[WARN]') ? 'text-amber-500' :
-                  'text-ink-500 dark:text-ink-400',
+                  'text-[var(--t3)]',
                 )}>{l}</p>
               ))}
             </div>
@@ -253,34 +253,34 @@ Best,`;
         {done && dlId && (
           <Card>
             <button onClick={downloadDocx}
-              className="w-full flex items-center gap-3 px-4 py-3 bg-brand-50 dark:bg-brand-900/30 ring-1 ring-inset ring-brand-200 dark:ring-brand-700/40 rounded-lg hover:bg-brand-100 dark:hover:bg-brand-900/40 transition-all group">
-              <div className="w-9 h-9 rounded-md bg-brand-100 dark:bg-brand-500/20 flex items-center justify-center shrink-0">
-                <Download className="w-4 h-4 text-brand-600 dark:text-brand-300" />
+              className="w-full flex items-center gap-3 px-4 py-3 bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent-line)] rounded-lg hover:bg-[var(--accent-soft)] transition-all group">
+              <div className="w-9 h-9 rounded-md bg-brand-100 dark:bg-[var(--accent)]/20 flex items-center justify-center shrink-0">
+                <Download className="w-4 h-4 text-[var(--accent-text)]" />
               </div>
               <div className="flex-1 min-w-0 text-left">
-                <p className="text-[12.5px] font-semibold text-brand-700 dark:text-brand-300">Download PMO Offer</p>
-                <p className="text-[11px] text-brand-600/70 dark:text-brand-400 truncate mt-0.5">{dlName}</p>
+                <p className="text-[12.5px] font-semibold text-[var(--accent-text)]">Download PMO Offer</p>
+                <p className="text-[11px] text-[var(--accent-text)] truncate mt-0.5">{dlName}</p>
               </div>
-              <ChevronRight className="w-4 h-4 text-brand-400 group-hover:translate-x-0.5 transition-transform" />
+              <ChevronRight className="w-4 h-4 text-[var(--accent-text)] group-hover:translate-x-0.5 transition-transform" />
             </button>
           </Card>
         )}
 
         {done && rowKeys.length > 0 && (
           <Card padded={false}>
-            <div className="px-5 py-3 border-b border-ink-200/70 dark:border-ink-800 flex items-center justify-between">
+            <div className="px-5 py-3 border-b border-[var(--line)] flex items-center justify-between">
               <div>
                 <h3 className="text-[13px] font-semibold tracking-tight">Extracted items</h3>
-                <p className="text-[11.5px] text-ink-500 dark:text-ink-400 mt-0.5">{rowKeys.length} line item{rowKeys.length !== 1 ? 's' : ''}</p>
+                <p className="text-[11.5px] text-[var(--t3)] mt-0.5">{rowKeys.length} line item{rowKeys.length !== 1 ? 's' : ''}</p>
               </div>
               <Pill tone="ok" dot>Ready to send</Pill>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-[11px]">
                 <thead>
-                  <tr className="bg-ink-50/60 dark:bg-ink-950/30">
+                  <tr className="bg-[var(--s1)]">
                     {['#', 'Cat Ref', 'Description', 'Qty', 'NTP', 'Sell Out', 'ACP'].map(h => (
-                      <th key={h} className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-ink-400 whitespace-nowrap">{h}</th>
+                      <th key={h} className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)] whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -288,12 +288,12 @@ Best,`;
                   {rowKeys.map((crKey, i) => {
                     const idx2 = crKey === 'CatRef' ? '' : crKey.replace('CatRef','');
                     return (
-                      <tr key={crKey} className="border-t border-ink-100 dark:border-ink-800">
-                        <td className="px-3 py-2 mono text-ink-400 num">{i + 1}</td>
+                      <tr key={crKey} className="border-t border-[var(--line)]">
+                        <td className="px-3 py-2 mono text-[var(--t3)] num">{i + 1}</td>
                         <td className="px-3 py-2 mono font-semibold text-violet-700 dark:text-violet-300 whitespace-nowrap">{emailData[crKey] || '—'}</td>
                         <td className="px-3 py-2 truncate max-w-[180px]">{emailData['Desc' + idx2] || '—'}</td>
                         <td className="px-3 py-2 mono num">{emailData['Qty' + idx2] || '—'}</td>
-                        <td className="px-3 py-2 mono text-brand-600 dark:text-brand-300 whitespace-nowrap">{emailData['NTP' + idx2] || '—'}</td>
+                        <td className="px-3 py-2 mono text-[var(--accent-text)] whitespace-nowrap">{emailData['NTP' + idx2] || '—'}</td>
                         <td className="px-3 py-2 mono text-emerald-600 dark:text-emerald-400 whitespace-nowrap">{emailData['SellOut' + idx2] || '—'}</td>
                         <td className="px-3 py-2 mono text-amber-600 dark:text-amber-400 whitespace-nowrap">{emailData['ACP' + idx2] || '—'}</td>
                       </tr>
@@ -307,41 +307,41 @@ Best,`;
 
         {done && dlId && (
           <Card padded={false} className="overflow-hidden">
-            <div className="bg-ink-50/60 dark:bg-ink-950/30 px-4 py-2.5 border-b border-ink-200/70 dark:border-ink-800 flex items-center justify-between">
+            <div className="bg-[var(--s1)] px-4 py-2.5 border-b border-[var(--line)] flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <div className="flex gap-1">
                   <span className="w-2.5 h-2.5 rounded-full bg-red-400/70" />
                   <span className="w-2.5 h-2.5 rounded-full bg-amber-400/70" />
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-400/70" />
                 </div>
-                <span className="text-[10px] font-semibold uppercase tracking-widest text-ink-500">New message</span>
+                <span className="text-[10px] font-semibold uppercase tracking-widest text-[var(--t3)]">New message</span>
               </div>
               <button
                 onClick={() => { navigator.clipboard.writeText(bodyText); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
                 className={cn(
                   'flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium transition-colors',
                   copied ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300'
-                         : 'bg-white dark:bg-ink-800 text-ink-600 dark:text-ink-300 hover:bg-ink-100 dark:hover:bg-ink-700 ring-1 ring-inset ring-ink-200 dark:ring-ink-700',
+                         : 'bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)]',
                 )}>
                 <Copy className="w-3 h-3" /> {copied ? 'Copied' : 'Copy body'}
               </button>
             </div>
-            <div className="text-[11px] divide-y divide-ink-100 dark:divide-ink-800">
+            <div className="text-[11px] divide-y divide-[var(--line)]">
               <EmailField label="To" value="MasterDataEGCS@Eaton.com" />
               <EmailField label="CC" value={`"Fenton, Mark A" <MarkAFenton@eaton.com>; ${emailData['Salesman'] ? `${emailData['Salesman'].replace(' ','').replace(',','')}@Eaton.com` : 'JoeBayley@Eaton.com'}`} />
               <EmailField label="Re" value={`PMO – ${emailData['DWO'] || ''} – ${emailData['Project'] || ''}`} />
             </div>
-            <pre className="px-4 py-4 text-[11.5px] text-ink-700 dark:text-ink-300 whitespace-pre-wrap mono leading-relaxed bg-white dark:bg-ink-900 max-h-72 overflow-y-auto">{bodyText}</pre>
+            <pre className="px-4 py-4 text-[11.5px] text-[var(--t2)] whitespace-pre-wrap mono leading-relaxed bg-[var(--s1)] max-h-72 overflow-y-auto">{bodyText}</pre>
           </Card>
         )}
 
         {!done && lines.length === 0 && (
           <Card className="text-center py-12">
-            <div className="w-12 h-12 rounded-full bg-brand-50 dark:bg-brand-900/30 text-brand-600 flex items-center justify-center mx-auto mb-3">
+            <div className="w-12 h-12 rounded-full bg-[var(--accent-soft)] text-[var(--accent-text)] flex items-center justify-center mx-auto mb-3">
               <ClipboardList className="w-5 h-5" />
             </div>
             <p className="text-[13px] font-semibold">Waiting for inputs</p>
-            <p className="text-[11.5px] text-ink-500 dark:text-ink-400 mt-1 max-w-md mx-auto">
+            <p className="text-[11.5px] text-[var(--t3)] mt-1 max-w-md mx-auto">
               Drop the quote, DOCU and PO on the left, then click Raise PMO.
             </p>
           </Card>
@@ -370,26 +370,26 @@ function PdfSlot({
     <div {...getRootProps()} className={cn(
       'rounded-md ring-1 ring-inset px-3 py-2.5 flex items-center gap-2.5 transition-colors cursor-pointer',
       isDragActive
-        ? 'ring-brand-400 bg-brand-50 dark:bg-brand-900/15'
+        ? 'ring-[var(--accent-line)] bg-[var(--accent-soft)]'
         : loaded
           ? 'ring-emerald-300/70 bg-emerald-50/50 dark:bg-emerald-900/15 dark:ring-emerald-700/40'
-          : 'ring-ink-200 dark:ring-ink-700 hover:bg-ink-50 dark:hover:bg-ink-800/50',
+          : 'ring-[var(--line-2)] hover:bg-[var(--s3)]',
     )}>
       <input {...getInputProps()} />
       <div className={cn(
         'w-7 h-7 rounded-md flex items-center justify-center shrink-0',
         loaded ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
-               : 'bg-ink-100 dark:bg-ink-700/60 text-ink-500',
+               : 'bg-[var(--s3)] text-[var(--t3)]',
       )}>
         {loaded ? <CheckCircle2 className="w-3.5 h-3.5" /> : <FileUp className="w-3.5 h-3.5" />}
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-[12px] font-semibold">{label}</p>
-        <p className="text-[10.5px] text-ink-500 dark:text-ink-400 truncate">{loaded ? file!.name : sub}</p>
+        <p className="text-[10.5px] text-[var(--t3)] truncate">{loaded ? file!.name : sub}</p>
       </div>
       {loaded && (
         <button onClick={e => { e.stopPropagation(); onFile(null); }}
-          className="text-ink-400 hover:text-red-500 shrink-0"><X className="w-3.5 h-3.5" /></button>
+          className="text-[var(--t3)] hover:text-red-500 shrink-0"><X className="w-3.5 h-3.5" /></button>
       )}
     </div>
   );
@@ -398,7 +398,7 @@ function PdfSlot({
 function EmailField({ label, value }: { label: string; value: string }) {
   return (
     <div className="px-4 py-2 flex gap-3">
-      <span className="text-ink-400 uppercase tracking-wider w-8 shrink-0 text-[10px] font-semibold pt-0.5">{label}</span>
+      <span className="text-[var(--t3)] uppercase tracking-wider w-8 shrink-0 text-[10px] font-semibold pt-0.5">{label}</span>
       <span className="mono break-all">{value}</span>
     </div>
   );

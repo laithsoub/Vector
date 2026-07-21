@@ -51,12 +51,37 @@ def find_inbox(root_folder):
     return None
 
 
+_IMG_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff')
+
+# MAPI property tags: content-id (inline reference) + hidden-attachment flag.
+_PR_ATTACH_CONTENT_ID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
+_PR_ATTACHMENT_HIDDEN = "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"
+
+
 def att_info(att):
+    name  = att.FileName or ''
+    lower = name.lower()
+    # Inline (embedded in the HTML body) vs a real file attachment. Inline images
+    # carry a Content-ID and/or the hidden flag; we auto-feed those to the AI and
+    # use the Content-ID to swap cid: refs in the HTML body for real image URLs.
+    content_id = ''
+    is_inline = False
+    try:
+        content_id = str(att.PropertyAccessor.GetProperty(_PR_ATTACH_CONTENT_ID) or '')
+        is_inline = bool(content_id)
+    except Exception:
+        try:
+            is_inline = bool(att.PropertyAccessor.GetProperty(_PR_ATTACHMENT_HIDDEN))
+        except Exception:
+            is_inline = False
     return {
-        'index': att.Index,
-        'name':  att.FileName,
-        'size':  att.Size,
-        'isPdf': att.FileName.lower().endswith('.pdf'),
+        'index':     att.Index,
+        'name':      name,
+        'size':      att.Size,
+        'isPdf':     lower.endswith('.pdf'),
+        'isImage':   lower.endswith(_IMG_EXTS),
+        'isInline':  is_inline,
+        'contentId': content_id.strip('<>'),
     }
 
 
@@ -274,18 +299,22 @@ def _is_new_outlook():
 
 def _graph_att_info(att, idx):
     name = att.get('name', '') or ''
+    lower = name.lower()
     return {
-        'index':   idx,
-        'name':    name,
-        'size':    att.get('size', 0),
-        'isPdf':   name.lower().endswith('.pdf'),
-        'graphId': att.get('id', ''),
+        'index':    idx,
+        'name':     name,
+        'size':     att.get('size', 0),
+        'isPdf':     lower.endswith('.pdf'),
+        'isImage':   lower.endswith(_IMG_EXTS),
+        'isInline':  bool(att.get('isInline') or att.get('contentId')),
+        'contentId': str(att.get('contentId') or '').strip('<>'),
+        'graphId':   att.get('id', ''),
     }
 
 
 def _graph_att_list(token, msg_id):
     data = _gget(token, f'/me/messages/{msg_id}/attachments',
-                 params={'$select': 'id,name,size,contentType'})
+                 params={'$select': 'id,name,size,contentType,isInline,contentId'})
     return [_graph_att_info(a, i + 1) for i, a in enumerate(data.get('value', []))]
 
 
@@ -409,9 +438,14 @@ def _imap_att_list(msg):
         if fname:
             fname = _decode_hdr(fname)
             content = part.get_payload(decode=True) or b''
+            lower = fname.lower()
+            disp  = (part.get('Content-Disposition') or '').lower()
             atts.append({
                 'index': idx, 'name': fname, 'size': len(content),
-                'isPdf': fname.lower().endswith('.pdf'),
+                'isPdf':     lower.endswith('.pdf'),
+                'isImage':   lower.endswith(_IMG_EXTS),
+                'isInline':  'inline' in disp or bool(part.get('Content-ID')),
+                'contentId': str(part.get('Content-ID') or '').strip('<>'),
             })
         idx += 1
     return atts
@@ -924,7 +958,7 @@ def main():
         'flag', 'mark-unread', 'delete', 'forward', 'open-in-outlook',
         'categorize', 'suggest-attachments', 'reply-with-attachments', 'send-new',
         'graph-connect', 'imap-config',
-        'current-selection',
+        'current-selection', 'emails-from',
     ])
     parser.add_argument('--backend',    default='auto', choices=['auto', 'graph', 'win32', 'imap'])
     parser.add_argument('--store',      default='default')
@@ -940,6 +974,9 @@ def main():
     parser.add_argument('--flagged',    type=int, default=1)
     parser.add_argument('--query',      default='')
     parser.add_argument('--att-sources', default='[]')
+    parser.add_argument('--sender',     default='')   # substring to match sender addr/name
+    parser.add_argument('--since',      default='')    # DD/MM/YYYY or MM/DD/YYYY start date
+    parser.add_argument('--recipient',  default='')    # comma-sep substrings; keep only if ANY is a To/CC recipient
     args = parser.parse_args()
 
     # ── IMAP config: test + save credentials ─────────────────────────────────
@@ -1126,6 +1163,71 @@ def _win32_action(args):
                     if s:
                         emails.append(s)
                         count += 1
+                except Exception:
+                    pass
+            print(json.dumps({'emails': emails}))
+        except Exception as e:
+            print(json.dumps({'emails': [], 'error': str(e)}))
+        return
+
+    # ── Fetch every Inbox email from a given sender since a date, with body +
+    #    attachments (used by the EL Internal Info tab). ─────────────────────────
+    if args.action == 'emails-from':
+        def _recipients_blob(item):
+            parts = [getattr(item, 'To', '') or '', getattr(item, 'CC', '') or '']
+            try:
+                for i in range(1, item.Recipients.Count + 1):
+                    r = item.Recipients.Item(i)
+                    try:
+                        ae = r.AddressEntry
+                        try:
+                            parts.append(ae.GetExchangeUser().PrimarySmtpAddress or '')
+                        except Exception:
+                            parts.append(getattr(ae, 'Address', '') or '')
+                    except Exception:
+                        parts.append(getattr(r, 'Address', '') or getattr(r, 'Name', '') or '')
+            except Exception:
+                pass
+            return ' '.join(parts).lower()
+        try:
+            _, ns = get_outlook_ns()
+            folder = ns.GetDefaultFolder(6)  # Inbox
+            items  = folder.Items
+            items.Sort('[ReceivedTime]', True)
+            if args.since:
+                try:
+                    items = items.Restrict(f"[ReceivedTime] >= '{args.since} 00:00'")
+                except Exception:
+                    pass
+            needle = (args.sender or '').strip().lower()
+            recip_needles = [s.strip().lower() for s in (args.recipient or '').split(',') if s.strip()]
+            emails = []
+            for item in items:
+                try:
+                    if item.Class != 43:
+                        continue
+                    addr  = (getattr(item, 'SenderEmailAddress', '') or '')
+                    name  = (getattr(item, 'SenderName', '') or '')
+                    smtp  = resolve_smtp(item)
+                    blob  = f'{addr} {name} {smtp}'.lower()
+                    if needle and needle not in blob:
+                        continue
+                    if recip_needles:
+                        rblob = _recipients_blob(item)
+                        if not any(n in rblob for n in recip_needles):
+                            continue
+                    atts = [att_info(item.Attachments.Item(k))
+                            for k in range(1, item.Attachments.Count + 1)]
+                    emails.append({
+                        'entryId':     item.EntryID,
+                        'subject':     item.Subject or '(no subject)',
+                        'sender':      name,
+                        'senderEmail': smtp,
+                        'received':    str(item.ReceivedTime),
+                        'body':        (item.Body or '')[:6000],
+                        'attachments': atts,
+                        'hasPdf':      any(a['isPdf'] for a in atts),
+                    })
                 except Exception:
                     pass
             print(json.dumps({'emails': emails}))

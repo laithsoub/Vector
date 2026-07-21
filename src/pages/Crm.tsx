@@ -19,13 +19,12 @@ import type { CrmCompanyCard, CrmCompanyDetail, CrmContact, CrmQuote, CrmInsight
 import type { ToastFn } from '../App';
 
 const inputCls =
-  'w-full h-8 px-2.5 rounded-lg text-xs bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ' +
-  'ring-ink-200 dark:ring-ink-700 text-ink-900 dark:text-ink-50 placeholder:text-ink-400 ' +
-  'focus:outline-none focus:ring-brand-400';
+  'w-full h-[34px] px-[11px] rounded-[9px] text-xs bg-[var(--s1)] border border-[var(--line-2)] ' +
+  'text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--accent-line)]';
 
 const selectCls =
-  'h-7 px-2 rounded-lg bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 ' +
-  'text-ink-700 dark:text-ink-200 focus:outline-none focus:ring-brand-400 cursor-pointer';
+  'h-7 px-2 rounded-[8px] bg-[var(--s1)] border border-[var(--line-2)] ' +
+  'text-[var(--t2)] focus:outline-none focus:border-[var(--accent-line)] cursor-pointer';
 
 export function CrmPage({ toast }: { toast: ToastFn }) {
   const [companies, setCompanies] = useState<CrmCompanyCard[]>([]);
@@ -161,17 +160,17 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
     <div className="space-y-5">
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-md">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400" />
+          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
           <input
             value={query} onChange={e => setQuery(e.target.value)}
             placeholder="Search accounts & quotes — name, salesman, ref…"
             className={cn(inputCls, 'pl-8')} />
         </div>
-        <span className="text-[11.5px] text-ink-500 dark:text-ink-400 tabular-nums">
+        <span className="text-[11.5px] text-[var(--t3)] tabular-nums">
           {filtered.length} {filtered.length === 1 ? 'account' : 'accounts'}
         </span>
         {sync && sync.snapshotCount > 0 && !sync.running && (
-          <span className="text-[11px] text-ink-400">· {sync.snapshotCount} synced{sync.lastSyncedAt ? ` ${relTime(sync.lastSyncedAt)}` : ''}</span>
+          <span className="text-[11px] text-[var(--t4)]">· {sync.snapshotCount} synced{sync.lastSyncedAt ? ` ${relTime(sync.lastSyncedAt)}` : ''}</span>
         )}
         <div className="flex-1" />
         {sync?.running ? (
@@ -190,7 +189,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
 
       {/* Filters */}
       <div className="flex items-center gap-2 flex-wrap text-[11.5px]">
-        <Filter className="w-3.5 h-3.5 text-ink-400" />
+        <Filter className="w-3.5 h-3.5 text-[var(--t3)]" />
         <select value={salesman} onChange={e => setSalesman(e.target.value)} className={selectCls} title="Filter by salesman">
           <option value="">All salesmen</option>
           {salesmenList.map(s => <option key={s} value={s}>{s}</option>)}
@@ -202,44 +201,45 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
           <option value="recent">Sort: Most recent</option>
         </select>
         <button onClick={() => setOpenOnly(v => !v)}
-          className={cn('h-7 px-2.5 rounded-lg ring-1 ring-inset transition-colors',
-            openOnly ? 'bg-brand-600 text-white ring-brand-600' : 'ring-ink-200 dark:ring-ink-700 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800')}>
+          style={openOnly ? { background: 'var(--accent)', color: 'var(--accent-ink)', border: '1px solid transparent' } : undefined}
+          className={cn('h-7 px-2.5 rounded-[8px] transition-colors',
+            openOnly ? '' : 'border border-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)]')}>
           Open opps only
         </button>
         {(salesman || openOnly || sortBy !== 'name' || query || browseAll) && (
           <button onClick={() => { setSalesman(''); setOpenOnly(false); setSortBy('name'); setQuery(''); setBrowseAll(false); }}
-            className="h-7 px-2 rounded-lg text-ink-500 hover:text-ink-800 dark:hover:text-ink-100 inline-flex items-center gap-1">
+            className="h-7 px-2 rounded-[8px] text-[var(--t3)] hover:text-[var(--t1)] inline-flex items-center gap-1">
             <X className="w-3 h-3" /> {browseAll && !salesman && !openOnly && !query ? 'Back to highlights' : 'Clear'}
           </button>
         )}
       </div>
 
       {sync && (sync.running || sync.phase === 'error') && (
-        <div className="rounded-lg ring-1 ring-ink-200/70 dark:ring-ink-800 bg-white dark:bg-ink-900 px-4 py-3 space-y-2">
+        <div className="rounded-[12px] v3-card px-4 py-3 space-y-2">
           <div className="flex items-center gap-2 text-[12px]">
-            {sync.running && <Loader2 className="w-3.5 h-3.5 animate-spin text-brand-500 shrink-0" />}
-            {sync.phase === 'error' && <AlertTriangle className="w-3.5 h-3.5 text-red-500 shrink-0" />}
-            <span className={cn('flex-1', sync.phase === 'error' ? 'text-red-600 dark:text-red-300' : 'text-ink-700 dark:text-ink-200')}>{sync.message}</span>
-            {sync.pct != null && <span className="text-ink-400 tabular-nums">{sync.pct}%</span>}
+            {sync.running && <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" style={{ color: 'var(--accent)' }} />}
+            {sync.phase === 'error' && <AlertTriangle className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--err)' }} />}
+            <span className="flex-1" style={{ color: sync.phase === 'error' ? 'var(--err)' : 'var(--t2)' }}>{sync.message}</span>
+            {sync.pct != null && <span className="text-[var(--t4)] tabular-nums">{sync.pct}%</span>}
           </div>
           {sync.running && (
-            <div className="h-1.5 rounded-full bg-ink-100 dark:bg-ink-800 overflow-hidden">
-              <div className="h-full bg-brand-500 rounded-full transition-all duration-500"
-                style={{ width: `${sync.pct ?? 8}%` }} />
+            <div className="h-1.5 rounded-full bg-[var(--s3)] overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${sync.pct ?? 8}%`, background: 'var(--accent)' }} />
             </div>
           )}
         </div>
       )}
 
       {mergeMode && (
-        <div className="flex items-center gap-3 flex-wrap p-3 rounded-lg ring-1 ring-brand-200 dark:ring-brand-800 bg-brand-50/50 dark:bg-brand-900/10 text-[12px]">
-          <GitMerge className="w-4 h-4 text-brand-600 dark:text-brand-300 shrink-0" />
-          <span className="text-ink-700 dark:text-ink-200">
+        <div className="flex items-center gap-3 flex-wrap p-3 rounded-[12px] text-[12px]" style={{ border: '1px solid var(--accent-line)', background: 'var(--accent-soft)' }}>
+          <GitMerge className="w-4 h-4 shrink-0" style={{ color: 'var(--accent-text)' }} />
+          <span className="text-[var(--t2)]">
             {picked.size < 2 ? 'Pick 2+ cards to merge into one account.' : `${picked.size} selected — keep as:`}
           </span>
           {picked.size >= 2 && (
             <select value={targetId ?? ''} onChange={e => setTargetId(Number(e.target.value))}
-              className="h-7 px-2 rounded-lg text-[11.5px] bg-white dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-700">
+              className="h-7 px-2 rounded-[8px] text-[11.5px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)]">
               {[...picked].map(id => <option key={id} value={id}>{companies.find(c => c.id === id)?.name}</option>)}
             </select>
           )}
@@ -263,9 +263,9 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
       <div className="grid grid-cols-12 gap-5 items-start">
       <div className="col-span-12 lg:col-span-4 space-y-5">
       {(() => {
-        if (loading) return <div className="flex items-center justify-center py-20 text-ink-400"><Loader2 className="w-5 h-5 animate-spin" /></div>;
+        if (loading) return <div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
         if (companies.length === 0) return (
-          <Card className="text-center py-16 text-ink-500 dark:text-ink-400 text-[13px]">
+          <Card className="text-center py-16 text-[var(--t3)] text-[13px]">
             No accounts yet. Click <b>Sync from SharePoint</b> to pull your quotes.
           </Card>
         );
@@ -289,14 +289,14 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
                 {accs.length ? renderGrid(accs) : <Empty>No accounts match “{query}”.</Empty>}
                 {filtered.length > accs.length && (
                   <button onClick={() => { setBrowseAll(true); setQuery(''); }}
-                    className="mt-3 text-[12px] text-brand-600 dark:text-brand-300 hover:underline">
+                    className="mt-3 text-[12px] hover:underline" style={{ color: 'var(--accent-text)' }}>
                     +{filtered.length - accs.length} more accounts — browse all →
                   </button>
                 )}
               </Section>
               <Section title="Quotes" count={quoteHits.length}>
                 {quoteHits.length ? (
-                  <div className="rounded-xl ring-1 ring-ink-200/70 dark:ring-ink-800 divide-y divide-ink-100 dark:divide-ink-800 overflow-hidden">
+                  <div className="rounded-[14px] v3-card divide-y divide-[var(--line)] overflow-hidden">
                     {quoteHits.map(q => <QuoteHitRow key={q.id} q={q} onOpen={() => q.companyId && setSelected(q.companyId)} />)}
                   </div>
                 ) : <Empty>No quotes match “{query}”.</Empty>}
@@ -334,14 +334,14 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
       })()}
       </div>
 
-      <div className="col-span-12 lg:col-span-8 lg:border-l-2 lg:border-l-violet-300 dark:lg:border-l-violet-500/40 lg:pl-5">
+      <div className="col-span-12 lg:col-span-8 lg:border-l-2 lg:pl-5" style={{ borderColor: 'color-mix(in oklab, var(--violet) 40%, transparent)' }}>
         {selectedId != null ? (
           <CompanyDetail id={selectedId} toast={toast} onBack={() => { setSelected(null); refresh(); }} />
         ) : (
-          <div className="rounded-xl ring-1 ring-ink-200/70 dark:ring-ink-800 bg-white dark:bg-ink-900 py-24 px-6 flex flex-col items-center justify-center text-center">
-            <Database className="w-8 h-8 text-ink-300 dark:text-ink-600 mb-3" />
-            <p className="text-[13px] font-medium text-ink-500 dark:text-ink-400">Select an account</p>
-            <p className="text-[11.5px] text-ink-400 mt-1">Pick a card on the left to see contacts, quotes, facts and documents.</p>
+          <div className="rounded-[16px] v3-card py-24 px-6 flex flex-col items-center justify-center text-center">
+            <Database className="w-8 h-8 text-[var(--t4)] mb-3" />
+            <p className="text-[13px] font-medium text-[var(--t3)]">Select an account</p>
+            <p className="text-[11.5px] text-[var(--t4)] mt-1">Pick a card on the left to see contacts, quotes, facts and documents.</p>
           </div>
         )}
       </div>
@@ -354,23 +354,23 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
 function AccountCard({ c, mergeMode, picked, selected, onClick }: { c: CrmCompanyCard; mergeMode: boolean; picked: boolean; selected?: boolean; onClick: () => void }) {
   return (
     <button onClick={onClick}
+      style={mergeMode && picked ? { boxShadow: '0 0 0 2px var(--accent)' } : selected ? { boxShadow: '0 0 0 2px var(--violet)' } : undefined}
       className={cn(
-        'w-full text-left ring-1 rounded-xl p-4 transition-all',
-        mergeMode && picked ? 'bg-white dark:bg-ink-900 ring-2 ring-brand-500 dark:ring-brand-400 shadow-sm'
-          : selected ? 'ring-2 ring-violet-500 dark:ring-violet-400 bg-ink-100 dark:bg-ink-800 shadow-md'
-          : 'bg-white dark:bg-ink-900 ring-ink-200/70 dark:ring-ink-800 hover:ring-brand-300 dark:hover:ring-brand-700 hover:shadow-sm')}>
+        'w-full text-left rounded-[14px] p-4 transition-all v3-card',
+        !(mergeMode && picked) && !selected && 'hover:border-[var(--accent-line)]')}>
       <div className="flex items-start gap-2.5 mb-3">
         {mergeMode ? (
-          picked ? <CheckSquare className="w-5 h-5 text-brand-600 dark:text-brand-300 shrink-0" />
-                 : <Square className="w-5 h-5 text-ink-300 dark:text-ink-600 shrink-0" />
+          picked ? <CheckSquare className="w-5 h-5 shrink-0" style={{ color: 'var(--accent)' }} />
+                 : <Square className="w-5 h-5 text-[var(--t4)] shrink-0" />
         ) : (
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 grid place-items-center text-[12px] font-bold text-white shrink-0">
+          <div className="w-[38px] h-[38px] rounded-[11px] grid place-items-center text-[13px] font-bold shrink-0"
+            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6))', color: 'var(--accent-ink)' }}>
             {c.name.slice(0, 2).toUpperCase()}
           </div>
         )}
         <div className="min-w-0 flex-1">
-          <h3 className="text-[13px] font-semibold text-ink-900 dark:text-ink-50 truncate leading-tight">{c.name}</h3>
-          <p className="text-[11px] text-ink-500 dark:text-ink-400 mt-0.5">
+          <h3 className="text-[13.5px] font-semibold text-[var(--t1)] truncate leading-tight">{c.name}</h3>
+          <p className="text-[11px] text-[var(--t3)] mt-0.5">
             {c.lastQuote ? `Last quote ${relTime(c.lastQuote)}` : 'No quotes yet'}
             {c.aliasCount > 1 && ` · ${c.aliasCount} names`}
           </p>
@@ -383,7 +383,7 @@ function AccountCard({ c, mergeMode, picked, selected, onClick }: { c: CrmCompan
         <Stat label="Total"    value={c.totalValue ? fmtMoneyFull(c.totalValue, '€') : '—'} tone={c.totalValue ? 'brand' : 'muted'} />
       </div>
       {c.salesmen.length > 0 && (
-        <p className="text-[10.5px] text-ink-400 mt-2 truncate">{c.salesmen.join(', ')}</p>
+        <p className="text-[10.5px] text-[var(--t3)] mt-2.5 truncate">{c.salesmen.join(', ')}</p>
       )}
     </button>
   );
@@ -394,8 +394,8 @@ function Section({ title, count, children }: { title: string; count?: number; ch
   return (
     <section>
       <div className="flex items-baseline gap-2 mb-2.5">
-        <h2 className="text-[12px] font-semibold uppercase tracking-wide text-ink-500 dark:text-ink-400">{title}</h2>
-        {count != null && <span className="text-[11px] text-ink-400 tabular-nums">{count}</span>}
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--t2)]">{title}</h2>
+        {count != null && <span className="text-[11px] text-[var(--t4)] tabular-nums">{count}</span>}
       </div>
       {children}
     </section>
@@ -403,22 +403,22 @@ function Section({ title, count, children }: { title: string; count?: number; ch
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="text-[12px] text-ink-400 py-6 text-center">{children}</p>;
+  return <p className="text-[12px] text-[var(--t3)] py-6 text-center">{children}</p>;
 }
 
 function QuoteHitRow({ q, onOpen }: { q: CrmQuoteHit; onOpen: () => void }) {
   const stateTone = q.state === 'won' ? 'ok' : q.state === 'lost' ? 'err' : 'brand';
   return (
     <button onClick={onOpen}
-      className="w-full text-left flex items-center gap-3 px-3.5 py-2.5 bg-white dark:bg-ink-900 hover:bg-ink-50 dark:hover:bg-ink-800/50 transition-colors">
-      <FileText className="w-3.5 h-3.5 text-ink-400 shrink-0" />
+      className="w-full text-left flex items-center gap-3 px-3.5 py-2.5 bg-[var(--s2)] hover:bg-[var(--s3)] transition-colors">
+      <FileText className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
       <div className="min-w-0 flex-1">
-        <div className="text-[12.5px] font-medium text-ink-900 dark:text-ink-50 truncate">{q.name || q.account}</div>
-        <div className="text-[11px] text-ink-500 dark:text-ink-400 truncate">
+        <div className="text-[12.5px] font-medium text-[var(--t1)] truncate">{q.name || q.account}</div>
+        <div className="text-[11px] text-[var(--t3)] truncate">
           {q.account}{q.salesman ? ` · ${q.salesman}` : ''}{q.ref ? ` · ${q.ref}` : ''}
         </div>
       </div>
-      <span className="text-[12px] font-medium tabular-nums text-ink-800 dark:text-ink-100 shrink-0">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</span>
+      <span className="text-[12px] font-medium tabular-nums text-[var(--t1)] shrink-0">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</span>
       <Pill tone={stateTone as any}>{q.state}</Pill>
     </button>
   );
@@ -426,10 +426,9 @@ function QuoteHitRow({ q, onOpen }: { q: CrmQuoteHit; onOpen: () => void }) {
 
 function Stat({ label, value, tone = 'muted' }: { label: string; value: string; tone?: 'brand' | 'muted' }) {
   return (
-    <div className="rounded-lg bg-ink-50 dark:bg-ink-800/60 py-1.5">
-      <div className={cn('text-[13px] font-semibold tabular-nums leading-none',
-        tone === 'brand' ? 'text-brand-600 dark:text-brand-300' : 'text-ink-800 dark:text-ink-100')}>{value}</div>
-      <div className="text-[9.5px] uppercase tracking-wide text-ink-400 mt-1">{label}</div>
+    <div className="rounded-[9px] bg-[var(--s3)] py-2 px-1.5">
+      <div className="text-[14px] font-semibold tabular-nums leading-none" style={{ color: tone === 'brand' ? 'var(--accent-text)' : 'var(--t1)' }}>{value}</div>
+      <div className="text-[9px] uppercase tracking-[0.05em] text-[var(--t3)] mt-1">{label}</div>
     </div>
   );
 }
@@ -452,7 +451,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
   useEffect(() => { load(); }, [load]);
 
   if (loading || !data) {
-    return <div className="flex items-center justify-center py-20 text-ink-400"><Loader2 className="w-5 h-5 animate-spin" /></div>;
+    return <div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
   }
   const { company, contacts, facts, quotes, opp, enriched } = data;
 
@@ -518,17 +517,18 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
       {/* Header */}
       <Card className="animate-fade-up">
         <div className="flex items-start gap-3">
-          <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-brand-500 to-brand-700 grid place-items-center text-[18px] font-bold text-white shrink-0">
+          <div className="w-14 h-14 rounded-[14px] grid place-items-center text-[18px] font-bold shrink-0"
+            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6))', color: 'var(--accent-ink)' }}>
             {company.name.slice(0, 2).toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-[16px] font-semibold text-ink-900 dark:text-ink-50">{company.name}</h2>
+              <h2 className="text-[16px] font-semibold text-[var(--t1)]">{company.name}</h2>
               {company.country && <Pill tone="neutral">{company.country}</Pill>}
             </div>
             {(company.aliases?.length ?? 0) > 1 && (
               <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                <span className="text-[10px] uppercase tracking-wide text-ink-400">Names:</span>
+                <span className="text-[10px] uppercase tracking-wide text-[var(--t3)]">Names:</span>
                 {company.aliases!.map(a => <Pill key={a} tone="neutral">{a}</Pill>)}
               </div>
             )}
@@ -537,7 +537,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                 <Pill key={t} tone="violet">{t}</Pill>
               ))}
             </div>
-            {company.notes && <p className="text-[12px] text-ink-600 dark:text-ink-300 mt-2 whitespace-pre-wrap">{company.notes}</p>}
+            {company.notes && <p className="text-[12px] text-[var(--t2)] mt-2 whitespace-pre-wrap">{company.notes}</p>}
           </div>
           <div className="flex gap-2 shrink-0">
             <HeaderStat label="Quotes" value={String(quotes.length)} />
@@ -551,34 +551,34 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         {/* Contacts */}
         <Card>
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[13px] font-semibold text-ink-900 dark:text-ink-50">Contacts</h3>
+            <h3 className="text-[13px] font-semibold text-[var(--t1)]">Contacts</h3>
             <Button tone="ghost" size="sm" Icon={UserPlus} onClick={() => setContactForm({})}>Add</Button>
           </div>
           {contactForm && <ContactForm initial={contactForm} onCancel={() => setContactForm(null)} onSave={saveContact} />}
           {contacts.length === 0 && !contactForm ? (
-            <p className="text-[12px] text-ink-400 py-4 text-center">
+            <p className="text-[12px] text-[var(--t3)] py-4 text-center">
               {enriched ? 'No contacts yet.' : 'Connect to JOE to pull the salesman as a contact, or add one.'}
             </p>
           ) : (
             <ul className="space-y-2">
               {contacts.map(ct => (
-                <li key={ct.id} className="group flex items-start gap-2.5 p-2.5 rounded-lg bg-ink-50 dark:bg-ink-800/50">
+                <li key={ct.id} className="group flex items-start gap-2.5 p-2.5 rounded-lg bg-[var(--s3)]">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-[12.5px] font-medium text-ink-900 dark:text-ink-50 truncate">{ct.name}</span>
-                      {ct.role && <span className="text-[11px] text-ink-500 dark:text-ink-400">· {ct.role}</span>}
+                      <span className="text-[12.5px] font-medium text-[var(--t1)] truncate">{ct.name}</span>
+                      {ct.role && <span className="text-[11px] text-[var(--t3)]">· {ct.role}</span>}
                       {ct.auto && <Pill tone="brand">from quotes</Pill>}
                     </div>
                     <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11.5px]">
-                      {ct.email && <a href={`mailto:${ct.email}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-brand-600 dark:text-brand-300 hover:underline"><Mail className="w-3 h-3" />{ct.email}</a>}
-                      {ct.phone && <a href={`tel:${ct.phone}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-ink-600 dark:text-ink-300"><Phone className="w-3 h-3" />{ct.phone}</a>}
+                      {ct.email && <a href={`mailto:${ct.email}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[var(--accent-text)] hover:underline"><Mail className="w-3 h-3" />{ct.email}</a>}
+                      {ct.phone && <a href={`tel:${ct.phone}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[var(--t2)]"><Phone className="w-3 h-3" />{ct.phone}</a>}
                     </div>
-                    {ct.notes && <p className="text-[11px] text-ink-500 dark:text-ink-400 mt-1 whitespace-pre-wrap">{ct.notes}</p>}
+                    {ct.notes && <p className="text-[11px] text-[var(--t3)] mt-1 whitespace-pre-wrap">{ct.notes}</p>}
                   </div>
                   {!ct.auto && (
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => setContactForm(ct)} className="p-1 text-ink-400 hover:text-brand-600"><Pencil className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => delContact(ct.id)} className="p-1 text-ink-400 hover:text-red-600"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => setContactForm(ct)} className="p-1 text-[var(--t3)] hover:text-[var(--accent-text)]"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => delContact(ct.id)} className="p-1 text-[var(--t3)] hover:text-[var(--err)]"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
                   )}
                 </li>
@@ -589,7 +589,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
 
         {/* Facts */}
         <Card>
-          <h3 className="text-[13px] font-semibold text-ink-900 dark:text-ink-50 mb-3">Facts</h3>
+          <h3 className="text-[13px] font-semibold text-[var(--t1)] mb-3">Facts</h3>
           <div className="flex gap-2 mb-3">
             <input value={factText} onChange={e => setFactText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') addFact(); }}
@@ -597,16 +597,16 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
             <Button tone="primary" size="sm" Icon={Plus} onClick={addFact}>Add</Button>
           </div>
           {facts.length === 0 ? (
-            <p className="text-[12px] text-ink-400 py-2 text-center">No facts noted yet.</p>
+            <p className="text-[12px] text-[var(--t3)] py-2 text-center">No facts noted yet.</p>
           ) : (
             <ul className="space-y-1.5">
               {facts.map(f => (
-                <li key={f.id} className="group flex items-start gap-2 text-[12px] text-ink-700 dark:text-ink-200">
+                <li key={f.id} className="group flex items-start gap-2 text-[12px] text-[var(--t2)]">
                   {f.source === 'ai'
-                    ? <Sparkles className="w-3 h-3 text-violet-500 mt-1 shrink-0" />
-                    : <Star className="w-3 h-3 text-amber-500 mt-1 shrink-0" />}
+                    ? <Sparkles className="w-3 h-3 text-[var(--violet)] mt-1 shrink-0" />
+                    : <Star className="w-3 h-3 text-[var(--warn)] mt-1 shrink-0" />}
                   <span className="flex-1">{f.text}</span>
-                  <button onClick={() => delFact(f.id)} className="p-0.5 text-ink-300 hover:text-red-600 opacity-0 group-hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => delFact(f.id)} className="p-0.5 text-[var(--t4)] hover:text-[var(--err)] opacity-0 group-hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
                 </li>
               ))}
             </ul>
@@ -622,18 +622,18 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
       {/* Quotes / opportunities */}
       <Card padded={false}>
         <div className="flex items-center justify-between px-5 pt-4 pb-3 gap-3">
-          <h3 className="text-[13px] font-semibold text-ink-900 dark:text-ink-50">Quotes &amp; opportunities</h3>
-          <span className="text-[11px] text-ink-400 text-right">
+          <h3 className="text-[13px] font-semibold text-[var(--t1)]">Quotes &amp; opportunities</h3>
+          <span className="text-[11px] text-[var(--t3)] text-right">
             {enriched ? 'Prices & salesmen from the Quotations List' : 'Connect to JOE to load prices & salesmen'}
           </span>
         </div>
         {quotes.length === 0 ? (
-          <p className="text-[12px] text-ink-400 py-6 text-center">No quotes recorded for this account yet.</p>
+          <p className="text-[12px] text-[var(--t3)] py-6 text-center">No quotes recorded for this account yet.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-[12px]">
               <thead>
-                <tr className="text-[10px] uppercase tracking-wide text-ink-400 border-y border-ink-100 dark:border-ink-800">
+                <tr className="text-[10px] uppercase tracking-wide text-[var(--t3)] border-y border-[var(--line)]">
                   <th className="text-left font-medium px-5 py-2">Ref</th>
                   <th className="text-left font-medium px-3 py-2">Quote</th>
                   <th className="text-left font-medium px-3 py-2">Salesman</th>
@@ -644,20 +644,20 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
               </thead>
               <tbody>
                 {quotes.map(q => (
-                  <tr key={q.id} className="border-b border-ink-50 dark:border-ink-800/60">
-                    <td className="px-5 py-2 font-mono text-[10.5px] text-ink-500 dark:text-ink-400 whitespace-nowrap">{q.ref || '—'}</td>
-                    <td className="px-3 py-2 text-ink-800 dark:text-ink-100">
+                  <tr key={q.id} className="border-b border-[var(--line)]">
+                    <td className="px-5 py-2 font-mono text-[10.5px] text-[var(--t3)] whitespace-nowrap">{q.ref || '—'}</td>
+                    <td className="px-3 py-2 text-[var(--t1)]">
                       <button onClick={() => openPdf(q)} title="Open archived PDF"
-                        className="inline-flex items-center gap-1 text-left hover:text-brand-600 dark:hover:text-brand-300 hover:underline">
+                        className="inline-flex items-center gap-1 text-left hover:text-[var(--accent-text)] hover:underline">
                         <FileText className="w-3 h-3 shrink-0 opacity-60" />
                         {q.name || '—'}
                       </button>
-                      {q.status && <span className="ml-1.5 text-[10px] text-ink-400">· {q.status}</span>}
+                      {q.status && <span className="ml-1.5 text-[10px] text-[var(--t3)]">· {q.status}</span>}
                     </td>
-                    <td className="px-3 py-2 text-ink-600 dark:text-ink-300">{q.salesman || '—'}</td>
-                    <td className="px-3 py-2 text-right font-medium tabular-nums text-ink-800 dark:text-ink-100">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</td>
-                    <td className="px-3 py-2 text-ink-500 dark:text-ink-400 whitespace-nowrap">
-                      {relTime(q.timestamp)}{q.runs > 1 && <span className="text-ink-400"> · {q.runs}×</span>}
+                    <td className="px-3 py-2 text-[var(--t2)]">{q.salesman || '—'}</td>
+                    <td className="px-3 py-2 text-right font-medium tabular-nums text-[var(--t1)]">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</td>
+                    <td className="px-3 py-2 text-[var(--t3)] whitespace-nowrap">
+                      {relTime(q.timestamp)}{q.runs > 1 && <span className="text-[var(--t3)]"> · {q.runs}×</span>}
                     </td>
                     <td className="px-5 py-2">
                       <div className="flex items-center justify-end gap-1">
@@ -670,9 +670,9 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                 ))}
               </tbody>
               <tfoot>
-                <tr className="border-t border-ink-100 dark:border-ink-800 text-[11.5px]">
-                  <td className="px-5 py-2 text-ink-400 uppercase tracking-wide text-[10px]" colSpan={3}>Total issued</td>
-                  <td className="px-3 py-2 text-right font-semibold tabular-nums text-brand-600 dark:text-brand-300">{enriched ? fmtMoneyFull(totalIssued, '€') : '—'}</td>
+                <tr className="border-t border-[var(--line)] text-[11.5px]">
+                  <td className="px-5 py-2 text-[var(--t3)] uppercase tracking-wide text-[10px]" colSpan={3}>Total issued</td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums" style={{ color: 'var(--accent-text)' }}>{enriched ? fmtMoneyFull(totalIssued, '€') : '—'}</td>
                   <td colSpan={2} />
                 </tr>
               </tfoot>
@@ -707,8 +707,8 @@ function InsightsCard({ id, toast, onPinned }: { id: number; toast: ToastFn; onP
   return (
     <Card>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-[13px] font-semibold text-ink-900 dark:text-ink-50 inline-flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-violet-500" /> AI insights
+        <h3 className="text-[13px] font-semibold text-[var(--t1)] inline-flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5 text-[var(--violet)]" /> AI insights
         </h3>
         <Button tone="ghost" size="sm" Icon={loading ? Loader2 : RefreshCw} disabled={loading}
           onClick={() => run(items != null)} className={loading ? '[&_svg]:animate-spin' : ''}>
@@ -716,21 +716,20 @@ function InsightsCard({ id, toast, onPinned }: { id: number; toast: ToastFn; onP
         </Button>
       </div>
       {items == null ? (
-        <p className="text-[12px] text-ink-400 py-4 text-center">Generate facts &amp; warnings from this account's run history.</p>
+        <p className="text-[12px] text-[var(--t3)] py-4 text-center">Generate facts &amp; warnings from this account's run history.</p>
       ) : items.length === 0 ? (
-        <p className="text-[12px] text-ink-400 py-4 text-center">Nothing noteworthy in the data yet.</p>
+        <p className="text-[12px] text-[var(--t3)] py-4 text-center">Nothing noteworthy in the data yet.</p>
       ) : (
         <ul className="space-y-2">
           {items.map((it, i) => (
-            <li key={i} className={cn('group flex items-start gap-2 p-2 rounded-lg text-[12px]',
-              it.type === 'warning' ? 'bg-amber-50 dark:bg-amber-900/15 text-amber-800 dark:text-amber-200'
-                                    : 'bg-violet-50 dark:bg-violet-900/15 text-ink-700 dark:text-ink-200')}>
+            <li key={i} className="group flex items-start gap-2 p-2 rounded-[10px] text-[12px] text-[var(--t2)]"
+              style={{ background: it.type === 'warning' ? 'var(--warn-soft)' : 'var(--violet-soft)' }}>
               {it.type === 'warning'
-                ? <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
-                : <Sparkles className="w-3.5 h-3.5 text-violet-500 mt-0.5 shrink-0" />}
+                ? <AlertTriangle className="w-3.5 h-3.5 text-[var(--warn)] mt-0.5 shrink-0" />
+                : <Sparkles className="w-3.5 h-3.5 text-[var(--violet)] mt-0.5 shrink-0" />}
               <span className="flex-1">{it.text}</span>
               <button onClick={() => pin(it.text)} title="Pin to facts"
-                className="p-0.5 text-ink-300 hover:text-brand-600 opacity-0 group-hover:opacity-100"><Pin className="w-3.5 h-3.5" /></button>
+                className="p-0.5 text-[var(--t4)] hover:text-[var(--accent-text)] opacity-0 group-hover:opacity-100"><Pin className="w-3.5 h-3.5" /></button>
             </li>
           ))}
         </ul>
@@ -757,8 +756,8 @@ function DocsCard({ id, toast }: { id: number; toast: ToastFn }) {
   return (
     <Card>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-[13px] font-semibold text-ink-900 dark:text-ink-50 inline-flex items-center gap-1.5">
-          <FileText className="w-3.5 h-3.5 text-brand-500" /> D&amp;Q documents
+        <h3 className="text-[13px] font-semibold text-[var(--t1)] inline-flex items-center gap-1.5">
+          <FileText className="w-3.5 h-3.5 text-[var(--accent-text)]" /> D&amp;Q documents
         </h3>
         <Button tone="ghost" size="sm" Icon={loading ? Loader2 : RefreshCw} disabled={loading}
           onClick={run} className={loading ? '[&_svg]:animate-spin' : ''}>
@@ -766,19 +765,19 @@ function DocsCard({ id, toast }: { id: number; toast: ToastFn }) {
         </Button>
       </div>
       {docs == null ? (
-        <p className="text-[12px] text-ink-400 py-4 text-center">Search the D&amp;Q Store for this account's documents (needs JOE connection).</p>
+        <p className="text-[12px] text-[var(--t3)] py-4 text-center">Search the D&amp;Q Store for this account's documents (needs JOE connection).</p>
       ) : docs.length === 0 ? (
-        <p className="text-[12px] text-ink-400 py-4 text-center">No matching documents found.</p>
+        <p className="text-[12px] text-[var(--t3)] py-4 text-center">No matching documents found.</p>
       ) : (
         <ul className="space-y-1.5">
           {docs.map((d, i) => (
             <li key={i}>
               <a href={d.url} target="_blank" rel="noreferrer"
-                className="group flex items-center gap-2 p-2 rounded-lg hover:bg-ink-50 dark:hover:bg-ink-800/50 text-[12px]">
-                <FileText className="w-3.5 h-3.5 text-ink-400 shrink-0" />
-                <span className="flex-1 truncate text-ink-700 dark:text-ink-200">{d.title || d.filename}</span>
-                {d.ext && <span className="text-[10px] uppercase text-ink-400">{d.ext}</span>}
-                <ExternalLink className="w-3 h-3 text-ink-300 opacity-0 group-hover:opacity-100" />
+                className="group flex items-center gap-2 p-2 rounded-lg hover:bg-[var(--s3)] text-[12px]">
+                <FileText className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
+                <span className="flex-1 truncate text-[var(--t2)]">{d.title || d.filename}</span>
+                {d.ext && <span className="text-[10px] uppercase text-[var(--t3)]">{d.ext}</span>}
+                <ExternalLink className="w-3 h-3 text-[var(--t4)] opacity-0 group-hover:opacity-100" />
               </a>
             </li>
           ))}
@@ -790,20 +789,20 @@ function DocsCard({ id, toast }: { id: number; toast: ToastFn }) {
 
 function HeaderStat({ label, value, tone = 'muted' }: { label: string; value: string; tone?: 'brand' | 'muted' }) {
   return (
-    <div className="rounded-lg bg-ink-50 dark:bg-ink-800/60 px-3 py-2 text-right min-w-[88px]">
-      <div className={cn('text-[15px] font-semibold tabular-nums leading-none',
-        tone === 'brand' ? 'text-brand-600 dark:text-brand-300' : 'text-ink-800 dark:text-ink-100')}>{value}</div>
-      <div className="text-[9.5px] uppercase tracking-wide text-ink-400 mt-1">{label}</div>
+    <div className="rounded-[9px] bg-[var(--s3)] px-3 py-2 text-right min-w-[88px]">
+      <div className="text-[15px] font-semibold tabular-nums leading-none" style={{ color: tone === 'brand' ? 'var(--accent-text)' : 'var(--t1)' }}>{value}</div>
+      <div className="text-[9px] uppercase tracking-[0.05em] text-[var(--t3)] mt-1">{label}</div>
     </div>
   );
 }
 
 function StateBtn({ active, tone, onClick, children }: { active: boolean; tone: 'brand' | 'ok' | 'err'; onClick: () => void; children: React.ReactNode }) {
-  const on = { brand: 'bg-brand-600 text-white', ok: 'bg-emerald-600 text-white', err: 'bg-red-600 text-white' }[tone];
+  const on: Record<string, string> = { brand: 'var(--accent)', ok: 'var(--ok)', err: 'var(--err)' };
   return (
     <button onClick={onClick}
-      className={cn('px-2 h-6 rounded-md text-[10.5px] font-medium transition-colors',
-        active ? on : 'text-ink-500 dark:text-ink-400 hover:bg-ink-100 dark:hover:bg-ink-800')}>
+      style={active ? { background: on[tone], color: tone === 'brand' ? 'var(--accent-ink)' : '#fff' } : undefined}
+      className={cn('px-2 h-6 rounded-[7px] text-[10.5px] font-medium transition-colors',
+        active ? '' : 'text-[var(--t3)] hover:bg-[var(--s3)]')}>
       {children}
     </button>
   );
@@ -849,7 +848,7 @@ function ContactForm({
   const [v, setV] = useState<Partial<CrmContact>>(initial);
   const set = (k: keyof CrmContact) => (e: React.ChangeEvent<HTMLInputElement>) => setV(p => ({ ...p, [k]: e.target.value }));
   return (
-    <div className="mb-3 p-3 rounded-lg ring-1 ring-brand-200 dark:ring-brand-800 bg-brand-50/40 dark:bg-brand-900/10">
+    <div className="mb-3 p-3 rounded-[11px]" style={{ border: '1px solid var(--accent-line)', background: 'var(--accent-soft)' }}>
       <div className="grid gap-2 sm:grid-cols-2">
         <input className={inputCls} placeholder="Name *" value={v.name || ''} onChange={set('name')} autoFocus />
         <input className={inputCls} placeholder="Role (Buyer, Engineer…)" value={v.role || ''} onChange={set('role')} />
@@ -868,7 +867,7 @@ function ContactForm({
 function Field({ label, children, full }: { label: string; children: React.ReactNode; full?: boolean }) {
   return (
     <label className={cn('block', full && 'sm:col-span-2')}>
-      <span className="block text-[10.5px] uppercase tracking-wide text-ink-400 mb-1">{label}</span>
+      <span className="block text-[10.5px] uppercase tracking-wide text-[var(--t3)] mb-1">{label}</span>
       {children}
     </label>
   );

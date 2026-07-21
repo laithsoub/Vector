@@ -284,12 +284,12 @@ function ExpandedPanel({
   const pricerAtts = atts.filter(a => a.isPdf || isImageName(a.name));
 
   return (
-    <div className="flex flex-col w-screen h-screen bg-white dark:bg-ink-950 text-ink-900 dark:text-ink-100 text-[12px] select-none overflow-hidden">
+    <div className="flex flex-col w-screen h-screen bg-[var(--bg)] text-[var(--t1)] text-[12px] select-none overflow-hidden">
 
       {/* Drag bar */}
       <div
         onMouseDown={onDragMouseDown}
-        className="flex items-center gap-2 px-3 h-9 border-b border-ink-200 dark:border-ink-800 bg-gradient-to-r from-amber-500 to-amber-600 text-white shrink-0 cursor-grab active:cursor-grabbing">
+        className="flex items-center gap-2 px-3 h-9 border-b border-[var(--line)] bg-gradient-to-r from-amber-500 to-amber-600 text-white shrink-0 cursor-grab active:cursor-grabbing">
         <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center font-bold text-[12px]">V</span>
         <p className="font-semibold text-[12px] flex-1 truncate">EL Pricer</p>
         <button
@@ -316,17 +316,17 @@ function ExpandedPanel({
       <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
 
         {!current ? (
-          <div className="flex items-center justify-center h-24 text-ink-400 dark:text-ink-500">
+          <div className="flex items-center justify-center h-24 text-[var(--t3)]">
             <Loader2 className="w-4 h-4 animate-spin mr-2" /> Reading Outlook…
           </div>
         ) : !current.selected ? (
-          <div className="flex flex-col items-center justify-center h-24 text-ink-400 dark:text-ink-500 text-center px-2">
+          <div className="flex flex-col items-center justify-center h-24 text-[var(--t3)] text-center px-2">
             <Mail className="w-5 h-5 mb-1 opacity-50" />
             <p className="text-[11.5px]">{current.error || current.reason || 'No email selected'}</p>
             <button
               onClick={pullFromOutlook}
               disabled={pulling}
-              className="mt-2 inline-flex items-center gap-1 h-6 px-2 rounded text-[10.5px] font-medium text-brand-600 dark:text-brand-400 hover:bg-brand-50 dark:hover:bg-brand-900/20">
+              className="mt-2 inline-flex items-center gap-1 h-6 px-2 rounded text-[10.5px] font-medium text-[var(--accent-text)] hover:bg-[var(--accent-soft)]">
               {pulling ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
               Pull from Outlook
             </button>
@@ -334,18 +334,18 @@ function ExpandedPanel({
         ) : (
           <>
             {/* Email header */}
-            <div className="rounded-lg ring-1 ring-inset ring-ink-200 dark:ring-ink-700 bg-ink-50/60 dark:bg-ink-900/40 p-2.5">
+            <div className="rounded-lg ring-1 ring-inset ring-[var(--line-2)] bg-[var(--s1)] p-2.5">
               <div className="flex items-start gap-2">
                 <div className="w-6 h-6 rounded bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center shrink-0">
                   <Mail className="w-3 h-3 text-amber-500" />
                 </div>
                 <div className="flex-1 min-w-0">
                   <p className="font-semibold text-[12px] truncate">{current.subject}</p>
-                  <p className="text-[10.5px] text-ink-500 dark:text-ink-400 truncate">
+                  <p className="text-[10.5px] text-[var(--t3)] truncate">
                     {current.sender}{current.senderEmail ? ` · ${current.senderEmail}` : ''}
                   </p>
                   {current.body && (
-                    <p className="text-[10.5px] text-ink-500 dark:text-ink-400 mt-1 line-clamp-2 leading-tight">
+                    <p className="text-[10.5px] text-[var(--t3)] mt-1 line-clamp-2 leading-tight">
                       {current.body.slice(0, 240).replace(/\s+/g, ' ').trim()}
                     </p>
                   )}
@@ -354,7 +354,7 @@ function ExpandedPanel({
                   onClick={pullFromOutlook}
                   disabled={pulling}
                   title="Re-read current Outlook selection"
-                  className="p-1 rounded text-ink-400 hover:text-brand-600 dark:hover:text-brand-400 hover:bg-ink-100 dark:hover:bg-ink-800 transition-colors">
+                  className="p-1 rounded text-[var(--t3)] hover:text-[var(--accent-text)] hover:bg-[var(--s3)] transition-colors">
                   {pulling
                     ? <Loader2 className="w-3 h-3 animate-spin" />
                     : <RefreshCw className="w-3 h-3" />}
@@ -364,18 +364,18 @@ function ExpandedPanel({
 
             {pricerAtts.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
-                <Paperclip className="w-3 h-3 text-ink-400" />
-                <span className="text-[10px] text-ink-400 uppercase tracking-wide font-semibold">
+                <Paperclip className="w-3 h-3 text-[var(--t3)]" />
+                <span className="text-[10px] text-[var(--t3)] uppercase tracking-wide font-semibold">
                   {pricerAtts.length} attachment{pricerAtts.length === 1 ? '' : 's'}
                 </span>
                 {pricerAtts.map(a => (
                   <span
                     key={a.index}
                     title={`${a.name} · ${(a.size / 1024).toFixed(0)} KB`}
-                    className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] ring-1 ring-inset bg-white dark:bg-ink-800 ring-ink-200 dark:ring-ink-700">
+                    className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] ring-1 ring-inset bg-[var(--s2)] ring-[var(--line-2)]">
                     {a.isPdf
                       ? <FileText className="w-2.5 h-2.5 text-rose-500" />
-                      : <ImageIcon className="w-2.5 h-2.5 text-brand-500" />}
+                      : <ImageIcon className="w-2.5 h-2.5 text-[var(--accent-text)]" />}
                     <span className="truncate max-w-[120px]">{a.name}</span>
                   </span>
                 ))}
@@ -385,10 +385,10 @@ function ExpandedPanel({
             {/* Hints */}
             <div>
               <div className="flex items-center justify-between mb-1">
-                <span className="text-[10px] text-ink-400 uppercase tracking-wide font-semibold">Description / hints</span>
+                <span className="text-[10px] text-[var(--t3)] uppercase tracking-wide font-semibold">Description / hints</span>
                 {override && (
                   <button onClick={() => { setOverride(false); setHints(extractMaterialHints(current.body || '')); }}
-                    className="text-[10px] text-brand-500 hover:underline">
+                    className="text-[10px] text-[var(--accent-text)] hover:underline">
                     Reset
                   </button>
                 )}
@@ -398,7 +398,7 @@ function ExpandedPanel({
                 onChange={e => { setHints(e.target.value); setOverride(true); }}
                 placeholder="Auto-pulled from email. Edit to refine the AI's search."
                 rows={3}
-                className="w-full rounded-md bg-ink-50 dark:bg-ink-900 ring-1 ring-inset ring-ink-200 dark:ring-ink-700 p-2 text-[11px] font-mono focus:outline-none focus:ring-brand-400 resize-none placeholder:text-ink-300 dark:placeholder:text-ink-600"
+                className="w-full rounded-md bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] p-2 text-[11px] font-mono focus:outline-none focus:ring-[var(--accent-line)] resize-none placeholder:text-[var(--t4)]"
               />
             </div>
 
@@ -415,22 +415,22 @@ function ExpandedPanel({
             {result?.queries && result.queries.length > 0 && (
               <div className="space-y-2.5">
                 {result.queries.map((q, gi) => (
-                  <div key={q.id} className="rounded-lg ring-1 ring-inset ring-ink-200 dark:ring-ink-700 overflow-hidden">
-                    <div className="px-2.5 py-1.5 bg-brand-50 dark:bg-brand-900/20 border-b border-brand-200 dark:border-brand-700/40">
+                  <div key={q.id} className="rounded-lg ring-1 ring-inset ring-[var(--line-2)] overflow-hidden">
+                    <div className="px-2.5 py-1.5 bg-[var(--accent-soft)] border-b border-[var(--accent-line)]">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-[10px] font-semibold uppercase tracking-wide text-brand-700 dark:text-brand-300">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--accent-text)]">
                           Item {gi + 1}
                         </span>
                         {q.qty > 1 && (
-                          <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-brand-200 dark:bg-brand-900/50 text-brand-700 dark:text-brand-300">qty {q.qty}</span>
+                          <span className="text-[9.5px] px-1.5 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent-text)]">qty {q.qty}</span>
                         )}
                       </div>
-                      <p className="text-[11px] text-ink-700 dark:text-ink-200 mt-0.5">{q.label || '(unlabelled)'}</p>
+                      <p className="text-[11px] text-[var(--t2)] mt-0.5">{q.label || '(unlabelled)'}</p>
                     </div>
                     {q.candidates.length === 0 ? (
-                      <p className="px-3 py-2 text-[10.5px] text-ink-400">No price-list candidates for this item.</p>
+                      <p className="px-3 py-2 text-[10.5px] text-[var(--t3)]">No price-list candidates for this item.</p>
                     ) : (
-                      <div className="divide-y divide-ink-100 dark:divide-ink-800">
+                      <div className="divide-y divide-[var(--line)]">
                         {q.candidates.slice(0, 4).map((c, i) => (
                           <CandidateRow
                             key={`${c.cat_no}-${i}`}
@@ -448,11 +448,11 @@ function ExpandedPanel({
 
             {/* Description-driven extras */}
             {result?.candidates && result.candidates.length > 0 && (!result.queries || result.queries.length === 0) && (
-              <div className="rounded-lg ring-1 ring-inset ring-ink-200 dark:ring-ink-700 overflow-hidden">
-                <div className="px-2.5 py-1.5 bg-ink-50 dark:bg-ink-900 border-b border-ink-200 dark:border-ink-800">
-                  <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">From description</span>
+              <div className="rounded-lg ring-1 ring-inset ring-[var(--line-2)] overflow-hidden">
+                <div className="px-2.5 py-1.5 bg-[var(--s1)] border-b border-[var(--line)]">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--t3)]">From description</span>
                 </div>
-                <div className="divide-y divide-ink-100 dark:divide-ink-800">
+                <div className="divide-y divide-[var(--line)]">
                   {result.candidates.slice(0, 6).map((c, i) => (
                     <CandidateRow key={`${c.cat_no}-${i}`} c={c} onAdd={() => addToSchedule(c)} />
                   ))}
@@ -472,11 +472,11 @@ function ExpandedPanel({
                   {result.items.filter(i => i.matched).map((item, i) => (
                     <div key={i} className="flex items-center gap-2 px-2.5 py-1.5 text-[10.5px]">
                       <div className="flex-1 min-w-0">
-                        <p className="font-mono font-semibold text-brand-700 dark:text-brand-400 truncate">{item.cat_no}</p>
-                        <p className="text-ink-500 dark:text-ink-400 truncate">{item.description}</p>
+                        <p className="font-mono font-semibold text-[var(--accent-text)] truncate">{item.cat_no}</p>
+                        <p className="text-[var(--t3)] truncate">{item.description}</p>
                       </div>
-                      <span className="font-mono text-ink-600 dark:text-ink-300 shrink-0">×{item.qty}</span>
-                      <span className="font-mono text-ink-800 dark:text-ink-100 shrink-0">{fmt(item.line_ntp)}</span>
+                      <span className="font-mono text-[var(--t2)] shrink-0">×{item.qty}</span>
+                      <span className="font-mono text-[var(--t1)] shrink-0">{fmt(item.line_ntp)}</span>
                       <button
                         onClick={() => addToSchedule({
                           cat_no: item.cat_no, family: item.family, description: item.description,
@@ -503,7 +503,7 @@ function ExpandedPanel({
               && (!result.queries || result.queries.length === 0)
               && (!result.candidates || result.candidates.length === 0)
               && result.items.filter(i => i.matched).length === 0 && (
-              <div className="text-center text-ink-400 dark:text-ink-500 text-[11px] py-3">
+              <div className="text-center text-[var(--t3)] text-[11px] py-3">
                 <CheckCircle2 className="w-4 h-4 mx-auto mb-1 opacity-50" />
                 No matches. Try editing the hints above.
               </div>
@@ -513,14 +513,14 @@ function ExpandedPanel({
       </div>
 
       {/* Running schedule — always visible at the bottom */}
-      <div className="border-t border-ink-200 dark:border-ink-800 bg-ink-50 dark:bg-ink-900 shrink-0">
+      <div className="border-t border-[var(--line)] bg-[var(--s1)] shrink-0">
         <div className="flex items-center justify-between px-3 py-1.5">
-          <span className="text-[10px] uppercase tracking-wide font-semibold text-ink-500 dark:text-ink-400">
+          <span className="text-[10px] uppercase tracking-wide font-semibold text-[var(--t3)]">
             Material schedule {schedule.split('\n').length > 4 ? `(${schedule.split('\n').length - 4} item${schedule.split('\n').length - 4 === 1 ? '' : 's'})` : ''}
           </span>
           <div className="flex items-center gap-1">
             <button onClick={copySchedule} disabled={!schedule.trim()}
-              className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium text-ink-600 dark:text-ink-300 hover:bg-ink-200 dark:hover:bg-ink-700 disabled:opacity-40 transition-colors">
+              className="inline-flex items-center gap-1 h-5 px-1.5 rounded text-[10px] font-medium text-[var(--t2)] hover:bg-[var(--s-hover)] disabled:opacity-40 transition-colors">
               <Copy className="w-2.5 h-2.5" /> Copy
             </button>
             <button onClick={clearSchedule} disabled={!schedule.trim()}
@@ -533,7 +533,7 @@ function ExpandedPanel({
           value={schedule}
           onChange={e => setSchedule(e.target.value)}
           placeholder="Adding candidates above will append rows here. Edit freely, then Copy."
-          className="w-full h-32 px-3 pb-2 bg-transparent text-[10.5px] font-mono focus:outline-none resize-none placeholder:text-ink-300 dark:placeholder:text-ink-600"
+          className="w-full h-32 px-3 pb-2 bg-transparent text-[10.5px] font-mono focus:outline-none resize-none placeholder:text-[var(--t4)]"
         />
       </div>
     </div>
@@ -552,18 +552,18 @@ function CandidateRow({
     <div className="flex items-start gap-2 px-2.5 py-1.5">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className="text-[9.5px] font-semibold uppercase tracking-wide text-ink-400">{c.confidence}</span>
+          <span className="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--t3)]">{c.confidence}</span>
           {c.matched
             ? <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">in list</span>
-            : <span className="text-[9px] px-1 py-0.5 rounded bg-ink-200 dark:bg-ink-700 text-ink-600">not priced</span>}
+            : <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--s3)] text-[var(--t2)]">not priced</span>}
           {c.suggested_qty && c.suggested_qty > 1 && (
-            <span className="text-[9px] px-1 py-0.5 rounded bg-brand-100 dark:bg-brand-900/40 text-brand-700 dark:text-brand-300">qty {c.suggested_qty}</span>
+            <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent-text)]">qty {c.suggested_qty}</span>
           )}
         </div>
         <p className="font-mono text-[11px] font-semibold truncate">{c.cat_no}</p>
-        {c.family && <p className="text-[10px] text-brand-600 dark:text-brand-400 truncate">{c.family}</p>}
-        {c.description && <p className="text-[10px] text-ink-500 dark:text-ink-400 line-clamp-1">{c.description}</p>}
-        {c.reasoning && <p className="text-[9.5px] text-ink-500 dark:text-ink-400 italic line-clamp-2 mt-0.5">"{c.reasoning}"</p>}
+        {c.family && <p className="text-[10px] text-[var(--accent-text)] truncate">{c.family}</p>}
+        {c.description && <p className="text-[10px] text-[var(--t3)] line-clamp-1">{c.description}</p>}
+        {c.reasoning && <p className="text-[9.5px] text-[var(--t3)] italic line-clamp-2 mt-0.5">"{c.reasoning}"</p>}
       </div>
       <div className="flex flex-col items-end gap-1 shrink-0">
         {c.matched && c.ntp != null && (

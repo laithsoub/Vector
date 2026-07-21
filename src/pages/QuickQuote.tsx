@@ -111,62 +111,62 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
   const srcTag: Record<Src, { t: string; c: string; Icon: any }> = {
     cbu:    { t: 'CBU',       c: 'text-blue-600 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/25',       Icon: Cpu },
     lum:    { t: 'Luminaire', c: 'text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/25',   Icon: Lightbulb },
-    manual: { t: 'Manual',    c: 'text-ink-500 dark:text-ink-300 bg-ink-100 dark:bg-ink-800',             Icon: Wrench },
+    manual: { t: 'Manual',    c: 'text-[var(--t3)] bg-[var(--s3)]',             Icon: Wrench },
   };
-  const inp = 'h-7 px-2 rounded-md text-[11.5px] bg-ink-50 dark:bg-ink-800 ring-1 ring-inset ring-ink-200 dark:ring-ink-600 focus:outline-none focus:ring-violet-400 text-ink-800 dark:text-ink-100';
+  const inp = 'h-7 px-2 rounded-md text-[11.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 text-[var(--t1)]';
 
   return (
     <div className="px-5 py-3 space-y-3">
       {/* Header fields */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Job name</span>
+        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Job name</span>
           <input value={quoteName} onChange={e => setQuoteName(e.target.value)} className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Job number</span>
+        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Job number</span>
           <input value={quoteNumber} onChange={e => setQuoteNumber(e.target.value)} placeholder="CR00…" className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Quotation No</span>
+        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Quotation No</span>
           <input value={quoteNo} onChange={e => setQuoteNo(e.target.value)} placeholder="EU1L… (optional)" className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Date</span>
+        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Date</span>
           <input value={date} onChange={e => setDate(e.target.value)} className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">Salesman</span>
+        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Salesman</span>
           <select value={smIdx} onChange={e => setSmIdx(Number(e.target.value))} className={inp}>
             {SALESMEN.map((s, i) => <option key={s.email} value={i}>{s.name}</option>)}
           </select></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-ink-400 uppercase tracking-wide">CBU system</span>
+        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">CBU system</span>
           <div className="relative">
             <select value={system} onChange={e => changeSystem(e.target.value)} className={cn(inp, 'w-full appearance-none pr-6')}>
               <option value="">{detecting ? 'Detecting…' : 'None'}</option>
               {ALL_SYSTEMS.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <ChevronDown className="w-3 h-3 absolute right-2 top-2 text-ink-400 pointer-events-none" />
+            <ChevronDown className="w-3 h-3 absolute right-2 top-2 text-[var(--t3)] pointer-events-none" />
           </div></label>
       </div>
 
       {/* Action row */}
       <div className="flex items-center gap-2 flex-wrap">
         <button onClick={detectCbu} disabled={detecting}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-50">
+          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] disabled:opacity-50">
           {detecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Cpu className="w-3 h-3" />} Detect CBU
         </button>
         <button onClick={pullLuminaires} disabled={pulling}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800 disabled:opacity-50">
+          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] disabled:opacity-50">
           {pulling ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Pull luminaires
         </button>
         <button onClick={addManual}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-ink-200 dark:ring-ink-600 text-ink-600 dark:text-ink-300 hover:bg-ink-50 dark:hover:bg-ink-800">
+          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)]">
           <Plus className="w-3 h-3" /> Add line
         </button>
       </div>
 
       {/* Line items */}
-      <div className="rounded-lg ring-1 ring-inset ring-ink-200 dark:ring-ink-700 overflow-hidden">
-        <div className="grid grid-cols-[68px_84px_1fr_40px_76px_80px_22px] gap-1 px-2 py-1.5 bg-ink-50 dark:bg-ink-800/60 text-[10px] font-semibold text-ink-500 uppercase tracking-wide">
+      <div className="rounded-lg ring-1 ring-inset ring-[var(--line-2)] overflow-hidden">
+        <div className="grid grid-cols-[68px_84px_1fr_40px_76px_80px_22px] gap-1 px-2 py-1.5 bg-[var(--s3)] text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">
           <span>Catalog No</span><span>Product</span><span>Description</span><span className="text-center">Qty</span><span className="text-right">Unit £</span><span className="text-right">Line £</span><span />
         </div>
-        {lines.length === 0 && <p className="px-3 py-4 text-[11.5px] text-ink-400 text-center">No lines yet — detect a CBU, pull luminaires, or add a line.</p>}
+        {lines.length === 0 && <p className="px-3 py-4 text-[11.5px] text-[var(--t3)] text-center">No lines yet — detect a CBU, pull luminaires, or add a line.</p>}
         {lines.map(l => {
           const tag = srcTag[l.src];
           return (
-            <div key={l.id} className="grid grid-cols-[68px_84px_1fr_40px_76px_80px_22px] gap-1 px-2 py-1 items-center border-t border-ink-100 dark:border-ink-800">
+            <div key={l.id} className="grid grid-cols-[68px_84px_1fr_40px_76px_80px_22px] gap-1 px-2 py-1 items-center border-t border-[var(--line)]">
               <input value={l.catNo} onChange={e => upd(l.id, { catNo: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-[10.5px]')} />
               <input value={l.product} onChange={e => upd(l.id, { product: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-[10.5px]')} />
               <div className="flex items-center gap-1 min-w-0">
@@ -175,24 +175,24 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
               </div>
               <input type="number" value={l.qty} onChange={e => upd(l.id, { qty: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-[10.5px] text-center')} />
               <input type="number" step="0.01" value={l.price} onChange={e => upd(l.id, { price: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-[10.5px] text-right')} />
-              <span className="text-[10.5px] text-right text-ink-700 dark:text-ink-200 tabular-nums">{gbp((Number(l.qty) || 0) * (Number(l.price) || 0))}</span>
-              <button onClick={() => del(l.id)} className="w-5 h-5 flex items-center justify-center text-ink-300 hover:text-red-500 transition-colors"><Trash2 className="w-3 h-3" /></button>
+              <span className="text-[10.5px] text-right text-[var(--t2)] tabular-nums">{gbp((Number(l.qty) || 0) * (Number(l.price) || 0))}</span>
+              <button onClick={() => del(l.id)} className="w-5 h-5 flex items-center justify-center text-[var(--t4)] hover:text-red-500 transition-colors"><Trash2 className="w-3 h-3" /></button>
             </div>
           );
         })}
-        <div className="flex items-center justify-end gap-4 px-3 py-1.5 border-t border-ink-200 dark:border-ink-700 bg-ink-50 dark:bg-ink-800/60">
-          <span className="text-[11px] font-semibold text-ink-500 uppercase tracking-wide">Total (list, ex-VAT)</span>
-          <span className="text-[13px] font-bold text-ink-900 dark:text-ink-50 tabular-nums">{gbp(total)}</span>
+        <div className="flex items-center justify-end gap-4 px-3 py-1.5 border-t border-[var(--line-2)] bg-[var(--s3)]">
+          <span className="text-[11px] font-semibold text-[var(--t3)] uppercase tracking-wide">Total (list, ex-VAT)</span>
+          <span className="text-[13px] font-bold text-[var(--t1)] tabular-nums">{gbp(total)}</span>
         </div>
       </div>
 
       {/* Generate */}
       <div className="flex items-center gap-3 flex-wrap">
-        <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-600 dark:text-ink-300 cursor-pointer select-none">
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--t2)] cursor-pointer select-none">
           <input type="checkbox" checked={appendComm} onChange={e => setAppendComm(e.target.checked)} className="accent-violet-600" />
           Commissioning
         </label>
-        <label className="inline-flex items-center gap-1.5 text-[11px] text-ink-600 dark:text-ink-300 cursor-pointer select-none">
+        <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--t2)] cursor-pointer select-none">
           <input type="checkbox" checked={appendTC} onChange={e => setAppendTC(e.target.checked)} className="accent-violet-600" />
           T&amp;C
         </label>

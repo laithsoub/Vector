@@ -616,6 +616,20 @@ _IT_SW_KW = [
     "cella", "celle", "xiria",
 ]
 
+# ── UK/BE: emergency lighting (EL) vs fire (FIRE) ───────────────────────────
+# English Eaton-UK template; BE uses the same template, so both share this set.
+_UK_EL_KW = [
+    "dualguard", "static inverter", "central battery", "emergency lighting",
+    "cgline", "self-contained", "self contained", "escape route",
+    "exit sign", "exit luminaire", "luminaire", "bulkhead",
+]
+_UK_EL_TOKENS = [r"\bcbu\b"]
+_UK_FIRE_KW = [
+    "fire alarm", "fire detection", "smoke detector", "smoke detection",
+    "call point", "sounder", "addressable panel", "aspirating",
+    "heat detector", "beam detector",
+]
+
 
 def _division_fr(blob):
     has_fire = _hit(blob, _FR_FIRE_KW, _FR_FIRE_TOKENS)
@@ -646,9 +660,19 @@ def _division_it(blob):
     return ""
 
 
+def _division_uk(blob):
+    has_fire = _hit(blob, _UK_FIRE_KW)
+    has_el   = _hit(blob, _UK_EL_KW, _UK_EL_TOKENS)
+    if has_fire and has_el: return "EL & FIRE"
+    if has_fire: return "FIRE"
+    if has_el:   return "EL"
+    return ""
+
+
 def detect_division(lang, *texts):
     """Suggest the UI Product-line code from a quote's text, by language.
 
+    UK/BE  → EL / FIRE / EL & FIRE (English Eaton-UK template).
     FR/IT → EL / FIRE / EL & FIRE (lighting & fire-safety quotes).
     IT     → also MV-SWITCHGEAR (quadri / media tensione).
     DE     → MV-SWITCHGEAR / MV-TRANSFORMER / MV-COMBINATION.
@@ -658,6 +682,7 @@ def detect_division(lang, *texts):
     if lang == "FR": return _division_fr(blob)
     if lang == "DE": return _division_de(blob)
     if lang == "IT": return _division_it(blob)
+    if lang in ("UK", "BE"): return _division_uk(blob)
     return ""
 
 
