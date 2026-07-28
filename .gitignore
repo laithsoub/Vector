@@ -36,7 +36,7 @@ graph_token_cache.json
 # ─── Local databases & exports (private customer/quote data) ────────────────
 *.db
 *.db-*
-*.db.bak
+*.db.*
 *.sqlite
 *.sqlite3
 crm_quotations.csv
