@@ -910,7 +910,17 @@ async function dqFullTextSearch(
   }
   const authorFilter = author ? ` Author:"${author.replace(/"/g, '')}"` : '';
 
-  const kql   = `${q} path:"${dqUrl}" IsDocument:1${authorFilter}`;
+  // Neutralise KQL operators inside the user/caller term: a leading "-" is NOT,
+  // ":" starts a property restriction, quotes/parens change grouping. Project
+  // names like "24-7 Group" or "A - MANCHESTER, …" otherwise silently turn into
+  // a different query than the one asked for.
+  const term = String(q || '').replace(/["():]+/g, ' ').replace(/(^|\s)[-+~]+/g, '$1')
+    .replace(/\s+/g, ' ').trim();
+  // A 1-2 character term is not a restriction at all — SharePoint answers with
+  // the whole store and the caller attaches whatever ranks first. Refuse it.
+  if (term.replace(/[^A-Za-z0-9]/g, '').length < 3) return { results: [], total: 0, author };
+
+  const kql   = `${term} path:"${dqUrl}" IsDocument:1${authorFilter}`;
   const props = 'Title,Path,Filename,FileExtension,LastModifiedTime,Author,HitHighlightedSummary';
   const searchUrl = `${cfg.sp_site}/_api/search/query`
     + `?querytext=${encodeURIComponent(`'${kql.replace(/'/g, "''")}'`)}`
@@ -1353,15 +1363,31 @@ async function startServer() {
     s = s.replace(/^[A-Za-z]{1,4}\d{3,}[A-Za-z0-9.\-]*\s*[-:]\s*/, '').trim(); // leading quote code "QW27313A - "
     s = s.replace(/^[-\s]*A\d+R\b[-\s]*/i, '').trim();  // leading region code "A1R- "
     s = s.split(/\s+AKA\s+/i)[0];                       // "X AKA Y" → "X"
-    s = s.split(/\s+-\s+/)[0].trim();                   // "X - Option 2" → "X"
-    s = s.replace(/\s*\([^()]*\)\s*$/, '').trim();      // trailing (code)
-    s = s.replace(/[\s\-#]+\d{4,}(?:-\d+)?\s*$/, '').trim(); // trailing date
-    s = s.replace(/\s+(only|stock|ele|EL|additions|renewal)\s*$/i, '').trim(); // order qualifiers
-    s = s.replace(/^[\s\-#/,]+/, '').trim();            // leading punctuation
+
+    // Tidy one candidate name: trailing code/date/qualifier, stray punctuation.
+    const tidy = (v: string) => v
+      .replace(/\s*\([^()]*\)\s*$/, '')                 // trailing (code)
+      .replace(/\s*\([^()]*$/, '')                      // dangling "(…" — SP truncates this field
+      .replace(/[\s\-#]+\d{4,}(?:-\d+)?\s*$/, '')       // trailing date
+      .replace(/\s+(only|stock|ele|EL|additions|renewal)\s*$/i, '') // order qualifiers
+      .replace(/^[\s\-#/,]+/, '')
+      .trim();
     // Junk = empty, too short, or a bare quote number/code (e.g. "27352", "QW27411").
-    const junk = !s || s.length < 3 || /^[A-Za-z]{0,4}\d{2,}[A-Za-z0-9]*$/.test(s);
-    if (junk) return stripAccountCode(customer) || s || '';
-    return s;
+    const junk = (v: string) => !v || v.length < 3 || /^[A-Za-z]{0,4}\d{2,}[A-Za-z0-9]*$/.test(v);
+
+    // "A - MANCHESTER, …", "QR - Cross Manufacturing", "507660 - Hindle Court":
+    // the first segment is a revision marker or works number, not the project.
+    // Take the first segment that is a REAL name and never keep a 1-2 char
+    // fragment — as an account alias it matches every lookup and turns the D&Q
+    // search into "return the whole store".
+    for (const seg of s.split(/\s+-\s+/)) {
+      const v = tidy(seg);
+      if (!junk(v)) return v;
+    }
+    const cust = stripAccountCode(customer);
+    if (!junk(cust)) return cust;
+    const whole = tidy(s);
+    return junk(whole) ? '' : whole;
   }
 
   // The raw jobs.customer values are OCR-noisy quote names: a Salesforce/case ID
@@ -1613,9 +1639,13 @@ async function startServer() {
       const ns = [String(c.name), ...crmAliases(c.id)].map(s => s.toLowerCase());
       let score = 0;
       for (const n of ns) {
+        // Fuzzy tiers need enough characters on BOTH sides to mean anything —
+        // a 1-2 char account name otherwise matched every query that contained
+        // that letter (see nameMatches, which already guards the same way).
+        const fuzzy = n.length >= 4 && q.length >= 3;
         if (n === q) score = Math.max(score, 3);
-        else if (n.startsWith(q) || q.startsWith(n)) score = Math.max(score, 2);
-        else if (n.includes(q) || q.includes(n)) score = Math.max(score, 1);
+        else if (fuzzy && (n.startsWith(q) || q.startsWith(n))) score = Math.max(score, 2);
+        else if (fuzzy && (n.includes(q) || q.includes(n))) score = Math.max(score, 1);
       }
       if (score > bestScore) { bestScore = score; best = c; }
     }
@@ -2107,21 +2137,41 @@ async function startServer() {
     if (local) { res.json({ url: `/api/crm/quote/${id}/file`, source: 'local', name: path.basename(local) }); return; }
 
     // No local copy — try the D&Q Store (needs a live JOE session).
-    const q = queryAll('SELECT title, quoteName, customer FROM crm_quote WHERE id = ? AND ownerId = ?', [id, ownerId()])[0] as any;
+    const q = queryAll('SELECT sfId, title, quoteName, customer FROM crm_quote WHERE id = ? AND ownerId = ?', [id, ownerId()])[0] as any;
     const cookies = getSpCookies();
     if (!cookies) {
       res.status(404).json({ error: 'No local PDF. Click "Connect to JOE" to open it from the D&Q Store.' }); return;
     }
     const cfg = loadPyCfg();
     const cookieStr = `FedAuth=${cookies.fed}; rtFa=${cookies.rt}`;
-    const terms = [q?.title, q?.quoteName, q?.customer].map(s => String(s || '').trim()).filter(t => t.length >= 3);
+    // Search by a STRONG identifier only (Salesforce id / quote code: no spaces,
+    // has a digit) and accept a hit ONLY if the filename carries that identifier.
+    // Searching by project or customer name and taking results[0] is how one
+    // unrelated quote ended up attached to hundreds of entries.
+    const strong = (v: any) => {
+      const s = String(v || '').trim();
+      return /^[A-Za-z0-9][A-Za-z0-9-]{5,}$/.test(s) && /\d/.test(s) ? s : '';
+    };
+    const norm  = (s: any) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const terms = [...new Set([strong(q?.sfId), strong(q?.title)].filter(Boolean))];
+    if (!terms.length) {
+      res.status(404).json({ error: 'No local PDF, and this quote has no Salesforce ID or quote code to look it up with.' });
+      return;
+    }
     try {
       for (const term of terms) {
         const { results } = await dqFullTextSearch(term, false, cookieStr, cfg);
-        const pdf = results.find((r: any) => r.ext === 'pdf') || results[0];
-        if (pdf?.url) { res.json({ url: pdf.url, source: 'sharepoint', name: pdf.filename }); return; }
+        const want = norm(term);
+        // Accept in order of evidence: the reference in the PDF's own filename,
+        // then in any file's name, then in the indexed document TEXT (works
+        // numbers like "QB28479A" live inside the quote, not in the filename).
+        // Never accept a hit that carries the reference nowhere.
+        const hit = results.find((r: any) => r.ext === 'pdf' && norm(r.filename).includes(want))
+                 || results.find((r: any) => norm(r.filename).includes(want))
+                 || results.find((r: any) => r.ext === 'pdf' && norm(r.summary).includes(want));
+        if (hit?.url) { res.json({ url: hit.url, source: 'sharepoint', name: hit.filename }); return; }
       }
-      res.status(404).json({ error: 'No PDF found locally or in the D&Q Store for this quote.' });
+      res.status(404).json({ error: `No D&Q Store document carries this quote's reference (${terms[0]}).` });
     } catch (e: any) {
       res.status(502).json({ error: 'D&Q Store search failed: ' + e.message });
     }
