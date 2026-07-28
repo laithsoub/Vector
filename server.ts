@@ -2153,25 +2153,36 @@ async function startServer() {
       return /^[A-Za-z0-9][A-Za-z0-9-]{5,}$/.test(s) && /\d/.test(s) ? s : '';
     };
     const norm  = (s: any) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const terms = [...new Set([strong(q?.sfId), strong(q?.title)].filter(Boolean))];
+    // ONE reference has several forms. The Quotations List stores the 18-char
+    // Salesforce id (006QO00000WokMzYAJ); D&Q filenames use the short case form
+    // (CR00WokMzYAJ / SR00… / EU00…) — same trailing 8-char core. Quote codes
+    // carry a revision suffix ("EU1L0603X6K2-0000") the store may not repeat.
+    // Search every form and accept a hit that carries ANY of them, so the long
+    // id no longer fails against a file named with the short one.
+    const sf    = strong(q?.sfId);
+    const code  = strong(q?.title);
+    const base  = code.replace(/-\d+$/, '');            // drop the revision suffix
+    const core  = sf.length >= 12 ? sf.slice(-8) : '';  // shared by every id form
+    const terms = [...new Set([sf, code, base].filter(Boolean))].slice(0, 3);
+    const refs  = [...new Set([sf, code, base, core].filter(Boolean))].map(norm);
     if (!terms.length) {
       res.status(404).json({ error: 'No local PDF, and this quote has no Salesforce ID or quote code to look it up with.' });
       return;
     }
+    const carries = (r: any) => refs.some(w => norm(r.filename).includes(w));
     try {
       for (const term of terms) {
         const { results } = await dqFullTextSearch(term, false, cookieStr, cfg);
-        const want = norm(term);
-        // Accept in order of evidence: the reference in the PDF's own filename,
+        // Accept in order of evidence: a reference in the PDF's own filename,
         // then in any file's name, then in the indexed document TEXT (works
         // numbers like "QB28479A" live inside the quote, not in the filename).
         // Never accept a hit that carries the reference nowhere.
-        const hit = results.find((r: any) => r.ext === 'pdf' && norm(r.filename).includes(want))
-                 || results.find((r: any) => norm(r.filename).includes(want))
-                 || results.find((r: any) => r.ext === 'pdf' && norm(r.summary).includes(want));
+        const hit = results.find((r: any) => r.ext === 'pdf' && carries(r))
+                 || results.find((r: any) => carries(r))
+                 || results.find((r: any) => r.ext === 'pdf' && refs.some(w => norm(r.summary).includes(w)));
         if (hit?.url) { res.json({ url: hit.url, source: 'sharepoint', name: hit.filename }); return; }
       }
-      res.status(404).json({ error: `No D&Q Store document carries this quote's reference (${terms[0]}).` });
+      res.status(404).json({ error: `No D&Q Store document carries this quote's reference (tried ${terms.join(', ')}).` });
     } catch (e: any) {
       res.status(502).json({ error: 'D&Q Store search failed: ' + e.message });
     }
