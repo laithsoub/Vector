@@ -40,6 +40,8 @@ graph_token_cache.json
 *.sqlite
 *.sqlite3
 crm_quotations.csv
+# D&Q backfill audit output — one row per real customer quote, per-run filename
+/automation/dq_audit*.csv
 /data/
 
 # ─── Logs & runtime state ────────────────────────────────────────────────────

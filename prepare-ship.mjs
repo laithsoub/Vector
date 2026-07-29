@@ -26,16 +26,28 @@ const EXCLUDE_NAMES = new Set([
   // gated-feature scripts (also blocked server-side in sidecar mode)
   'schematic_reader.py', 'pmo_raise.py', 'cbu_export.py', 'parse_cbu.py',
   'commission_export.py',
+  // internal maintenance tooling — audits/rewrites the shared D&Q Store, must
+  // never reach an installed copy on someone else's machine
+  'dq_backfill_audit.py',
   // gated-feature data (price lists, calculators, T&C documents)
   'el_pricelist.xlsx', 'cbu_calculator.xlsm', 'docs',
   // caches
   '__pycache__',
 ]);
 const EXCLUDE_EXT = new Set(['.log', '.pyc', '.pyo', '.bak']);
+// Name PATTERNS excluded anywhere in the tree. An exact-name list is not enough for
+// audit output: every run can name its CSV differently (dq_audit.csv, dq_audit_3m.csv,
+// dq_audit_2026-07-28.csv) and each one carries real customer quote references.
+const EXCLUDE_PATTERNS = [/^dq_audit.*\.csv$/i];
+
+function sensitive(name) {
+  return EXCLUDE_NAMES.has(name)
+      || EXCLUDE_PATTERNS.some(re => re.test(name))
+      || EXCLUDE_EXT.has(path.extname(name).toLowerCase());
+}
 
 function excluded(src) {
-  const name = path.basename(src);
-  return EXCLUDE_NAMES.has(name) || EXCLUDE_EXT.has(path.extname(name).toLowerCase());
+  return sensitive(path.basename(src));
 }
 
 rmSync(DST, { recursive: true, force: true });
@@ -62,7 +74,7 @@ function walk(dir) {
     if (statSync(p).isDirectory()) { walk(p); continue; }
     // config.json is exempt here: the sanitized template written above is allowed,
     // and the dedicated check below verifies it carries no key.
-    if (/\.(enc|log|pyc)$/i.test(name) || (EXCLUDE_NAMES.has(name) && name !== 'config.json') || name === '.session_key') leaks.push(p);
+    if (/\.(enc|log|pyc)$/i.test(name) || (sensitive(name) && name !== 'config.json') || name === '.session_key') leaks.push(p);
     if (name === 'config.json') {
       const c = readFileSync(p, 'utf8');
       if (/AIza|"gemini_key":\s*"[^"]/.test(c) && !/"gemini_key":\s*""/.test(c)) leaks.push(p + ' (gemini key!)');
