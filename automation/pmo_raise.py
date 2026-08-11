@@ -203,6 +203,21 @@ def _system_tokens(s):
     )
 
 
+def _raw_tokens(s):
+    """Tokens WITHOUT stripping the quote-ref prefix — the fallback comparison."""
+    return frozenset(t.upper() for t in re.findall(r'[A-Za-z0-9]+', s or '') if len(t) >= 2)
+
+
+def _ref_parts(s):
+    """('SR00TLWSNYAE', '1') from 'SR00tlWsnYAE-S1'; (None, None) if absent.
+
+    Covers every reference style that appears in a designation — QB/QR BidManager
+    numbers and the SR/CR/EU/ER Salesforce forms.
+    """
+    m = re.search(r'\b((?:QB|QR|QT|SR|CR|EU|ER|OP)[A-Za-z0-9]+?)-S(\d+)\b', s or '', re.IGNORECASE)
+    return (m.group(1).upper(), m.group(2)) if m else (None, None)
+
+
 def _token_score(s1, s2):
     """
     Flexible Jaccard similarity between two designation strings.
@@ -210,10 +225,29 @@ def _token_score(s1, s2):
     different word orderings (e.g. 'EMS1 ZB96 System 1' vs 'ZB96 System 1 EMS1').
     Returns the best score found.
     """
+    # A designation that names its system is authoritative: token overlap alone
+    # scores 'QB28150-S1 … System 1 EMS1' against '…-S9 … System 9 EMS9' at 0.50
+    # and '…-S2' against '…-S3' at 0.33, both above the match threshold. Either
+    # would put another system's price on the PMO, so settle it on the ids first.
+    b1, n1 = _ref_parts(s1)
+    b2, n2 = _ref_parts(s2)
+    if n1 and n2 and n1 != n2:
+        return 0.0                      # different system of the same job
+    if b1 and b2 and b1 != b2:
+        return 0.0                      # different job altogether
+
     t1 = _system_tokens(s1)
     t2 = _system_tokens(s2)
     if not t1 or not t2:
-        return 0.0
+        # On a single-system job the designation is nothing BUT the quote ref
+        # ('SR00tlWsnYAE-S1'), so stripping the prefix leaves nothing to compare
+        # and every such quote scored 0.00 — the sell-out price silently came
+        # back blank. Fall back to the un-stripped refs; the id checks above have
+        # already ruled out the wrong system or the wrong job.
+        r1, r2 = _raw_tokens(s1), _raw_tokens(s2)
+        if not r1 or not r2:
+            return 0.0
+        return len(r1 & r2) / len(r1 | r2)
     union = t1 | t2
     if not union:
         return 0.0

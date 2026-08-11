@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   readFileSync, writeFileSync, existsSync,
-  readdirSync, statSync, unlinkSync, mkdirSync, rmdirSync, createReadStream
+  readdirSync, statSync, unlinkSync, mkdirSync, rmdirSync, createReadStream, copyFileSync
 } from 'fs';
 import os from 'os';
 import { spawn, execFileSync } from 'child_process';
@@ -203,6 +203,24 @@ function loadDb() {
     status TEXT, division TEXT, country TEXT, arrivedOn TEXT,
     raw TEXT, syncedAt TEXT NOT NULL
   );`);
+  // Quotes found by sweeping the MAILBOX rather than SharePoint — one row per
+  // quote reference, deduped across every message that mentions it. `side` is the
+  // scanner's verdict (mine = this desk issued/filed it, team = a colleague did);
+  // `override` is the user's correction and always wins.
+  db.run(`CREATE TABLE IF NOT EXISTS crm_mail_quote (
+    ownerId INTEGER NOT NULL DEFAULT 0,
+    qkey TEXT NOT NULL,
+    kind TEXT, ref TEXT,
+    subject TEXT, sender TEXT, senderEmail TEXT, recipients TEXT,
+    firstSeen TEXT, lastSeen TEXT,
+    entryId TEXT, folder TEXT, store TEXT, folders TEXT, docs TEXT,
+    msgs INTEGER DEFAULT 0,
+    side TEXT NOT NULL DEFAULT 'team', sideWhy TEXT, sideFolder TEXT,
+    override TEXT,
+    companyId INTEGER, account TEXT, matchedBy TEXT,
+    scannedAt TEXT NOT NULL,
+    PRIMARY KEY (ownerId, qkey)
+  );`);
   // Per-user sync bookkeeping for incremental syncs.
   db.run(`CREATE TABLE IF NOT EXISTS crm_sync_meta (
     ownerId INTEGER PRIMARY KEY,
@@ -220,7 +238,62 @@ function loadDb() {
     ownerId INTEGER, ownerTitle TEXT, hash TEXT,
     ts INTEGER NOT NULL
   );`);
+  // ── Job report: one row per mail CONVERSATION (a thread = one job done), with
+  // its AI category cached. `sig` fingerprints the thread's size + last date, so a
+  // thread is only re-classified when it actually moved on — a re-run over the
+  // same period costs no AI calls at all.
+  db.run(`CREATE TABLE IF NOT EXISTS mail_job (
+    conv TEXT PRIMARY KEY,
+    topic TEXT,
+    category TEXT,
+    summary TEXT,
+    counterpart TEXT,
+    firstDate TEXT, lastDate TEXT,
+    msgs INTEGER DEFAULT 0, sent INTEGER DEFAULT 0,
+    folders TEXT, completed INTEGER DEFAULT 0,
+    hasAtt INTEGER DEFAULT 0,
+    sig TEXT, ts TEXT NOT NULL
+  );`);
+  db.run(`CREATE TABLE IF NOT EXISTS mail_job_meta (
+    id INTEGER PRIMARY KEY,
+    lastFrom TEXT, lastTo TEXT, lastScanAt TEXT, report TEXT
+  );`);
+  // ── To-Do: one row per thing still owed, whether the AI triage found it in the
+  // shared mailbox or it was added by hand from the Inbox. `bucket` is the triage
+  // verdict (direct / needs_info / needs_team). A row carries an unsent delegation
+  // draft — nothing is ever mailed until the user presses Send on the item.
+  db.run(`CREATE TABLE IF NOT EXISTS todo (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conv TEXT, entryId TEXT,
+    subject TEXT, sender TEXT, senderEmail TEXT, received TEXT,
+    bucket TEXT NOT NULL DEFAULT 'direct',
+    title TEXT NOT NULL, summary TEXT, action TEXT, blocker TEXT, notes TEXT,
+    recipients TEXT, attachments TEXT,
+    draftSubject TEXT, draftBody TEXT,
+    due TEXT, priority TEXT,
+    status TEXT NOT NULL DEFAULT 'open',
+    source TEXT,
+    createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, doneAt TEXT, sentAt TEXT
+  );`);
+  // Everyone this desk actually corresponds with, ranked by traffic — the source
+  // of the recipient picker. Harvested from Outlook, refreshed on demand.
+  db.run(`CREATE TABLE IF NOT EXISTS mail_contact (
+    email TEXT PRIMARY KEY,
+    name TEXT,
+    count INTEGER DEFAULT 0, sent INTEGER DEFAULT 0, received INTEGER DEFAULT 0,
+    lastSeen TEXT, updatedAt TEXT
+  );`);
+  // Survives a restart so the To-Do tab can show the last scan's outcome instead
+  // of a blank "never scanned" panel — same contract as crm_sync_meta.
+  db.run(`CREATE TABLE IF NOT EXISTS todo_meta (
+    id INTEGER PRIMARY KEY,
+    lastScanAt TEXT, lastContactsAt TEXT,
+    lastScanDays INTEGER, lastScanMailbox TEXT,
+    lastScanThreads INTEGER, lastScanCreated INTEGER, lastScanUpdated INTEGER,
+    lastScanMessage TEXT, lastScanError TEXT, lastScanStartedAt TEXT
+  );`);
   migrateDb();
+  migrateTodo();
   migrateCrm();
   saveDb();
 }
@@ -244,6 +317,33 @@ function migrateDb() {
     }
   } catch (e: any) {
     console.warn('[migrate] skipped:', e.message);
+  }
+}
+
+// ── To-Do migration: the first build of todo_meta only held the two timestamps.
+// The scan outcome columns were added afterwards, so an existing DB needs them
+// bolted on — otherwise every status read after a restart throws.
+function migrateTodo() {
+  try {
+    const cols = queryAll(`PRAGMA table_info(todo_meta)`).map(r => r.name as string);
+    const additions: Array<[string, string]> = [
+      ['lastScanDays',      'INTEGER'],
+      ['lastScanMailbox',   'TEXT'],
+      ['lastScanThreads',   'INTEGER'],
+      ['lastScanCreated',   'INTEGER'],
+      ['lastScanUpdated',   'INTEGER'],
+      ['lastScanMessage',   'TEXT'],
+      ['lastScanError',     'TEXT'],
+      ['lastScanStartedAt', 'TEXT'],
+    ];
+    for (const [name, type] of additions) {
+      if (!cols.includes(name)) {
+        db.run(`ALTER TABLE todo_meta ADD COLUMN ${name} ${type}`);
+        console.log(`[migrate] added todo_meta.${name} (${type})`);
+      }
+    }
+  } catch (e: any) {
+    console.warn('[migrate] todo_meta skipped:', e.message);
   }
 }
 
@@ -733,13 +833,17 @@ function getGemini() {
   return _gemini;
 }
 
-// One brain, two engines. AI_MODEL_SMART = heavy reasoning (Ask Vector chat, email
-// summaries, inbox follow-up chat); AI_MODEL_FAST = routing / classification / tiny
-// extraction. NOTE: gemini-2.5-pro is retired for new API keys (404 NOT_FOUND), so
-// SMART points at flash too — the "smarter" gain comes from the rewritten prompts +
-// larger token budgets. Swap SMART to a newer pro model here once the key supports one.
-const AI_MODEL_SMART = 'gemini-2.5-flash';
-const AI_MODEL_FAST  = 'gemini-2.5-flash';
+// One brain, two engines. The SMART model (Ask Vector chat, email summaries, inbox
+// follow-up chat) is now CONFIGURABLE — Settings → "AI model" writes cfg.ai_model, so
+// Laith can point it at whatever his key exposes (gemini-3-flash, a pro tier, …) with
+// NO code edit. GET /api/ai-models lists what the key actually supports. Fallback below
+// is the safe default: gemini-2.5-pro is retired for new keys (404), flash always works.
+// AI_MODEL_FAST = routing / classification / tiny extraction — kept fixed & cheap.
+const AI_MODEL_FALLBACK = 'gemini-2.5-flash';
+function smartModel(): string {
+  return String((loadPyCfg() as any).ai_model || '').trim() || AI_MODEL_FALLBACK;
+}
+const AI_MODEL_FAST = 'gemini-2.5-flash';
 
 // Mark Fenton's distilled EL guidance, folded into the unified brain so Ask Vector
 // (and the inbox chat) can answer EL application questions without a separate tab.
@@ -768,6 +872,7 @@ function buildSystemPrompt(appContext: string): string {
     '- You are ALREADY inside the app. Never tell the user to "open Ask Vector", "go to the Inbox", or "click Summarize" — they are already there.',
     '- Use short numbered steps ONLY when the user genuinely needs a procedure; otherwise just answer.',
     '- If something is truly missing or ambiguous, ask one sharp question instead of guessing.',
+    '- Formatting: when comparing parts/options or asked to "tabulate / put in a table", output a GitHub-style markdown table (| col | col | with a |---|---| separator) — the app renders it. When asked to draft/inject an email, write the actual email (Subject + body) ready to copy. Keep tables tight: only the columns that matter.',
     '',
     '## What Vector does',
     '- **Dashboard**: drop queue + recent jobs; Run Step 1 / Run Step 2.',
@@ -783,6 +888,13 @@ function buildSystemPrompt(appContext: string): string {
     '## Quote search',
     "The app can search the user's quotes by customer, salesman, kVA rating, catalogue/fitting number, or ANY text inside the quote PDF/email (the D&Q Store is full-text indexed). Never claim search is limited to Salesforce ID or customer name, or that you cannot search a spec like \"4kVA\".",
     'But in THIS reply you cannot run the search yourself and have no results in hand — so NEVER say "searching…", "one moment", "retrieving", or pretend results are loading. If the user wants to find quotes, tell them in ONE line to type the thing itself (e.g. "4kVA", a customer, a salesman name) and the app runs the real search and shows result cards.',
+    '',
+    '## Web search & finding alternatives',
+    'PRIMARY SOURCE: if a "## Eaton EL price sheet" block appears in the live context below, it is AUTHORITATIVE — trust it over the web. An [exact] row means the part IS a real Eaton item (give its real description/price, flag "Phase-out planned" if shown); [description-match] rows are real Eaton alternatives from the same family — offer those first. Only use the web to supplement or when the sheet has NO match. NEVER contradict the sheet (e.g. never call a sheet part another brand).',
+    'You ALWAYS have live Google Search — every single turn. NEVER say "I cannot perform a live web search", "I can\'t browse", or ask the user to rephrase so search turns on. If the user says check/verify/"dig it up online"/"double check", or you are unsure, just SEARCH NOW and answer with sources. Pull real Eaton/Cooper catalogue numbers, datasheets, specs, cross-references from manufacturer pages and reputable distributors, and cite them (the app renders the sources under your answer).',
+    '- Finding alternatives/equivalents: identify the exact part (sheet first), then name concrete Eaton equivalents with the spec that matters (lumen output, IP/IK rating, wattage, duration, mounting). Say WHY each is a valid swap. Never invent a catalogue number — ground it in the sheet or a cited source, or say you could not confirm one.',
+    '- Any price from the web is an EXTERNAL figure, NOT the Eaton NTP. Say so and point the user to the EL Pricer / configurator for the real number.',
+    '- "double check / verify this online / dig it up" = go search the web right now and confirm or correct what you said, with sources. Do it — never deflect or ask them to rephrase.',
     '',
     '## Mark Fenton knowledge',
     "You carry Mark Fenton's (Senior Lighting Application Engineer, Eaton UK) accumulated EL guidance as a knowledge base (supplied below when present). Use it for EL application questions and cite the date (YYYY-MM-DD) of the answer you draw on. If a topic isn't covered there, say so plainly rather than inventing.",
@@ -823,20 +935,108 @@ function extractObject(text: string): any | null {
   return null;
 }
 
+// ─── EL price-sheet lookup (authoritative internal source) ─────────────────────
+// Spawns schematic_reader.py --mode search against el_pricelist.xlsx and returns real
+// rows. Hoisted to module scope so BOTH the Inbox pricing chat AND the main Ask Vector
+// brain (chatAnswer) consult the same sheet — the sheet is the ONLY trustworthy source
+// of Eaton EL catalogue numbers; anything not here must NOT be invented.
+interface ElSheetRow { catNo: string; description: string; family: string; listPrice: number; ntp: number; status: string; matchType: string; score: number; }
+const _elSearchCache = new Map<string, ElSheetRow[]>();
+function elSheetSearch(query: string, cacheKey?: string): Promise<ElSheetRow[]> {
+  return new Promise((resolve) => {
+    const q = String(query || '').trim();
+    if (cacheKey && _elSearchCache.has(cacheKey)) { resolve(_elSearchCache.get(cacheKey)!); return; }
+    const script = pyFile('schematic_reader.py');
+    if (!existsSync(script) || !q) { resolve([]); return; }
+    const tmpDir = path.join(os.tmpdir(), `elsearch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    try { mkdirSync(tmpDir, { recursive: true }); } catch {}
+    const inp = path.join(tmpDir, 'q.txt');
+    try { writeFileSync(inp, q); } catch { resolve([]); return; }
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--mode', 'search', '--input', inp], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let out = '';
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 30_000);
+    proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    const done = (matches: any[]) => {
+      clearTimeout(killer);
+      try { unlinkSync(inp); } catch {}
+      try { rmdirSync(tmpDir); } catch {}
+      const rows: ElSheetRow[] = (matches || []).map((m: any) => ({
+        catNo: m.cat_no, description: m.description, family: m.family || '',
+        listPrice: m.list_price || 0, ntp: m.ntp || 0, status: m.status || '',
+        matchType: m.match_type || '', score: m.score || 0,
+      }));
+      if (cacheKey) _elSearchCache.set(cacheKey, rows);
+      resolve(rows);
+    };
+    proc.on('error', () => done([]));
+    proc.on('close', () => {
+      // schematic_reader can emit bare NaN / Infinity (invalid JSON) for a missing
+      // NTP — sanitize to null so JSON.parse doesn't throw and drop the whole result.
+      const safe = out.trim().replace(/\bNaN\b/g, 'null').replace(/-?\bInfinity\b/g, 'null');
+      try { done(JSON.parse(safe).matches || []); } catch { done([]); }
+    });
+  });
+}
+function fmtElRow(r: ElSheetRow): string {
+  const tag = r.matchType === 'exact' ? '[exact]' : `[description-match, score ${r.score}]`;
+  const price = `list £${r.listPrice.toFixed(2)}${r.ntp ? ` | NTP £${r.ntp.toFixed(2)}` : ''}`;
+  return `${r.catNo} — ${r.description}${r.family ? ` (${r.family})` : ''}: ${price} ${tag}`;
+}
+
+// ─── Answer meta: a smart title + quick-action offers ──────────────────────────
+// One fast call after each answer returns BOTH: (1) a short, topic-based TITLE naming
+// what the answer/thread is actually about (used to name exports — NOT the literal last
+// message like "put them on a table"); and (2) 2-4 creative next-action offers rendered
+// as clickable chips (clicking sends it as the next message → endless follow-ups).
+async function answerMeta(
+  ai: any, query: string, answer: string,
+  history?: Array<{ role: string; text: string }>,
+): Promise<{ title: string; suggestions: string[] }> {
+  try {
+    const convo = [
+      ...(history || []).slice(-4).map(h => `${h.role === 'user' ? 'User' : 'Vector'}: ${String(h.text).replace(/\s+/g, ' ').slice(0, 280)}`),
+      `User: ${String(query).replace(/\s+/g, ' ').slice(0, 280)}`,
+      `Vector: ${String(answer).replace(/\s+/g, ' ').slice(0, 700)}`,
+    ].join('\n');
+    const prompt =
+      'You are Ask Vector inside Vector, an Eaton quote/PMO automation app. Read the conversation and return TWO things as JSON.\n' +
+      '1) "title": a short, specific, human title for what this answer/thread is ABOUT — used to name an exported file. Describe the SUBJECT, never the user\'s phrasing or the action. E.g. "Eaton V-CG-SLU 490 Alternatives", "PMO Raising Walkthrough", "FedAuth Reconnect Fix", "4kVA Quote Search". 3-7 words, Title Case, no dates, no file extension, no quotes, no "Ask Vector".\n' +
+      '2) "actions": the 2-4 most useful NEXT ACTIONS the user may want next — creative, specific to THIS conversation, short imperative offers the assistant will carry out if clicked (e.g. put the options in a comparison table; draft an email to the customer; price the alternatives; pull a datasheet; list phase-out replacements; explain the differences). Each 3-7 words, imperative, no trailing punctuation, no numbering, no quotes. [] if none fit.\n\n' +
+      `Conversation:\n${convo}\n\nReturn ONLY a JSON object: {"title": "...", "actions": ["...", "..."]}.`;
+    const r = await ai.models.generateContent({
+      model: AI_MODEL_FAST,
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { maxOutputTokens: 300, temperature: 0.6, thinkingConfig: { thinkingBudget: 0 } },
+    });
+    const obj = extractObject(r.text ?? '') || {};
+    const title = typeof obj.title === 'string'
+      ? obj.title.trim().replace(/^["'\s]+|["'\s.]+$/g, '').replace(/\.(pdf|docx?|xlsx?|csv|txt|md|html|json)$/i, '').slice(0, 70)
+      : '';
+    const suggestions = Array.isArray(obj.actions)
+      ? obj.actions
+          .filter((s: any) => typeof s === 'string' && s.trim())
+          .map((s: string) => s.trim().replace(/^[-*\d.\s]+/, '').replace(/[.]+$/, '').slice(0, 60))
+          .filter(Boolean)
+          .slice(0, 4)
+      : [];
+    return { title, suggestions };
+  } catch {}
+  return { title: '', suggestions: [] };
+}
+
 // ─── Shared chat brain (used by /api/ai and /api/quote-ask chat fallback) ──────
-// Builds live app context from the local jobs DB + queue, then asks Gemini.
+// Builds live app context from the local jobs DB + queue, then asks Gemini. Google
+// Search grounding is ALWAYS attached — the model self-decides when to actually search,
+// so Ask Vector can always verify, find alternatives or pull datasheets and NEVER has to
+// say "I can't search". Cited sources are appended whenever it grounded. Full access,
+// every time (Laith's explicit ask). Also returns creative quick-action offers.
 async function chatAnswer(
   query: string,
   history?: Array<{ role: string; text: string }>,
-): Promise<{ answer: string | null; error?: string; source?: string }> {
+): Promise<{ answer: string | null; error?: string; source?: string; suggestions?: string[]; title?: string }> {
   const ai = getGemini();
   if (!ai) return { answer: null, error: 'No Gemini API key — add gemini_key in Settings' };
-
-  const cacheKey = hashStr(query + JSON.stringify((history || []).slice(-3)));
-  const cached   = _aiCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < AI_TTL && !history?.length) {
-    return { answer: cached.answer, source: 'cache' };
-  }
 
   let appContext = '';
   try {
@@ -866,6 +1066,56 @@ async function chatAnswer(
     appContext = contextLines.join('\n');
   } catch {}
 
+  // ── Consult the AUTHORITATIVE Eaton EL price sheet whenever a product/part/price is
+  // in play. The sheet is the only trustworthy source of real Eaton EL catalogue numbers
+  // — without it the model guesses (mislabels real Eaton parts / invents cat-nos). We
+  // look at the message + recent user turns so a cat-no mentioned EARLIER still resolves
+  // on a chatty follow-up ("dig it up online and double check", "give me the codes").
+  const userHist = (history || []).filter(h => h.role === 'user').slice(-3).map(h => h.text);
+  const lookupText = [query, ...userHist].join('  ');
+  // Catalogue-number-like tokens (6+ digit runs, or alnum codes with a digit).
+  const catTokens = Array.from(new Set(
+    (lookupText.match(/\b(?=[A-Za-z0-9-]*[0-9])[A-Za-z0-9-]{4,}\b/g) || []).slice(0, 5),
+  ));
+  // Run the (python-spawning) sheet lookup only when there's an actual product signal —
+  // a cat-no anywhere in the thread, or product/price wording. Pure chit-chat skips it.
+  const wantSheet = catTokens.length > 0
+    || /\b(price|pricing|cost|ntp|list price|catalogue|catalog|cat[\s-]?no|part\s*(?:no|number)|fitting|luminaire|lumen|wattage|bulkhead|exit sign|emergency|driver|led|tube|equivalent|alternativ|replace|substitut|phase[\s-]?out|datasheet|data sheet|spec)\b/i.test(lookupText);
+  if (wantSheet) {
+    try {
+      // Search EACH bare token on its own — a chatty blob otherwise buries the exact row
+      // under junk description-matches; the bare token gives a clean [exact] hit.
+      const byCat = new Map<string, ElSheetRow>();
+      const exacts: ElSheetRow[] = [];
+      for (const tok of catTokens) {
+        const rows = await elSheetSearch(tok, `tok:${tok}`);
+        const ex = rows.find(r => r.matchType === 'exact');
+        if (ex && !byCat.has(ex.catNo)) { byCat.set(ex.catNo, ex); exacts.push(ex); }
+      }
+      // Always also run a description search on the raw question for close candidates.
+      for (const r of (await elSheetSearch(query)).slice(0, 6)) {
+        if (r.catNo && !byCat.has(r.catNo)) byCat.set(r.catNo, r);
+      }
+      // Each exact hit → pull its family siblings from the sheet as real alternatives.
+      for (const ex of exacts) {
+        const seed = ex.family || ex.description.split(/[-(]/)[0].trim();
+        if (!seed) continue;
+        for (const r of (await elSheetSearch(seed, `fam:${seed}`)).slice(0, 12)) {
+          if (r.catNo && !byCat.has(r.catNo)) byCat.set(r.catNo, r);
+        }
+      }
+      const uniq = Array.from(byCat.values());
+      const sheetBlock = uniq.length
+        ? [
+            'Eaton EL price-sheet matches (ex VAT — AUTHORITATIVE internal source; the ONLY place real Eaton EL catalogue numbers come from — NEVER invent one, NEVER call these parts another brand):',
+            ...uniq.slice(0, 16).map(fmtElRow),
+            '[exact] = confirmed Eaton EL part — it IS a real Eaton item; state its real description/price and note "Phase-out planned" if flagged. [description-match] = real sheet rows in the SAME FAMILY. When the user asks for an alternative/equivalent/replacement, you MUST list these same-family rows with their catalogue number + description (+ price if asked) as "same-family options in the sheet" — NEVER answer "no alternatives" while such rows exist; let the user pick and note the variant difference (e.g. output/size) where clear. Prices are internal Eaton — give the figures asked, don\'t dump every column.',
+          ].join('\n')
+        : 'Eaton EL price-sheet: NO row matched. It may be a non-EL Eaton product (this sheet is emergency-lighting only) — say you can\'t confirm it in the EL sheet and offer to check the web / EL Pricer. Do NOT assign it to another brand from a guess, and NEVER invent an Eaton catalogue number.';
+      appContext += (appContext ? '\n\n' : '') + '## Eaton EL price sheet (authoritative — read before answering)\n' + sheetBlock;
+    } catch {}
+  }
+
   const turns: Array<{ role: string; parts: Array<{ text: string }> }> = [];
   if (history?.length) {
     for (const h of history.slice(-10)) {
@@ -876,15 +1126,41 @@ async function chatAnswer(
 
   try {
     const response = await ai.models.generateContent({
-      model: AI_MODEL_SMART,
+      model: smartModel(),
       contents: turns,
-      // 2.5-pro is a thinking model and, in this SDK, reasoning tokens draw from
-      // maxOutputTokens — keep it generous so the visible answer is never starved.
-      config: { systemInstruction: buildSystemPrompt(appContext), maxOutputTokens: 8192, temperature: 0.5 },
+      // Thinking models draw reasoning tokens from maxOutputTokens — keep it generous so
+      // the visible answer is never starved. Google Search grounding is ALWAYS attached;
+      // the model decides when to actually search, so it can always verify / find specs.
+      config: {
+        systemInstruction: buildSystemPrompt(appContext),
+        maxOutputTokens: 8192,
+        temperature: 0.5,
+        tools: [{ googleSearch: {} }],
+      },
     });
-    const answer = response.text ?? null;
-    if (answer && !history?.length) _aiCache.set(cacheKey, { answer, ts: Date.now() });
-    return { answer, source: 'gemini' };
+    let answer = response.text ?? null;
+
+    // Append clickable, deduped source citations (ChatGPT-style) when it grounded.
+    if (answer) {
+      const chunks = (response as any)?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+      const seen = new Set<string>();
+      const cites: string[] = [];
+      for (const c of chunks) {
+        const url = c?.web?.uri;
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        let title = c?.web?.title || '';
+        try { title = title || new URL(url).hostname.replace(/^www\./, ''); } catch {}
+        cites.push(`- [${title}](${url})`);
+        if (cites.length >= 6) break;
+      }
+      if (cites.length && !/\bsources?\b\s*[:\n]/i.test(answer)) {
+        answer += `\n\n**Sources**\n${cites.join('\n')}`;
+      }
+    }
+
+    const meta = answer ? await answerMeta(ai, query, answer, history) : { title: '', suggestions: [] };
+    return { answer, source: 'gemini+web', suggestions: meta.suggestions, title: meta.title };
   } catch (e: any) {
     const detail = e.cause?.message ? ` (${e.cause.message})` : '';
     return { answer: null, error: 'Gemini error: ' + e.message + detail };
@@ -1188,7 +1464,11 @@ async function startServer() {
   loadDb();
 
   const isSidecar = !!process.env.TAURI_SIDECAR;
-  const PORT      = isSidecar ? await findFreePort(7331) : 3000;
+  // VECTOR_PORT lets a second instance run beside the dev server (own DATA_DIR,
+  // own port) — the only way to exercise routes end-to-end without stopping the
+  // one you are working in. Still bound to 127.0.0.1 like every other mode.
+  const portEnv   = Number(process.env.VECTOR_PORT) || 0;
+  const PORT      = portEnv || (isSidecar ? await findFreePort(7331) : 3000);
   const app       = express();
 
   // ── Security: only accept requests addressed to localhost ──────────────────
@@ -1227,6 +1507,9 @@ async function startServer() {
       '/api/fenton/refresh', '/api/fenton/chat',
       '/api/quote/detect-cbu', '/api/quote/luminaires',
       '/api/crm/command',
+      // To-Do: the AI triage and the AI draft writer only. The board itself
+      // (/api/todo, /api/todo/:id/send) stays usable in the ship build.
+      '/api/todo/scan', '/api/todo/draft',
     ];
     app.use((req, res, next) => {
       if (SHIP_BLOCKED.some(p => req.path === p || req.path.startsWith(p + '/'))) {
@@ -1914,6 +2197,250 @@ async function startServer() {
     res.json({ quotes });
   });
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── Mailbox CRM: the quotes visible from this desk, wherever they sit ──────
+  // ══════════════════════════════════════════════════════════════════════════
+  // The Accounts tab is fed by the SharePoint Quotations List, which only ever
+  // holds what was pushed to it. This second source sweeps every Outlook folder
+  // (personal box + the shared quote-factory box, "Completed by …" folders and
+  // all) and indexes the quote references it finds, split into the work this desk
+  // issued and the work the rest of the team issued.
+  const mailScan = {
+    running: false,
+    phase: 'idle' as 'idle' | 'scanning' | 'matching' | 'done' | 'error',
+    message: '', error: null as string | null,
+    days: 90, scanned: 0, found: 0, mine: 0, team: 0,
+    startedAt: null as string | null, finishedAt: null as string | null,
+  };
+
+  // A mail subject reduced to something that can be matched against an account
+  // name: reply/forward marks, [EXTERNAL] banners and the reference itself are
+  // all noise.
+  function mailAccountGuess(subject: string, ref: string): string {
+    let s = String(subject || '')
+      .replace(/\bhttps?:\/\/\S+/gi, ' ')                  // Salesforce links etc.
+      .replace(/^\s*(?:(?:re|fw|fwd|tr|aw|wg)\s*:\s*)+/i, '')
+      .replace(/\[[^\]]*\]/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+    for (const r of [ref, normalizeSfid(ref)].filter(Boolean)) {
+      s = s.replace(new RegExp(r.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'ig'), ' ');
+    }
+    s = s.replace(/\b(?:00[A-Za-z0-9]{6,})\b/g, ' ')       // leftover short SF ids
+         .replace(/\s*[-–|]\s*$/, '').replace(/^\s*[-–|]\s*/, '')
+         .replace(/\s+/g, ' ').trim();
+    const guess = cleanQuoteName(s).slice(0, 90);
+    // A subject is only sometimes a project name. Anything that reads like a
+    // sentence, a URL or a scrap is worse than showing nothing at all.
+    if (guess.length < 4) return '';
+    if (!/[A-Za-z]{3}/.test(guess)) return '';
+    if (/[/\\]{2}|www\./i.test(guess)) return '';
+    if (guess.split(/\s+/).length > 10) return '';
+    return guess;
+  }
+
+  // Tie a mailbox quote to an account: first through the SharePoint snapshot
+  // (the reference is the reliable join), then by name against the aliases an
+  // account already claims.
+  function matchMailQuote(row: { kind: string; qkey: string; ref: string; subject: string }, oid: number) {
+    const aliasRows = queryAll(
+      'SELECT a.name AS name, a.companyId AS companyId FROM crm_alias a JOIN crm_company c ON c.id = a.companyId WHERE c.ownerId = ?',
+      [oid]) as any[];
+    const aliases = new Map(aliasRows.map(r => [String(r.name).toLowerCase(), r.companyId as number]));
+
+    let snap: any = null;
+    if (row.kind === 'sfid') {
+      const norm = normalizeSfid(row.qkey).toLowerCase();
+      snap = queryAll(
+        `SELECT account, customer, quoteName FROM crm_quote
+          WHERE ownerId = ? AND lower(IFNULL(sfId,'')) IN (?, ?) LIMIT 1`,
+        [oid, norm, row.qkey.toLowerCase()])[0] as any;
+    } else {
+      snap = queryAll(
+        `SELECT account, customer, quoteName FROM crm_quote
+          WHERE ownerId = ? AND upper(IFNULL(title,'')) LIKE ? LIMIT 1`,
+        [oid, `%${row.qkey.toUpperCase()}%`])[0] as any;
+    }
+    if (snap) {
+      const account = snap.account || cleanQuoteName(snap.quoteName || snap.customer || '');
+      if (account) {
+        return { companyId: aliases.get(String(account).toLowerCase()) ?? null, account, matchedBy: 'reference' };
+      }
+    }
+    // No snapshot row — this quote never reached the Quotations List, which is
+    // exactly the case this feature exists to surface. Fall back to the subject.
+    const guess = mailAccountGuess(row.subject, row.ref);
+    if (guess) {
+      const hit = aliases.get(guess.toLowerCase());
+      if (hit) return { companyId: hit, account: guess, matchedBy: 'name' };
+      const low = guess.toLowerCase();
+      for (const [name, cid] of aliases) {
+        if (name.length >= 6 && (low.includes(name) || name.includes(low))) {
+          return { companyId: cid, account: guess, matchedBy: 'name' };
+        }
+      }
+    }
+    return { companyId: null, account: guess || null, matchedBy: guess ? 'subject' : null };
+  }
+
+  async function runMailScan(days: number, oid: number) {
+    mailScan.running = true;
+    mailScan.phase = 'scanning';
+    mailScan.error = null;
+    mailScan.days = days;
+    mailScan.scanned = mailScan.found = mailScan.mine = mailScan.team = 0;
+    mailScan.startedAt = new Date().toISOString();
+    mailScan.finishedAt = null;
+    mailScan.message = `Reading every mail folder over the last ${days} days…`;
+    try {
+      // The sweep reports "[scan-crm-quotes] <folder>: <hits>" per folder — turn
+      // that into live progress instead of a silent multi-minute spinner.
+      let folders = 0, hits = 0;
+      const scan = await runOutlookPy(
+        ['--action', 'scan-crm-quotes', '--days', String(days), '--backend', 'win32'],
+        line => {
+          const m = /^\[scan-crm-quotes\]\s+(.*):\s*(\d+)\s*$/.exec(line);
+          if (!m) return;
+          folders++;
+          hits += Number(m[2]) || 0;
+          // `found` stays the deduped quote count, set once the sweep returns —
+          // the running tally here is per MESSAGE, so it only goes in the message.
+          mailScan.message = `Reading ${m[1].split('\\').pop()} — ${hits} quote mail${hits === 1 ? '' : 's'} so far (${folders} folder${folders === 1 ? '' : 's'})`;
+        });
+      if (scan?.error) throw new Error(scan.error);
+      const rows: any[] = scan?.quotes || [];
+      mailScan.scanned = Number(scan?.scanned) || 0;
+      mailScan.found = rows.length;
+      mailScan.phase = 'matching';
+      mailScan.message = `Matching ${rows.length} quote${rows.length === 1 ? '' : 's'} to accounts…`;
+
+      const now = new Date().toISOString();
+      // A re-scan refreshes what it sees and drops what it no longer sees for the
+      // same window, but never touches the user's own side overrides.
+      const kept = new Map<string, string>(
+        (queryAll('SELECT qkey, override FROM crm_mail_quote WHERE ownerId = ? AND override IS NOT NULL', [oid]) as any[])
+          .map(r => [String(r.qkey), String(r.override)]));
+      db.run('DELETE FROM crm_mail_quote WHERE ownerId = ?', [oid]);
+
+      for (const q of rows) {
+        const m = matchMailQuote({ kind: q.kind, qkey: q.key, ref: q.ref || '', subject: q.subject || '' }, oid);
+        const override = kept.get(String(q.key)) ?? null;
+        db.run(
+          `INSERT INTO crm_mail_quote
+             (ownerId,qkey,kind,ref,subject,sender,senderEmail,recipients,firstSeen,lastSeen,
+              entryId,folder,store,folders,docs,msgs,side,sideWhy,sideFolder,override,
+              companyId,account,matchedBy,scannedAt)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [oid, q.key, q.kind || null, q.ref || null, q.subject || null, q.sender || null,
+           q.senderEmail || null, q.to || null, q.first || null, q.last || null,
+           q.entryId || null, q.folder || null, q.store || null,
+           JSON.stringify(q.folders || []), JSON.stringify(q.docs || []),
+           Number(q.msgs) || 0, q.side === 'mine' ? 'mine' : 'team', q.why || null,
+           q.sideFolder || q.folder || null, override,
+           m.companyId, m.account, m.matchedBy, now]);
+        const side = override || (q.side === 'mine' ? 'mine' : 'team');
+        if (side === 'mine') mailScan.mine++; else mailScan.team++;
+      }
+      saveDb();
+      mailScan.phase = 'done';
+      mailScan.message = `${rows.length} quote${rows.length === 1 ? '' : 's'} found — ${mailScan.mine} yours, ${mailScan.team} the team's`;
+    } catch (e: any) {
+      mailScan.phase = 'error';
+      mailScan.error = e.message;
+      mailScan.message = `Scan failed: ${e.message}`;
+      console.warn('[crm-mailbox]', e.message);
+    } finally {
+      mailScan.running = false;
+      mailScan.finishedAt = new Date().toISOString();
+    }
+  }
+
+  function mailScanPayload(oid = ownerId()) {
+    const row = queryAll(
+      `SELECT COUNT(*) AS n, MAX(scannedAt) AS at,
+              SUM(CASE WHEN IFNULL(override, side) = 'mine' THEN 1 ELSE 0 END) AS mine
+         FROM crm_mail_quote WHERE ownerId = ?`, [oid])[0] as any;
+    const total = Number(row?.n) || 0;
+    const mine  = Number(row?.mine) || 0;
+    return {
+      ...mailScan,
+      counts: { total, mine, team: total - mine },
+      lastScanAt: row?.at || null,
+    };
+  }
+
+  // GET /api/crm/mailbox/status — progress + what is already indexed.
+  app.get('/api/crm/mailbox/status', (_req, res) => res.json(mailScanPayload()));
+
+  // POST /api/crm/mailbox/scan { days } — start a background sweep.
+  app.post('/api/crm/mailbox/scan', (req, res) => {
+    if (mailScan.running) { res.json({ started: false, ...mailScanPayload() }); return; }
+    const days = Math.min(730, Math.max(1, Number((req.body || {}).days) || 90));
+    runMailScan(days, ownerId());          // fire-and-forget; progress via /status
+    res.json({ started: true, ...mailScanPayload() });
+  });
+
+  // GET /api/crm/mailbox/quotes?side=mine|team|all&q=&limit=
+  app.get('/api/crm/mailbox/quotes', (req, res) => {
+    const oid  = ownerId();
+    const side = String(req.query.side || 'all').toLowerCase();
+    const q    = String(req.query.q || '').trim().toLowerCase();
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 300));
+
+    const where: string[] = ['ownerId = ?'];
+    const args: any[] = [oid];
+    if (side === 'mine' || side === 'team') { where.push(`IFNULL(override, side) = ?`); args.push(side); }
+    if (q.length >= 2) {
+      const like = `%${q}%`;
+      where.push(`(lower(IFNULL(subject,'')) LIKE ? OR lower(IFNULL(qkey,'')) LIKE ?
+                   OR lower(IFNULL(account,'')) LIKE ? OR lower(IFNULL(sender,'')) LIKE ?
+                   OR lower(IFNULL(senderEmail,'')) LIKE ? OR lower(IFNULL(folder,'')) LIKE ?)`);
+      args.push(like, like, like, like, like, like);
+    }
+    const rows = queryAll(
+      `SELECT * FROM crm_mail_quote WHERE ${where.join(' AND ')} ORDER BY lastSeen DESC LIMIT ?`,
+      [...args, limit]) as any[];
+
+    const payload = mailScanPayload(oid);
+    res.json({
+      quotes: rows.map(mailQuoteOut),
+      counts: payload.counts,
+      lastScanAt: payload.lastScanAt,
+    });
+  });
+
+  // POST /api/crm/mailbox/quote/side { qkey, side } — user correction; '' clears
+  // it and hands the row back to the scanner's own verdict.
+  app.post('/api/crm/mailbox/quote/side', (req, res) => {
+    const { qkey, side } = req.body as { qkey?: string; side?: string };
+    if (!qkey) { res.status(400).json({ error: 'qkey is required' }); return; }
+    const want = side === 'mine' || side === 'team' ? side : null;
+    db.run('UPDATE crm_mail_quote SET override = ? WHERE ownerId = ? AND qkey = ?', [want, ownerId(), qkey]);
+    saveDb();
+    const row = queryAll('SELECT * FROM crm_mail_quote WHERE ownerId = ? AND qkey = ?', [ownerId(), qkey])[0] as any;
+    if (!row) { res.status(404).json({ error: 'Unknown quote' }); return; }
+    res.json({ ok: true, quote: mailQuoteOut(row), counts: mailScanPayload().counts });
+  });
+
+  // Shape a crm_mail_quote row for the UI.
+  function mailQuoteOut(r: any) {
+    const parse = (s: any, fallback: any) => { try { return JSON.parse(s || ''); } catch { return fallback; } };
+    return {
+      key: r.qkey, kind: r.kind || 'sfid', ref: r.ref || r.qkey,
+      subject: r.subject || '(no subject)',
+      account: r.account || null, companyId: r.companyId ?? null, matchedBy: r.matchedBy || null,
+      sender: r.sender || '', senderEmail: r.senderEmail || '', recipients: r.recipients || '',
+      first: r.firstSeen || '', last: r.lastSeen || '',
+      entryId: r.entryId || '', folder: r.folder || '', store: r.store || '',
+      folders: parse(r.folders, []) as string[],
+      docs: parse(r.docs, []) as Array<{ index: number; name: string; size: number }>,
+      msgs: Number(r.msgs) || 0,
+      side: (r.override || r.side || 'team') as 'mine' | 'team',
+      scannerSide: (r.side || 'team') as 'mine' | 'team',
+      overridden: !!r.override,
+      why: r.sideWhy || '', whyFolder: r.sideFolder || '',
+    };
+  }
+
   // POST /api/crm/rebuild-accounts — re-derive account names from the stored
   // snapshot (no SharePoint re-scan), then rebuild accounts. Used after changing
   // the naming rule.
@@ -1983,9 +2510,15 @@ async function startServer() {
         };
       });
 
+    // Anything the mailbox sweep tied to this account — including quotes that
+    // never reached the Quotations List, which is the whole point of that sweep.
+    const mailQuotes = (queryAll(
+      'SELECT * FROM crm_mail_quote WHERE ownerId = ? AND companyId = ? ORDER BY lastSeen DESC LIMIT 60',
+      [ownerId(), id]) as any[]).map(mailQuoteOut);
+
     res.json({
       company: { ...company, aliases: crmAliases(id) },
-      contacts: [...autoContacts, ...contacts], facts, quotes, enriched,
+      contacts: [...autoContacts, ...contacts], facts, quotes, enriched, mailQuotes,
       opp: { count: open.length, value: open.reduce((s, q) => s + (q.price || 0), 0) },
     });
   });
@@ -2573,6 +3106,27 @@ async function startServer() {
     } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
   });
 
+  // ── AI models: what this key actually exposes ──────────────────────────────
+  // Powers the Settings "AI model" dropdown. Asks Google's ListModels with the
+  // configured key and returns only chat-capable models (generateContent), so the
+  // list is authoritative for THIS key — no guessing which gemini-3.x ids exist.
+  app.get('/api/ai-models', async (_req, res) => {
+    const key = String((loadPyCfg() as any).gemini_key || process.env.GEMINI_API_KEY || '').trim();
+    if (!key) { res.json({ models: [], current: smartModel(), fallback: AI_MODEL_FALLBACK, error: 'No Gemini API key — save your key above first.' }); return; }
+    try {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1000`);
+      const j: any = await r.json();
+      if (j?.error) { res.json({ models: [], current: smartModel(), fallback: AI_MODEL_FALLBACK, error: j.error.message }); return; }
+      const models = (j?.models || [])
+        .filter((m: any) => (m.supportedGenerationMethods || []).includes('generateContent'))
+        .map((m: any) => ({ id: String(m.name).replace(/^models\//, ''), label: m.displayName || String(m.name).replace(/^models\//, '') }))
+        .filter((m: any) => !/embedding|aqa|imagen|veo|tts|image-generation/i.test(m.id));
+      res.json({ models, current: smartModel(), fallback: AI_MODEL_FALLBACK });
+    } catch (e: any) {
+      res.json({ models: [], current: smartModel(), fallback: AI_MODEL_FALLBACK, error: e.message });
+    }
+  });
+
   // ── Session ────────────────────────────────────────────────────────────────
   app.get('/api/session', (_req, res) => {
     res.json({ startedAt: sessionStartedAt });
@@ -2882,21 +3436,145 @@ async function startServer() {
     res.json({ available: !!getGemini() });
   });
 
+  // ── Binary exports (PDF / DOCX / XLSX) ──────────────────────────────────────
+  // Text formats (txt/md/csv/html/json) are generated client-side; these three need
+  // reportlab/openpyxl or OOXML zipping, so a Python script writes the file and we
+  // stream the bytes back. Shared by the answer exporter and the job-report one.
+  const EXPORT_MIME: Record<string, string> = {
+    pdf:  'application/pdf',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  };
+
+  function runExporter(res: Response, scriptName: string, fmt: string,
+                       job: Record<string, unknown>, filename: string, timeoutMs = 60_000) {
+    const script = pyFile(scriptName);
+    if (!existsSync(script)) { res.status(500).json({ error: 'Exporter script missing' }); return; }
+
+    const tmpDir  = path.join(os.tmpdir(), `export_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    try { mkdirSync(tmpDir, { recursive: true }); } catch {}
+    const jobPath = path.join(tmpDir, 'job.json');
+    const outPath = path.join(tmpDir, `out.${fmt}`);
+    const cleanup = () => {
+      for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} }
+      try { rmdirSync(tmpDir); } catch {}
+    };
+    try {
+      writeFileSync(jobPath, JSON.stringify({ ...job, format: fmt }), 'utf8');
+    } catch (e: any) { cleanup(); res.status(500).json({ error: e.message }); return; }
+
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+      { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let errBuf = '';
+    proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
+    proc.on('error', (e: any) => {
+      clearTimeout(killer); cleanup();
+      if (!res.headersSent) res.status(500).json({ error: e.message });
+    });
+    proc.on('close', (code: number) => {
+      clearTimeout(killer);
+      if (code !== 0 || !existsSync(outPath)) {
+        cleanup();
+        if (!res.headersSent) res.status(500).json({ error: errBuf.trim() || 'Export failed' });
+        return;
+      }
+      try {
+        const buf  = readFileSync(outPath);
+        const safe = String(filename || 'vector-export').replace(/[^\w.-]+/g, '_').slice(0, 80) || 'vector-export';
+        res.setHeader('Content-Type', EXPORT_MIME[fmt]);
+        res.setHeader('Content-Disposition', `attachment; filename="${safe}.${fmt}"`);
+        res.end(buf);
+      } catch (e: any) {
+        if (!res.headersSent) res.status(500).json({ error: e.message });
+      } finally { cleanup(); }
+    });
+  }
+
+  // Body: { format, content (light markdown), title, filename }.
+  app.post('/api/export', (req, res) => {
+    const { format, content, title, filename } = req.body as {
+      format?: string; content?: string; title?: string; filename?: string;
+    };
+    const fmt = String(format || '').toLowerCase();
+    if (!EXPORT_MIME[fmt]) { res.status(400).json({ error: 'Unsupported server export format' }); return; }
+    runExporter(res, 'export_doc.py', fmt,
+      { title: title || '', content: content || '' }, String(filename || 'vector-export'), 30_000);
+  });
+
+  // ── Export the Job Report as a designed PDF / Word document ─────────────────
+  // export_report.py lays the structured report out with KPI tiles, category bars,
+  // an activity chart and a clickable contents page. The report itself is read from
+  // the DB — the browser only says WHICH jobs are on screen (`convs`, in display
+  // order) plus the colours it drew them in, so the request stays a few KB.
+  app.post('/api/export/job-report', (req, res) => {
+    const { format, convs, catColors, filter, owner, filename } = req.body as {
+      format?: string; convs?: string[]; catColors?: Record<string, string>;
+      filter?: { category?: string | null; query?: string }; owner?: string; filename?: string;
+    };
+    const fmt = String(format || '').toLowerCase();
+    if (fmt !== 'pdf' && fmt !== 'docx') {
+      res.status(400).json({ error: 'The job report exports to PDF or Word only' }); return;
+    }
+
+    const row = queryAll(`SELECT report FROM mail_job_meta WHERE id = 1`)[0] as any;
+    let report: any = null;
+    try { report = row?.report ? JSON.parse(row.report) : null; } catch { /* corrupt row */ }
+    if (!report?.threads?.length) {
+      res.status(400).json({ error: 'No report to export — build one first' }); return;
+    }
+
+    // Keep the on-screen selection and order; fall back to the whole report.
+    const byConv = new Map<string, any>(report.threads.map((t: any) => [t.conv, t]));
+    const picked = Array.isArray(convs) && convs.length
+      ? convs.map(c => byConv.get(c)).filter(Boolean)
+      : report.threads;
+    if (!picked.length) { res.status(400).json({ error: 'No jobs to export' }); return; }
+
+    runExporter(res, 'export_report.py', fmt, {
+      title:       'Job report',
+      range:       report.range,
+      generatedAt: report.generatedAt,
+      scanned:     report.totals?.scanned || 0,
+      truncated:   !!report.truncated,
+      owner:       String(owner || '').slice(0, 80),
+      threads:     picked,
+      catColors:   catColors && typeof catColors === 'object' ? catColors : {},
+      filter: {
+        total:    report.threads.length,
+        category: filter?.category || null,
+        query:    filter?.query || '',
+      },
+    }, String(filename || 'vector-job-report'), 90_000);
+  });
+
   // ══════════════════════════════════════════════════════════════════════════
   // ── Outlook integration (win32com or Microsoft Graph) ─────────────────────
   // ══════════════════════════════════════════════════════════════════════════
   let outlookBackend = 'auto'; // 'auto' | 'imap' | 'graph' | 'win32'
 
-  async function runOutlookPy(args: string[]): Promise<any> {
+  // `onProgress` receives each stderr line as it arrives — the long sweeps
+  // (scan-jobs, scan-crm-quotes) report the folder they are on that way, which is
+  // the only signal a caller has during a multi-minute walk of the mailbox.
+  async function runOutlookPy(args: string[], onProgress?: (line: string) => void): Promise<any> {
     return new Promise((resolve, reject) => {
       const script = pyFile('outlook_reader.py');
       if (!existsSync(script)) { reject(new Error('outlook_reader.py not found')); return; }
       const [cmd, base] = pyArgs(script);
       const proc = spawn(cmd, [...base, '--backend', outlookBackend, ...args],
         { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
-      let out = '', err = '';
+      let out = '', err = '', tail = '';
       proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-      proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+      proc.stderr.on('data', (d: Buffer) => {
+        const s = d.toString();
+        err += s;
+        if (!onProgress) return;
+        tail += s;
+        const lines = tail.split(/\r?\n/);
+        tail = lines.pop() || '';
+        for (const l of lines) { if (l.trim()) { try { onProgress(l.trim()); } catch { /* never kill the scan */ } } }
+      });
       proc.on('error', (e: Error) => reject(e));
       proc.on('close', () => {
         try { resolve(JSON.parse(out.trim())); }
@@ -3038,6 +3716,1126 @@ async function startServer() {
     const dest = path.join(loadPyCfg().base, 'PDF Quotes');
     try { res.json(await runOutlookPy(['--action', 'save-attachment', '--id', entryId, '--dest', dest])); }
     catch (e: any) { res.json({ error: e.message, saved: [] }); }
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── Quick check-up: quote mail that never reached the Quotations List ─────
+  // ══════════════════════════════════════════════════════════════════════════
+  // The scan finds quote mail in the Inbox tree; THIS decides what is missing,
+  // and it asks SharePoint live rather than trusting the local crm_quote mirror
+  // (that snapshot is only as fresh as the last CRM sync, and a stale "missing"
+  // verdict here means re-uploading a quote that is already filed).
+
+  // Mirror of Automation_V4.normalize_sfid: drop the revision suffix, expand the
+  // short SR00…/CR00… form to the 18-char id SharePoint stores.
+  function normalizeSfid(ref: string): string {
+    let s = (ref || '').trim();
+    if (!s) return s;
+    if (s.includes('-')) s = s.split('-')[0];
+    if (s.length >= 4 && s.slice(2, 4) === '00' && /^[A-Za-z]{2}$/.test(s.slice(0, 2))) {
+      s = '006QO00000' + s.slice(4);
+    }
+    return s;
+  }
+
+  // Is this reference already a row in the Quotations List? Cached per run so
+  // several mails carrying the same reference cost one HTTP call, not N.
+  //
+  // TWO identifier systems are in play and both must be checked:
+  //   - Salesforce ids (SR00…/CR00… → 006QO00000…) live in SALESFORCEID.
+  //   - BidManager numbers (QW28237, QB27005A2R) live in TITLE, and those rows
+  //     usually have NO SALESFORCEID at all. Manualnotification quote mail —
+  //     the main source — is identified this way, so checking only SALESFORCEID
+  //     reports every BidManager quote as unverifiable and invites a re-upload.
+  // Title is matched with substringof, not eq: stored titles carry revision
+  // suffixes ("QW27351A") and sometimes a leading space.
+  async function refOnSharePoint(
+    kind: 'sfid' | 'bm', ref: string, cookieStr: string, cfg: Record<string, string>,
+    cache: Map<string, any>,
+  ): Promise<{ known: boolean; item: any | null; checked: boolean }> {
+    const key = `${kind}:${ref}`;
+    if (cache.has(key)) return cache.get(key);
+    const safe   = ref.replace(/'/g, "''");
+    const select = 'Id,Title,SALESFORCEID,QUOTATION_x0020_NAME,CUSTOMER,STATUS';
+    const filter = kind === 'sfid'
+      ? `SALESFORCEID eq '${safe}'`
+      : `substringof('${safe}',Title)`;
+    const url = `${cfg.sp_list}/_api/web/lists/getbytitle('Quotations%20List')/items`
+              + `?$select=${select}&$filter=${encodeURIComponent(filter)}&$top=1`;
+    let out = { known: false, item: null as any, checked: false };
+    try {
+      const r = await spGet(url, cookieStr);
+      if (r.ok) {
+        const rows = JSON.parse(r.body)?.d?.results ?? [];
+        out = { known: rows.length > 0, item: rows[0] || null, checked: true };
+      }
+    } catch { /* leave checked:false — reported as "couldn't verify", never as "missing" */ }
+    cache.set(key, out);
+    return out;
+  }
+
+  // GET /api/quotes/checkup?days=30
+  app.get('/api/quotes/checkup', async (req, res) => {
+    const days = Math.min(365, Math.max(1, Number(req.query.days) || 30));
+    const cfg  = loadPyCfg();
+
+    let scan: any;
+    try {
+      scan = await runOutlookPy(['--action', 'scan-quotes', '--days', String(days), '--backend', 'win32']);
+    } catch (e: any) {
+      res.json({ items: [], error: `Couldn't read Outlook: ${e.message}` }); return;
+    }
+    if (scan?.error) { res.json({ items: [], error: scan.error }); return; }
+
+    const cookies   = getSpCookies();
+    const cookieStr = cookies ? `FedAuth=${cookies.fed}; rtFa=${cookies.rt}` : '';
+    const cache     = new Map<string, any>();
+
+    // Already sitting in the local queue, or already run through Step 1 here.
+    const queueDir = path.join(cfg.base, 'PDF Quotes');
+    let queued: string[] = [];
+    try { queued = readdirSync(queueDir).map(f => f.toLowerCase()); } catch {}
+    const doneSfids = new Set(
+      queryAll(`SELECT DISTINCT sfId FROM jobs WHERE sfId IS NOT NULL AND sfId != '' AND status = 'ok'`)
+        .map(r => normalizeSfid(String(r.sfId)).toLowerCase()),
+    );
+
+    const items: any[] = [];
+    for (const q of (scan.quotes || [])) {
+      const refs:   Array<{ raw: string; norm: string }> = q.refs || [];
+      const bmRefs: Array<{ raw: string; base: string }> = q.bmRefs || [];
+
+      const lookups: Array<['sfid' | 'bm', string]> = [
+        ...refs.map(r => ['sfid', r.norm] as ['sfid', string]),
+        ...bmRefs.map(b => ['bm', b.base] as ['bm', string]),
+      ];
+
+      let onSp = false, spItem: any = null, verified = false;
+      for (const [kind, value] of lookups) {
+        if (!cookieStr) break;
+        const hit = await refOnSharePoint(kind, value, cookieStr, cfg, cache);
+        if (hit.checked) verified = true;
+        if (hit.known) { onSp = true; spItem = hit.item; break; }
+      }
+
+      const inQueue  = (q.docs || []).some((d: any) => queued.includes(String(d.name).toLowerCase()));
+      const ranLocal = refs.some(r => doneSfids.has(r.norm.toLowerCase()));
+
+      // Only ever call something "missing" when SharePoint actually answered.
+      const status = onSp ? 'uploaded'
+        : inQueue          ? 'queued'
+        : ranLocal         ? 'processed'
+        : verified         ? 'missing'
+        : lookups.length   ? 'unverified'
+        : 'noref';
+
+      items.push({
+        entryId:  q.entryId,
+        subject:  q.subject,
+        sender:   q.sender,
+        senderEmail: q.senderEmail,
+        received: q.received,
+        folder:   q.folder,
+        isNotification: q.isNotification,
+        refs:     [...refs.map(r => r.raw), ...bmRefs.map(b => b.raw)],
+        sfid:     refs[0]?.norm || bmRefs[0]?.base || null,
+        docs:     q.docs || [],
+        status,
+        spTitle:    spItem?.Title || spItem?.QUOTATION_x0020_NAME || null,
+        spCustomer: spItem?.CUSTOMER || null,
+      });
+    }
+
+    res.json({
+      items,
+      scanned:   scan.scanned ?? 0,
+      days,
+      connected: !!cookieStr,
+      counts: {
+        missing:    items.filter(i => i.status === 'missing').length,
+        unverified: items.filter(i => i.status === 'unverified').length,
+        uploaded:   items.filter(i => i.status === 'uploaded').length,
+        queued:     items.filter(i => i.status === 'queued').length,
+      },
+      warning: cookieStr ? null
+        : 'Not connected to JOE — Vector could not check SharePoint, so nothing is confirmed missing. Connect and re-run.',
+    });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── Job report: what work actually got done over a period ─────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // Sweeps EVERY mail folder (including hand-made ones like "Completed by
+  // Laith"), groups messages into conversations — one thread = one job — and
+  // sorts each into a generic category. A full-mailbox sweep takes minutes, so
+  // it runs in the background with a polled status, like the CRM sync.
+
+  const DEFAULT_JOB_CATEGORIES = [
+    'Technical response',
+    'Pricing / quotation',
+    'PMO',
+    'Forwarding / routing',
+    'Quote upload / SharePoint',
+    'D&Q filing',
+    'Meetings / internal',
+    'Admin / other',
+  ];
+
+  function jobCategories(): string[] {
+    const raw = (loadPyCfg() as any).job_categories;
+    if (Array.isArray(raw) && raw.length) {
+      const clean = raw.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 20);
+      if (clean.length) return clean;
+    }
+    if (typeof raw === 'string' && raw.trim()) {
+      const clean = raw.split(/[\n,]/).map(s => s.trim()).filter(Boolean).slice(0, 20);
+      if (clean.length) return clean;
+    }
+    return DEFAULT_JOB_CATEGORIES;
+  }
+
+  type JobsReportState = {
+    running: boolean;
+    phase: 'idle' | 'scanning' | 'grouping' | 'classifying' | 'done' | 'error';
+    message: string;
+    messages: number; threads: number; classified: number; toClassify: number;
+    from: string; to: string;
+    error: string | null;
+    truncated: boolean;
+    startedAt: string | null;
+  };
+  const jobsReport: JobsReportState = {
+    running: false, phase: 'idle', message: '', messages: 0, threads: 0,
+    classified: 0, toClassify: 0, from: '', to: '', error: null,
+    truncated: false, startedAt: null,
+  };
+
+  // Ask the fast model to sort a batch of threads into the configured buckets.
+  async function classifyThreadBatch(
+    batch: Array<{ i: number; topic: string; counterpart: string; folders: string; sample: string }>,
+    cats: string[],
+  ): Promise<Map<number, { category: string; summary: string }>> {
+    const out = new Map<number, { category: string; summary: string }>();
+    const ai  = getGemini();
+    if (!ai) return out;
+
+    const lines = batch.map(b =>
+      `${b.i}. SUBJECT: ${b.topic.replace(/\s+/g, ' ').slice(0, 150)}\n`
+      + `   WITH: ${b.counterpart.slice(0, 90)} | FILED IN: ${b.folders.slice(0, 90)}\n`
+      + `   OPENING: ${b.sample.replace(/\s+/g, ' ').slice(0, 320)}`,
+    ).join('\n\n');
+
+    const prompt =
+      'You are classifying the work an Eaton emergency-lighting quote/PMO engineer did, one email THREAD per entry. '
+      + 'For each thread decide which single category best describes THE WORK HE DID, and write a very short factual line saying what was done.\n\n'
+      + `Categories (use EXACTLY one of these strings, nothing else):\n${cats.map(c => `- ${c}`).join('\n')}\n\n`
+      + 'Rules:\n'
+      + '- Judge by the work, not the wording. A thread where he sent specs/product advice is a technical response; one where he issued or chased a price is pricing; project-management coordination is PMO; simply passing a mail to someone else is forwarding.\n'
+      + '- IGNORE boilerplate in the opening text — out-of-office notices, ticket auto-acknowledgements, signatures, confidentiality footers. Classify the underlying job the thread is about, never the auto-reply. If the opening text is ONLY boilerplate, judge from the subject alone.\n'
+      + `- If nothing fits, use "${cats[cats.length - 1]}". Never invent a category.\n`
+      + '- "summary": max 12 words, factual, no pronouns, e.g. "Quoted CGLine+ replacement for Glasgow refurb".\n\n'
+      + `Threads:\n${lines}\n\n`
+      + 'Return ONLY a JSON array: [{"i":<number>,"category":"<exact category>","summary":"<short line>"}]';
+
+    try {
+      const r = await ai.models.generateContent({
+        model: AI_MODEL_FAST,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { maxOutputTokens: 4000, temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
+      });
+      const txt = r.text ?? '';
+      const m   = txt.match(/\[[\s\S]*\]/);
+      if (!m) return out;
+      const arr = JSON.parse(m[0]);
+      const valid = new Set(cats.map(c => c.toLowerCase()));
+      for (const row of (Array.isArray(arr) ? arr : [])) {
+        const i = Number(row?.i);
+        if (!Number.isFinite(i)) continue;
+        let cat = String(row?.category || '').trim();
+        if (!valid.has(cat.toLowerCase())) cat = cats[cats.length - 1];
+        else cat = cats.find(c => c.toLowerCase() === cat.toLowerCase())!;
+        out.set(i, { category: cat, summary: String(row?.summary || '').trim().slice(0, 120) });
+      }
+    } catch (e: any) {
+      console.warn('[jobs-report] classify batch failed:', e.message);
+    }
+    return out;
+  }
+
+  async function runJobsReport(from: string, to: string) {
+    jobsReport.running = true;
+    jobsReport.phase = 'scanning';
+    jobsReport.error = null;
+    jobsReport.messages = jobsReport.threads = jobsReport.classified = jobsReport.toClassify = 0;
+    jobsReport.truncated = false;
+    jobsReport.from = from; jobsReport.to = to;
+    jobsReport.startedAt = new Date().toISOString();
+    jobsReport.message = 'Reading every mail folder…';
+
+    try {
+      const scan = await runOutlookPy([
+        '--action', 'scan-jobs', '--since', from, '--until', to,
+        '--max', '20000', '--backend', 'win32',
+      ]);
+      if (scan?.error) throw new Error(scan.error);
+
+      const msgs: any[] = scan.messages || [];
+      jobsReport.messages  = msgs.length;
+      jobsReport.truncated = !!scan.truncated;
+      jobsReport.phase     = 'grouping';
+      jobsReport.message   = `Grouping ${msgs.length} messages into threads…`;
+
+      const me = String(scan.me || '').toLowerCase();
+
+      // The shared quote-factory mailbox holds one "Completed by <person>" folder
+      // per engineer. Filing a thread in MY completed folder is proof I did it;
+      // finding it in a colleague's is proof I did NOT. Getting this wrong would
+      // silently credit Rida's and Josh's work to this report.
+      const meTokens = String(scan.meName || '')
+        .toLowerCase().split(/[^a-z]+/).filter(t => t.length > 2);
+      const localPart = me.split('@')[0].toLowerCase();
+      for (const t of localPart.split(/[^a-z]+/)) if (t.length > 2) meTokens.push(t);
+
+      // 'mine' | 'theirs' | null (not a completed-style folder at all)
+      function completedOwner(leaf: string): 'mine' | 'theirs' | null {
+        const m = /^(?:completed|done|finished)\b(.*)$/i.exec(leaf.trim());
+        if (!m) return null;
+        const who = m[1].replace(/^[\s-]*by[\s-]*/i, '').trim().toLowerCase();
+        if (!who) return 'mine';                                  // a plain "Completed" folder
+        if (meTokens.some(t => who.includes(t))) return 'mine';
+        return 'theirs';
+      }
+
+      // ── Group into conversations ────────────────────────────────────────────
+      type Thread = {
+        conv: string; topic: string; msgs: number; sent: number;
+        first: string; last: string; folders: Set<string>;
+        others: Set<string>; sample: string; hasAtt: boolean;
+        completed: boolean; foreign: boolean; human: boolean;
+      };
+      const samples: Record<string, string> = scan.samples || {};
+      const threads = new Map<string, Thread>();
+      for (const m of msgs) {
+        let t = threads.get(m.conv);
+        if (!t) {
+          t = {
+            conv: m.conv, topic: m.topic || m.subject, msgs: 0, sent: 0,
+            first: m.date, last: m.date, folders: new Set(), others: new Set(),
+            sample: samples[m.conv] || '', hasAtt: false,
+            completed: false, foreign: false, human: false,
+          };
+          threads.set(m.conv, t);
+        }
+        t.msgs++;
+        // An out-of-office bounce or a ticket auto-acknowledgement is not work.
+        // It must not count as a reply, and a thread made only of them is not a job.
+        if (!m.auto) t.human = true;
+        if (m.direction === 'sent' && !m.auto) t.sent++;
+        if (m.date && m.date < t.first) t.first = m.date;
+        if (m.date && m.date > t.last)  t.last  = m.date;
+        if (m.folder) {
+          const leaf = String(m.folder).split('\\').pop() || m.folder;
+          t.folders.add(leaf);
+          const owner = completedOwner(leaf);
+          if (owner === 'mine')   t.completed = true;
+          if (owner === 'theirs') t.foreign   = true;
+        }
+        const addr = String(m.senderEmail || '').toLowerCase();
+        if (addr && addr !== me && !m.auto) t.others.add(m.senderEmail);
+        if (m.atts) t.hasAtt = true;
+      }
+
+      // A "job done" = a thread actually worked here: replied to, or filed into
+      // MY completed folder. Threads only ever received and never touched are
+      // noise; threads filed under a colleague's name are their work, not mine —
+      // unless I also replied in them.
+      const worked = [...threads.values()]
+        .filter(t => t.human
+                  && (t.sent > 0 || t.completed)
+                  && !(t.foreign && !t.completed && t.sent === 0));
+      jobsReport.threads = worked.length;
+
+      // ── Classify only what changed since last time ──────────────────────────
+      const sigOf = (t: Thread) => hashStr(`${t.msgs}|${t.last}|${t.sent}`);
+      const cats  = jobCategories();
+      // Bump CLASSIFIER_REV whenever the prompt or the sampling rule changes, so
+      // rows cached under the old behaviour are re-classified instead of served stale.
+      const CLASSIFIER_REV = 2;
+      const catKey = hashStr(`v${CLASSIFIER_REV}|${cats.join('|')}`);
+
+      const pending: Array<{ i: number; topic: string; counterpart: string; folders: string; sample: string; t: Thread }> = [];
+      const cached  = new Map<string, { category: string; summary: string }>();
+      for (const t of worked) {
+        const row = queryAll(`SELECT category, summary, sig FROM mail_job WHERE conv = ?`, [t.conv])[0] as any;
+        const want = `${sigOf(t)}:${catKey}`;
+        if (row && row.sig === want && row.category) {
+          cached.set(t.conv, { category: row.category, summary: row.summary || '' });
+        } else {
+          pending.push({
+            i: pending.length,
+            topic: t.topic,
+            counterpart: [...t.others].slice(0, 3).join(', '),
+            folders: [...t.folders].slice(0, 3).join(', '),
+            sample: t.sample,
+            t,
+          });
+        }
+      }
+      jobsReport.toClassify = pending.length;
+      jobsReport.phase   = 'classifying';
+      jobsReport.message = pending.length
+        ? `Sorting ${pending.length} threads into categories…`
+        : 'All threads already categorised.';
+
+      const BATCH = 20;
+      for (let i = 0; i < pending.length; i += BATCH) {
+        const slice = pending.slice(i, i + BATCH).map((p, k) => ({ ...p, i: k }));
+        const got   = await classifyThreadBatch(slice, cats);
+        const now   = new Date().toISOString();
+        for (const p of slice) {
+          const hit = got.get(p.i) || { category: cats[cats.length - 1], summary: '' };
+          cached.set(p.t.conv, hit);
+          db.run(
+            `INSERT INTO mail_job (conv, topic, category, summary, counterpart, firstDate, lastDate,
+                                   msgs, sent, folders, completed, hasAtt, sig, ts)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(conv) DO UPDATE SET
+               topic=excluded.topic, category=excluded.category, summary=excluded.summary,
+               counterpart=excluded.counterpart, firstDate=excluded.firstDate, lastDate=excluded.lastDate,
+               msgs=excluded.msgs, sent=excluded.sent, folders=excluded.folders,
+               completed=excluded.completed, hasAtt=excluded.hasAtt, sig=excluded.sig, ts=excluded.ts`,
+            [p.t.conv, p.t.topic, hit.category, hit.summary, p.counterpart,
+             p.t.first, p.t.last, p.t.msgs, p.t.sent, p.folders,
+             p.t.completed ? 1 : 0, p.t.hasAtt ? 1 : 0,
+             `${sigOf(p.t)}:${catKey}`, now],
+          );
+        }
+        jobsReport.classified = Math.min(pending.length, i + BATCH);
+        jobsReport.message = `Sorting threads… ${jobsReport.classified}/${pending.length}`;
+      }
+      saveDb();
+
+      // ── Build the report ────────────────────────────────────────────────────
+      const rows = worked.map(t => {
+        const c = cached.get(t.conv) || { category: cats[cats.length - 1], summary: '' };
+        return {
+          conv: t.conv,
+          topic: t.topic || '(no subject)',
+          category: c.category,
+          summary: c.summary,
+          counterpart: [...t.others].slice(0, 3).join(', '),
+          msgs: t.msgs, sent: t.sent,
+          first: t.first, last: t.last,
+          folders: [...t.folders],
+          completed: t.completed,
+          hasAtt: t.hasAtt,
+        };
+      }).sort((a, b) => (b.last || '').localeCompare(a.last || ''));
+
+      const byCategory = cats.map(c => {
+        const hits = rows.filter(r => r.category === c);
+        return {
+          category: c,
+          threads: hits.length,
+          messages: hits.reduce((s, r) => s + r.msgs, 0),
+          replies: hits.reduce((s, r) => s + r.sent, 0),
+          pct: rows.length ? Math.round((hits.length / rows.length) * 100) : 0,
+        };
+      }).filter(c => c.threads > 0).sort((a, b) => b.threads - a.threads);
+
+      // Per-day activity, keyed off the last touch of each thread.
+      const perDay = new Map<string, number>();
+      for (const r of rows) {
+        const d = (r.last || '').slice(0, 10);
+        if (d) perDay.set(d, (perDay.get(d) || 0) + 1);
+      }
+      const daily = [...perDay.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([date, count]) => ({ date, count }));
+
+      const report = {
+        range: { from, to },
+        generatedAt: new Date().toISOString(),
+        totals: {
+          threads: rows.length,
+          messages: rows.reduce((s, r) => s + r.msgs, 0),
+          replies: rows.reduce((s, r) => s + r.sent, 0),
+          completedFiled: rows.filter(r => r.completed).length,
+          scanned: msgs.length,
+        },
+        byCategory,
+        daily,
+        folders: scan.folders || [],
+        threads: rows,
+        truncated: !!scan.truncated,
+      };
+
+      db.run(
+        `INSERT INTO mail_job_meta (id, lastFrom, lastTo, lastScanAt, report) VALUES (1,?,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET lastFrom=excluded.lastFrom, lastTo=excluded.lastTo,
+           lastScanAt=excluded.lastScanAt, report=excluded.report`,
+        [from, to, new Date().toISOString(), JSON.stringify(report)],
+      );
+      saveDb();
+
+      jobsReport.phase   = 'done';
+      jobsReport.message = `${rows.length} jobs across ${byCategory.length} categories.`;
+    } catch (e: any) {
+      jobsReport.phase   = 'error';
+      jobsReport.error   = e.message;
+      jobsReport.message = `Scan failed: ${e.message}`;
+      console.warn('[jobs-report]', e.message);
+    } finally {
+      jobsReport.running = false;
+    }
+  }
+
+  // POST /api/jobs-report/scan { from, to }  (DD/MM/YYYY) — fire and forget.
+  app.post('/api/jobs-report/scan', (req, res) => {
+    if (jobsReport.running) { res.json({ started: false, ...jobsReport }); return; }
+    const { from, to } = req.body as { from: string; to: string };
+    const ok = (s: string) => /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(String(s || '').trim());
+    if (!ok(from) || !ok(to)) {
+      res.status(400).json({ started: false, error: 'from and to must be DD/MM/YYYY' }); return;
+    }
+    runJobsReport(String(from).trim(), String(to).trim());   // background
+    res.json({ started: true, ...jobsReport });
+  });
+
+  app.get('/api/jobs-report/status', (_req, res) => res.json({ ...jobsReport }));
+
+  // GET /api/jobs-report/result — the last report built, so reopening the tab is instant.
+  app.get('/api/jobs-report/result', (_req, res) => {
+    const row = queryAll(`SELECT lastFrom, lastTo, lastScanAt, report FROM mail_job_meta WHERE id = 1`)[0] as any;
+    if (!row?.report) { res.json({ report: null, categories: jobCategories() }); return; }
+    try {
+      res.json({
+        report: JSON.parse(row.report),
+        lastScanAt: row.lastScanAt,
+        categories: jobCategories(),
+      });
+    } catch {
+      res.json({ report: null, categories: jobCategories() });
+    }
+  });
+
+  // ══ To-Do ══════════════════════════════════════════════════════════════════
+  // Triage of the SHARED quote-factory mailbox into things still owed. Scoped to
+  // that one store on purpose (see scan-todo in outlook_reader.py) — the personal
+  // inbox is out of scope. Each unanswered thread is sorted into:
+  //   direct     — doable here, start to finish, no one else needed
+  //   needs_info — blocked on a missing fact; usually the sender has to supply it
+  //   needs_team — needs a colleague (sales, customer service, technical)
+  // Nothing is emailed by the scan: it only ever writes rows.
+
+  const TODO_BUCKETS = ['direct', 'needs_info', 'needs_team'] as const;
+  type TodoBucket = typeof TODO_BUCKETS[number];
+
+  // The mailbox the To-Do scan reads. Overridable in config.json for a different
+  // shared box; the default is the UK quote factory.
+  function todoStoreFilter(): string {
+    return String((loadPyCfg() as any).todo_mailbox || '').trim() || 'quotefactory';
+  }
+
+  type TodoScanState = {
+    running: boolean;
+    phase: 'idle' | 'scanning' | 'triaging' | 'done' | 'error';
+    message: string;
+    threads: number; triaged: number; created: number; updated: number;
+    days: number;
+    mailbox: string;
+    error: string | null;
+    startedAt: string | null;
+  };
+  const todoScan: TodoScanState = {
+    running: false, phase: 'idle', message: '', threads: 0, triaged: 0,
+    created: 0, updated: 0, days: 30, mailbox: '', error: null, startedAt: null,
+  };
+
+  // Re-seed the in-memory state from the last completed run, so a server restart
+  // (or a browser refresh) shows what the last scan found rather than a blank
+  // panel. `running` is never restored — a process that died mid-scan is not
+  // still scanning.
+  (function hydrateTodoScan() {
+    try {
+      const m = queryAll(`SELECT * FROM todo_meta WHERE id = 1`)[0] as any;
+      if (!m?.lastScanAt) return;
+      todoScan.phase     = m.lastScanError ? 'error' : 'done';
+      todoScan.message   = m.lastScanMessage || '';
+      todoScan.error     = m.lastScanError || null;
+      todoScan.threads   = Number(m.lastScanThreads) || 0;
+      todoScan.triaged   = (Number(m.lastScanCreated) || 0) + (Number(m.lastScanUpdated) || 0);
+      todoScan.created   = Number(m.lastScanCreated) || 0;
+      todoScan.updated   = Number(m.lastScanUpdated) || 0;
+      todoScan.days      = Number(m.lastScanDays) || 30;
+      todoScan.mailbox   = m.lastScanMailbox || '';
+      todoScan.startedAt = m.lastScanStartedAt || m.lastScanAt;
+    } catch (e: any) {
+      console.warn('[todo] could not restore last scan:', e.message);
+    }
+  })();
+
+  // Live board counts + the persisted facts about the last run, merged over the
+  // in-flight state — the CRM sync/status contract, applied to the To-Do board.
+  function todoScanPayload() {
+    const m = queryAll(`SELECT lastScanAt, lastContactsAt FROM todo_meta WHERE id = 1`)[0] as any;
+    const c = queryAll(
+      `SELECT COUNT(*) AS total,
+              SUM(CASE WHEN status <> 'done'   THEN 1 ELSE 0 END) AS open,
+              SUM(CASE WHEN status =  'waiting' THEN 1 ELSE 0 END) AS waiting,
+              SUM(CASE WHEN status =  'done'    THEN 1 ELSE 0 END) AS done
+         FROM todo`)[0] as any;
+    return {
+      ...todoScan,
+      counts: {
+        total:   Number(c?.total)   || 0,
+        open:    Number(c?.open)    || 0,
+        waiting: Number(c?.waiting) || 0,
+        done:    Number(c?.done)    || 0,
+      },
+      lastScanAt:     m?.lastScanAt || null,
+      lastContactsAt: m?.lastContactsAt || null,
+    };
+  }
+
+  // One place that writes the outcome of a finished run, success or failure.
+  function saveTodoScanMeta() {
+    db.run(
+      `INSERT INTO todo_meta (id, lastScanAt, lastScanDays, lastScanMailbox,
+                              lastScanThreads, lastScanCreated, lastScanUpdated,
+                              lastScanMessage, lastScanError, lastScanStartedAt)
+       VALUES (1,?,?,?,?,?,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET
+         lastScanAt=excluded.lastScanAt, lastScanDays=excluded.lastScanDays,
+         lastScanMailbox=excluded.lastScanMailbox, lastScanThreads=excluded.lastScanThreads,
+         lastScanCreated=excluded.lastScanCreated, lastScanUpdated=excluded.lastScanUpdated,
+         lastScanMessage=excluded.lastScanMessage, lastScanError=excluded.lastScanError,
+         lastScanStartedAt=excluded.lastScanStartedAt`,
+      [new Date().toISOString(), todoScan.days, todoScan.mailbox,
+       todoScan.threads, todoScan.created, todoScan.updated,
+       todoScan.message, todoScan.error, todoScan.startedAt],
+    );
+    saveDb();
+  }
+
+  const todoRow = (r: any) => ({
+    id: r.id,
+    conv: r.conv || '',
+    entryId: r.entryId || '',
+    subject: r.subject || '',
+    sender: r.sender || '',
+    senderEmail: r.senderEmail || '',
+    received: r.received || '',
+    bucket: (TODO_BUCKETS as readonly string[]).includes(r.bucket) ? r.bucket : 'direct',
+    title: r.title || '',
+    summary: r.summary || '',
+    action: r.action || '',
+    blocker: r.blocker || '',
+    notes: r.notes || '',
+    recipients: safeParse(r.recipients, [] as Array<{ name: string; email: string }>),
+    attachments: safeParse(r.attachments, [] as Array<{ index: number; name: string; size?: number }>),
+    draftSubject: r.draftSubject || '',
+    draftBody: r.draftBody || '',
+    due: r.due || '',
+    priority: r.priority || 'normal',
+    status: r.status || 'open',
+    source: r.source || '',
+    createdAt: r.createdAt, updatedAt: r.updatedAt,
+    doneAt: r.doneAt || null, sentAt: r.sentAt || null,
+  });
+
+  function safeParse<T>(s: any, fallback: T): T {
+    try { const v = JSON.parse(s || ''); return v ?? fallback; } catch { return fallback; }
+  }
+
+  // Urgency word → concrete date, so the UI never has to interpret AI prose.
+  function dueFromUrgency(u: string): string {
+    const days = u === 'today' ? 0 : u === 'soon' ? 2 : 7;
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Ask the fast model to sort a batch of unanswered threads. Returns i → verdict.
+  async function triageThreadBatch(
+    batch: Array<{ i: number; subject: string; from: string; days: number; atts: string; body: string }>,
+    me: string | null,
+  ): Promise<Map<number, { bucket: TodoBucket; title: string; action: string; blocker: string; who: string; urgency: string }>> {
+    const out = new Map<number, any>();
+    const ai  = getGemini();
+    if (!ai) return out;
+
+    const lines = batch.map(b =>
+      `${b.i}. SUBJECT: ${b.subject.replace(/\s+/g, ' ').slice(0, 160)}\n`
+      + `   FROM: ${b.from.slice(0, 90)} | WAITING: ${b.days} day(s) | ATTACHMENTS: ${b.atts.slice(0, 120) || 'none'}\n`
+      + `   BODY: ${b.body.replace(/\s+/g, ' ').slice(0, 900)}`,
+    ).join('\n\n');
+
+    const prompt =
+      `You are triaging the UNANSWERED emails in the shared UK quote-factory mailbox of ${me ? me + ', ' : ''}an Eaton emergency-lighting quote engineer in Budapest. `
+      + 'Each entry is one email thread nobody has replied to yet. Decide what it will take to close it.\n\n'
+      + 'Buckets (use EXACTLY one of these strings):\n'
+      + '- direct — the engineer can finish this himself with what is already in the email: price a quote from an attached BOM/schematic, raise a PMO, send a document, answer a product question, forward a file he has.\n'
+      + '- needs_info — he cannot start until someone supplies a missing fact: no drawing/BOM attached, unclear quantities, missing Salesforce ID or PO, unreadable spec, no delivery address, ambiguous product reference.\n'
+      + '- needs_team — the work itself belongs to somebody else, or cannot be decided alone: pricing approval or a discount beyond his authority, a commercial/contract question for sales, order status or credit for customer service, a technical design sign-off, anything about another engineer\'s project.\n\n'
+      + 'Rules:\n'
+      + '- Judge from the actual content, never the tone. Being long or urgent does not make it needs_team.\n'
+      + '- Prefer "direct" when in doubt: only use needs_info if something concrete is genuinely MISSING, and needs_team only if another person must act.\n'
+      + '- "title": max 9 words, factual, names the customer/project if present, e.g. "Price CGLine+ replacement — Glasgow refurb".\n'
+      + '- "action": one short sentence, the concrete next step, imperative.\n'
+      + '- "blocker": for needs_info/needs_team ONLY, name exactly what is missing or who must act. Empty string for direct.\n'
+      + '- "who": for needs_team ONLY, the role that must act — one of "sales", "customer service", "technical", "management". Empty otherwise.\n'
+      + '- "urgency": "today" if a deadline, chase or escalation is stated; "soon" if a customer is waiting on a normal request; "later" for FYI-ish threads.\n'
+      + '- Never invent facts that are not in the email.\n\n'
+      + `Threads:\n${lines}\n\n`
+      + 'Return ONLY a JSON array: [{"i":<number>,"bucket":"<bucket>","title":"...","action":"...","blocker":"...","who":"...","urgency":"today|soon|later"}]';
+
+    try {
+      const r = await ai.models.generateContent({
+        model: AI_MODEL_FAST,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { maxOutputTokens: 6000, temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
+      });
+      const txt = r.text ?? '';
+      const m   = txt.match(/\[[\s\S]*\]/);
+      if (!m) return out;
+      for (const row of (JSON.parse(m[0]) as any[])) {
+        const i = Number(row?.i);
+        if (!Number.isFinite(i)) continue;
+        let bucket = String(row?.bucket || '').trim().toLowerCase().replace(/[\s-]+/g, '_') as TodoBucket;
+        if (!(TODO_BUCKETS as readonly string[]).includes(bucket)) bucket = 'direct';
+        out.set(i, {
+          bucket,
+          title:   String(row?.title || '').trim().slice(0, 140),
+          action:  String(row?.action || '').trim().slice(0, 300),
+          blocker: bucket === 'direct' ? '' : String(row?.blocker || '').trim().slice(0, 300),
+          who:     bucket === 'needs_team' ? String(row?.who || '').trim().slice(0, 40) : '',
+          urgency: ['today', 'soon', 'later'].includes(String(row?.urgency)) ? String(row.urgency) : 'soon',
+        });
+      }
+    } catch (e: any) {
+      console.warn('[todo] triage batch failed:', e.message);
+    }
+    return out;
+  }
+
+  async function runTodoScan(days: number) {
+    todoScan.running = true;
+    todoScan.phase = 'scanning';
+    todoScan.error = null;
+    todoScan.threads = todoScan.triaged = todoScan.created = todoScan.updated = 0;
+    todoScan.days = days;
+    todoScan.mailbox = todoStoreFilter();
+    todoScan.startedAt = new Date().toISOString();
+    todoScan.message = 'Reading the shared mailbox…';
+
+    try {
+      const since = new Date(Date.now() - days * 864e5);
+      const sinceStr = `${String(since.getDate()).padStart(2, '0')}/${String(since.getMonth() + 1).padStart(2, '0')}/${since.getFullYear()}`;
+
+      const scan = await runOutlookPy([
+        '--action', 'scan-todo', '--since', sinceStr,
+        '--store-filter', todoScan.mailbox, '--max', '20000', '--backend', 'win32',
+      ]);
+      if (scan?.error) throw new Error(scan.error);
+
+      const threads: any[] = scan.threads || [];
+      todoScan.threads = threads.length;
+      todoScan.phase   = 'triaging';
+      todoScan.message = `Sorting ${threads.length} unanswered thread(s)…`;
+
+      // A thread already carrying an OPEN to-do only needs its facts refreshed —
+      // re-triaging it would overwrite the user's own edits and cost AI calls.
+      const existing = new Map<string, any>();
+      for (const r of queryAll(`SELECT * FROM todo WHERE conv <> ''`)) existing.set(r.conv as string, r);
+
+      const me  = await connectedUserName();
+      const now = new Date().toISOString();
+      const pending: Array<{ i: number; subject: string; from: string; days: number; atts: string; body: string; t: any }> = [];
+
+      for (const t of threads) {
+        const prev = existing.get(t.conv);
+        // Same thread, nothing new since the row was written → leave it alone.
+        if (prev && prev.status !== 'done' && (prev.received || '') >= (t.received || '')) {
+          continue;
+        }
+        if (prev && prev.status === 'done' && (prev.received || '') >= (t.received || '')) {
+          continue;   // already finished, and the thread has not moved on
+        }
+        const waited = t.received
+          ? Math.max(0, Math.round((Date.now() - new Date(t.received).getTime()) / 864e5))
+          : 0;
+        pending.push({
+          i: pending.length,
+          subject: t.subject || t.topic || '(no subject)',
+          from: `${t.sender || ''} <${t.senderEmail || ''}>`,
+          days: waited,
+          atts: (t.attachments || []).map((a: any) => a.name).join(', '),
+          body: t.body || '',
+          t,
+        });
+      }
+
+      if (!pending.length) todoScan.message = 'Nothing new — the queue is already up to date.';
+
+      const BATCH = 10;
+      for (let i = 0; i < pending.length; i += BATCH) {
+        const slice = pending.slice(i, i + BATCH).map((p, k) => ({ ...p, i: k }));
+        const got   = await triageThreadBatch(slice, me);
+        for (const p of slice) {
+          const v = got.get(p.i) || {
+            bucket: 'direct' as TodoBucket, title: p.subject.slice(0, 140),
+            action: '', blocker: '', who: '', urgency: 'soon',
+          };
+          const t    = p.t;
+          const prev = existing.get(t.conv);
+          // A blocked item defaults to asking the person who wrote — the sender is
+          // almost always the one holding the missing fact. Never a send, just a
+          // pre-filled recipient the user can change.
+          const recips = v.bucket === 'needs_info' && t.senderEmail
+            ? [{ name: t.sender || t.senderEmail, email: t.senderEmail }]
+            : [];
+
+          if (prev) {
+            db.run(
+              `UPDATE todo SET entryId=?, subject=?, sender=?, senderEmail=?, received=?,
+                 bucket=?, title=?, summary=?, action=?, blocker=?, attachments=?,
+                 due=COALESCE(NULLIF(due,''),?), priority=?, status='open', doneAt=NULL, updatedAt=?
+               WHERE id=?`,
+              [t.entryId, t.subject, t.sender, t.senderEmail, t.received,
+               v.bucket, v.title || t.subject, t.body ? String(t.body).slice(0, 600) : '',
+               v.action, v.blocker, JSON.stringify(t.attachments || []),
+               dueFromUrgency(v.urgency), v.urgency === 'today' ? 'high' : 'normal',
+               now, prev.id],
+            );
+            todoScan.updated++;
+          } else {
+            db.run(
+              `INSERT INTO todo (conv, entryId, subject, sender, senderEmail, received,
+                                 bucket, title, summary, action, blocker, notes,
+                                 recipients, attachments, draftSubject, draftBody,
+                                 due, priority, status, source, createdAt, updatedAt)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,'',?,?,'','',?,?,'open','scan',?,?)`,
+              [t.conv, t.entryId, t.subject, t.sender, t.senderEmail, t.received,
+               v.bucket, v.title || t.subject, t.body ? String(t.body).slice(0, 600) : '',
+               v.action, v.blocker,
+               JSON.stringify(recips), JSON.stringify(t.attachments || []),
+               dueFromUrgency(v.urgency), v.urgency === 'today' ? 'high' : 'normal',
+               now, now],
+            );
+            todoScan.created++;
+          }
+        }
+        todoScan.triaged = Math.min(pending.length, i + BATCH);
+        todoScan.message = `Triaging… ${todoScan.triaged}/${pending.length}`;
+      }
+
+      saveDb();
+
+      todoScan.phase   = 'done';
+      todoScan.message = pending.length
+        ? `${todoScan.created} new, ${todoScan.updated} updated — ${threads.length} unanswered thread(s).`
+        : `Queue up to date — ${threads.length} unanswered thread(s), nothing new.`;
+    } catch (e: any) {
+      todoScan.phase   = 'error';
+      todoScan.error   = e.message;
+      todoScan.message = `Scan failed: ${e.message}`;
+      console.warn('[todo]', e.message);
+    } finally {
+      todoScan.running = false;
+      // Persist the outcome either way — a failed scan the user never saw is
+      // worth showing after a refresh too.
+      try { saveTodoScanMeta(); } catch (e: any) { console.warn('[todo] meta save failed:', e.message); }
+    }
+  }
+
+  // POST /api/todo/scan { days } — fire and forget; poll /api/todo/scan/status.
+  app.post('/api/todo/scan', (req, res) => {
+    if (todoScan.running) { res.json({ started: false, ...todoScanPayload() }); return; }
+    const days = Math.min(365, Math.max(1, Number((req.body as any)?.days) || 30));
+    runTodoScan(days);
+    res.json({ started: true, ...todoScanPayload() });
+  });
+
+  app.get('/api/todo/scan/status', (_req, res) => res.json(todoScanPayload()));
+
+  // GET /api/todo?status=open|done|all — the whole board in one call.
+  app.get('/api/todo', (req, res) => {
+    const want = String(req.query.status || 'all');
+    const rows = queryAll(`SELECT * FROM todo ORDER BY
+        CASE status WHEN 'open' THEN 0 WHEN 'waiting' THEN 1 ELSE 2 END,
+        CASE priority WHEN 'high' THEN 0 ELSE 1 END,
+        COALESCE(NULLIF(due,''),'9999') ASC, received DESC`)
+      .map(todoRow)
+      .filter(r => want === 'all' ? true : want === 'open' ? r.status !== 'done' : r.status === 'done');
+    const meta = queryAll(`SELECT lastScanAt, lastContactsAt FROM todo_meta WHERE id = 1`)[0] as any;
+    res.json({
+      items: rows,
+      lastScanAt: meta?.lastScanAt || null,
+      lastContactsAt: meta?.lastContactsAt || null,
+      mailbox: todoStoreFilter(),
+    });
+  });
+
+  // POST /api/todo — create (no id) or patch (id + only the fields to change).
+  app.post('/api/todo', (req, res) => {
+    const b   = (req.body || {}) as any;
+    const now = new Date().toISOString();
+    try {
+      if (b.id) {
+        const prev = queryAll(`SELECT * FROM todo WHERE id = ?`, [b.id])[0];
+        if (!prev) { res.status(404).json({ error: 'No such to-do' }); return; }
+        const pick = (k: string, fallback: any) => (b[k] === undefined ? fallback : b[k]);
+        const status = String(pick('status', prev.status));
+        db.run(
+          `UPDATE todo SET bucket=?, title=?, summary=?, action=?, blocker=?, notes=?,
+             recipients=?, attachments=?, draftSubject=?, draftBody=?, due=?, priority=?,
+             status=?, doneAt=?, updatedAt=? WHERE id=?`,
+          [
+            String(pick('bucket', prev.bucket)),
+            String(pick('title', prev.title)).slice(0, 300),
+            String(pick('summary', prev.summary || '')),
+            String(pick('action', prev.action || '')),
+            String(pick('blocker', prev.blocker || '')),
+            String(pick('notes', prev.notes || '')),
+            JSON.stringify(pick('recipients', safeParse(prev.recipients, []))),
+            JSON.stringify(pick('attachments', safeParse(prev.attachments, []))),
+            String(pick('draftSubject', prev.draftSubject || '')),
+            String(pick('draftBody', prev.draftBody || '')),
+            String(pick('due', prev.due || '')),
+            String(pick('priority', prev.priority || 'normal')),
+            status,
+            status === 'done' ? (prev.doneAt || now) : null,
+            now, b.id,
+          ],
+        );
+        saveDb();
+        res.json({ ok: true, item: todoRow(queryAll(`SELECT * FROM todo WHERE id = ?`, [b.id])[0]) });
+        return;
+      }
+
+      const title = String(b.title || b.subject || '').trim();
+      if (!title) { res.status(400).json({ error: 'title is required' }); return; }
+      const id = runWrite(
+        `INSERT INTO todo (conv, entryId, subject, sender, senderEmail, received,
+                           bucket, title, summary, action, blocker, notes,
+                           recipients, attachments, draftSubject, draftBody,
+                           due, priority, status, source, createdAt, updatedAt)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          String(b.conv || ''), String(b.entryId || ''), String(b.subject || ''),
+          String(b.sender || ''), String(b.senderEmail || ''), String(b.received || ''),
+          (TODO_BUCKETS as readonly string[]).includes(b.bucket) ? b.bucket : 'direct',
+          title.slice(0, 300), String(b.summary || ''), String(b.action || ''),
+          String(b.blocker || ''), String(b.notes || ''),
+          JSON.stringify(b.recipients || []), JSON.stringify(b.attachments || []),
+          String(b.draftSubject || ''), String(b.draftBody || ''),
+          String(b.due || ''), String(b.priority || 'normal'),
+          String(b.status || 'open'), String(b.source || 'manual'), now, now,
+        ],
+      );
+      res.json({ ok: true, item: todoRow(queryAll(`SELECT * FROM todo WHERE id = ?`, [id])[0]) });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.delete('/api/todo/:id', (req, res) => {
+    db.run(`DELETE FROM todo WHERE id = ?`, [Number(req.params.id)]);
+    saveDb();
+    res.json({ ok: true });
+  });
+
+  // POST /api/todo/:id/send { draft } — the ONLY path that puts mail in Outlook.
+  // draft:true stops at the Drafts folder and pops the composer; otherwise it
+  // sends. Attachments are pulled live off the source email by index.
+  app.post('/api/todo/:id/send', async (req, res) => {
+    const row = queryAll(`SELECT * FROM todo WHERE id = ?`, [Number(req.params.id)])[0];
+    if (!row) { res.status(404).json({ error: 'No such to-do' }); return; }
+    const item  = todoRow(row);
+    const draft = !!(req.body as any)?.draft;
+
+    const to = item.recipients.map(r => r.email).filter(Boolean).join('; ');
+    if (!to) { res.status(400).json({ error: 'Pick at least one recipient first' }); return; }
+
+    const subject = item.draftSubject || (item.subject ? `FW: ${item.subject}` : item.title);
+    const body    = item.draftBody;
+    if (!body.trim()) { res.status(400).json({ error: 'The message is empty' }); return; }
+
+    // Only attachments that came from the source email can be re-attached.
+    const attSources = item.entryId
+      ? item.attachments.map(a => ({ entryId: item.entryId, index: a.index }))
+      : [];
+
+    try {
+      const r = await runOutlookPy([
+        '--action', 'send-new', '--to', to, '--subject', subject, '--body', body,
+        '--att-sources', JSON.stringify(attSources),
+        ...(draft ? ['--draft', '1'] : []),
+      ]);
+      if (r?.error) { res.json({ ok: false, error: r.error }); return; }
+      if (!draft) {
+        const now = new Date().toISOString();
+        db.run(`UPDATE todo SET status='waiting', sentAt=?, updatedAt=? WHERE id=?`, [now, now, item.id]);
+        saveDb();
+      }
+      res.json({
+        ok: true, draft,
+        item: todoRow(queryAll(`SELECT * FROM todo WHERE id = ?`, [item.id])[0]),
+      });
+    } catch (e: any) {
+      res.json({ ok: false, error: e.message });
+    }
+  });
+
+  // GET /api/todo/recipients — the picker list: harvested Outlook correspondents
+  // merged with the CRM's stored contacts, most-corresponded-with first.
+  app.get('/api/todo/recipients', (_req, res) => {
+    const byEmail = new Map<string, { name: string; email: string; count: number; lastSeen: string; source: string }>();
+
+    for (const r of queryAll(`SELECT * FROM mail_contact ORDER BY count DESC LIMIT 500`)) {
+      const email = String(r.email || '').toLowerCase();
+      if (!email) continue;
+      byEmail.set(email, {
+        name: String(r.name || '') || email,
+        email: String(r.email),
+        count: Number(r.count) || 0,
+        lastSeen: String(r.lastSeen || ''),
+        source: 'outlook',
+      });
+    }
+    for (const r of queryAll(
+      `SELECT c.name AS name, c.email AS email, co.name AS company
+         FROM crm_contact c LEFT JOIN crm_company co ON co.id = c.companyId
+        WHERE c.email IS NOT NULL AND c.email <> ''`)) {
+      const email = String(r.email || '').toLowerCase();
+      if (!email) continue;
+      const prev = byEmail.get(email);
+      if (prev) { prev.source = 'both'; if (!prev.name || prev.name === email) prev.name = String(r.name || prev.name); continue; }
+      byEmail.set(email, {
+        name: String(r.name || '') || email,
+        email: String(r.email),
+        count: 0,
+        lastSeen: '',
+        source: 'crm',
+      });
+    }
+
+    const meta = queryAll(`SELECT lastContactsAt FROM todo_meta WHERE id = 1`)[0] as any;
+    res.json({
+      recipients: [...byEmail.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+      lastContactsAt: meta?.lastContactsAt || null,
+    });
+  });
+
+  // POST /api/todo/recipients/refresh { days } — re-harvest from Outlook history.
+  app.post('/api/todo/recipients/refresh', async (req, res) => {
+    const days = Math.min(1095, Math.max(30, Number((req.body as any)?.days) || 365));
+    const since = new Date(Date.now() - days * 864e5);
+    const sinceStr = `${String(since.getDate()).padStart(2, '0')}/${String(since.getMonth() + 1).padStart(2, '0')}/${since.getFullYear()}`;
+    try {
+      const r = await runOutlookPy([
+        '--action', 'contacts', '--since', sinceStr, '--max', '8000', '--backend', 'win32',
+      ]);
+      if (r?.error) { res.json({ ok: false, error: r.error }); return; }
+      const now = new Date().toISOString();
+      for (const c of (r.contacts || [])) {
+        db.run(
+          `INSERT INTO mail_contact (email, name, count, sent, received, lastSeen, updatedAt)
+           VALUES (?,?,?,?,?,?,?)
+           ON CONFLICT(email) DO UPDATE SET
+             name=excluded.name, count=excluded.count, sent=excluded.sent,
+             received=excluded.received, lastSeen=excluded.lastSeen, updatedAt=excluded.updatedAt`,
+          [String(c.email).toLowerCase(), c.name || '', c.count || 0,
+           c.sent || 0, c.received || 0, c.lastSeen || '', now],
+        );
+      }
+      db.run(
+        `INSERT INTO todo_meta (id, lastContactsAt) VALUES (1,?)
+         ON CONFLICT(id) DO UPDATE SET lastContactsAt=excluded.lastContactsAt`,
+        [now],
+      );
+      saveDb();
+      res.json({ ok: true, count: (r.contacts || []).length, scanned: r.scanned || 0 });
+    } catch (e: any) {
+      res.json({ ok: false, error: e.message });
+    }
+  });
+
+  // POST /api/todo/draft { id } — write the delegation/chase message for an item.
+  app.post('/api/todo/draft', async (req, res) => {
+    const row = queryAll(`SELECT * FROM todo WHERE id = ?`, [Number((req.body as any)?.id)])[0];
+    if (!row) { res.status(404).json({ error: 'No such to-do' }); return; }
+    const item = todoRow(row);
+    const ai   = getGemini();
+    if (!ai) { res.json({ error: 'No Gemini API key — add it in Settings' }); return; }
+
+    const me   = await connectedUserName();
+    const to   = item.recipients.map(r => r.name || r.email).join(', ') || 'a colleague';
+    const kind = item.bucket === 'needs_team'
+      ? 'hand this over to / get help from a colleague'
+      : item.bucket === 'needs_info'
+        ? 'ask for the missing information so the work can start'
+        : 'pass this on with context';
+
+    const prompt = [
+      `Write a short internal Eaton email from ${me || 'the quote engineer'} to ${to} to ${kind}.`,
+      ``,
+      `Item: ${item.title}`,
+      item.action  ? `Next step: ${item.action}` : '',
+      item.blocker ? `What is missing / who must act: ${item.blocker}` : '',
+      item.notes   ? `My notes: ${item.notes}` : '',
+      item.subject ? `Original email subject: ${item.subject}` : '',
+      item.sender  ? `Original sender: ${item.sender} <${item.senderEmail}>` : '',
+      item.summary ? `Original email (extract):\n${item.summary.slice(0, 800)}` : '',
+      item.attachments.length ? `Attached: ${item.attachments.map(a => a.name).join(', ')}` : '',
+      ``,
+      `Rules: plain text, no markdown, no subject line in the body, British English.`,
+      `Open with the ask in the first sentence. State only facts given above — invent nothing.`,
+      `Keep it under 120 words. End with "Thanks," and the sender's first name on the next line.`,
+    ].filter(Boolean).join('\n');
+
+    try {
+      const r = await ai.models.generateContent({
+        model: smartModel(),
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        // The 2.5 models spend thinking tokens out of this same budget — a tight
+        // cap here truncates the message mid-sentence rather than shortening it.
+        config: { maxOutputTokens: 4096, temperature: 0.3 },
+      });
+      const body = (r.text || '').trim();
+      if (!body) { res.json({ error: 'Empty draft returned' }); return; }
+      const subject = item.draftSubject
+        || (item.subject ? `FW: ${item.subject}` : item.title).slice(0, 200);
+      const now = new Date().toISOString();
+      db.run(`UPDATE todo SET draftSubject=?, draftBody=?, updatedAt=? WHERE id=?`,
+             [subject, body, now, item.id]);
+      saveDb();
+      res.json({ ok: true, subject, body });
+    } catch (e: any) {
+      res.json({ error: 'Gemini error: ' + e.message });
+    }
+  });
+
+  // POST /api/quotes/checkup/queue { entryIds: [] } — bundle every selected mail's
+  // quote documents into the Dashboard upload queue in one go.
+  app.post('/api/quotes/checkup/queue', async (req, res) => {
+    const { entryIds } = req.body as { entryIds: string[] };
+    if (!Array.isArray(entryIds) || !entryIds.length) {
+      res.json({ ok: false, error: 'No emails selected' }); return;
+    }
+    const dest = path.join(loadPyCfg().base, 'PDF Quotes');
+    const saved: string[] = [];
+    const failed: Array<{ entryId: string; error: string }> = [];
+    for (const id of entryIds.slice(0, 100)) {
+      try {
+        const r = await runOutlookPy(['--action', 'save-attachment', '--id', id, '--dest', dest]);
+        if (r?.error) failed.push({ entryId: id, error: r.error });
+        else for (const s of (r?.saved || [])) saved.push(s.name);
+      } catch (e: any) {
+        failed.push({ entryId: id, error: e.message });
+      }
+    }
+    res.json({ ok: failed.length === 0, saved, count: saved.length, failed });
   });
 
   // Serve a single attachment inline (PDF or image)
@@ -3194,7 +4992,7 @@ async function startServer() {
     try {
       const imageParts = indices.length ? await attachmentParts(entryId, indices) : [];
       const response = await ai.models.generateContent({
-        model: AI_MODEL_SMART,
+        model: smartModel(),
         contents: [{ role: 'user', parts: [{ text: prompt }, ...imageParts] }],
         config: { systemInstruction: summarizeSystem, maxOutputTokens: 8192, temperature: 0.2 },
       });
@@ -3297,40 +5095,6 @@ async function startServer() {
   // matches (so a luminaire named only by description in the email — not by
   // part number — is still found in the real sheet instead of guessed). Every
   // row is real sheet data the assistant MUST cite as "EL price sheet".
-  interface ElSheetRow { catNo: string; description: string; family: string; listPrice: number; ntp: number; status: string; matchType: string; score: number; }
-  const _elSearchCache = new Map<string, ElSheetRow[]>();
-  function elSheetSearch(query: string, cacheKey?: string): Promise<ElSheetRow[]> {
-    return new Promise((resolve) => {
-      const q = String(query || '').trim();
-      if (cacheKey && _elSearchCache.has(cacheKey)) { resolve(_elSearchCache.get(cacheKey)!); return; }
-      const script = pyFile('schematic_reader.py');
-      if (!existsSync(script) || !q) { resolve([]); return; }
-      const tmpDir = path.join(os.tmpdir(), `elsearch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
-      try { mkdirSync(tmpDir, { recursive: true }); } catch {}
-      const inp = path.join(tmpDir, 'q.txt');
-      try { writeFileSync(inp, q); } catch { resolve([]); return; }
-      const [py, base] = pyArgs(script);
-      const proc = spawn(py, [...base, '--mode', 'search', '--input', inp], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
-      let out = '';
-      const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 30_000);
-      proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
-      const done = (matches: any[]) => {
-        clearTimeout(killer);
-        try { unlinkSync(inp); } catch {}
-        try { rmdirSync(tmpDir); } catch {}
-        const rows: ElSheetRow[] = (matches || []).map((m: any) => ({
-          catNo: m.cat_no, description: m.description, family: m.family || '',
-          listPrice: m.list_price || 0, ntp: m.ntp || 0, status: m.status || '',
-          matchType: m.match_type || '', score: m.score || 0,
-        }));
-        if (cacheKey) _elSearchCache.set(cacheKey, rows);
-        resolve(rows);
-      };
-      proc.on('error', () => done([]));
-      proc.on('close', () => { try { done(JSON.parse(out.trim()).matches || []); } catch { done([]); } });
-    });
-  }
-
   // Does the question actually ask about a product / catalogue number / price?
   // Gates the (slower) web search so casual "what does this email want?" turns
   // stay fast and never trigger an external lookup.
@@ -3360,7 +5124,7 @@ async function startServer() {
     ].filter(Boolean).join('\n');
     try {
       const resp = await ai.models.generateContent({
-        model: AI_MODEL_SMART,
+        model: smartModel(),
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { tools: [{ googleSearch: {} }], maxOutputTokens: 4096, temperature: 0.3 },
       });
@@ -3404,15 +5168,10 @@ async function startServer() {
     for (const r of [...qRows, ...bodyRows]) {
       if (r.catNo && !seenCat.has(r.catNo)) { seenCat.add(r.catNo); sheetRows.push(r); }
     }
-    const fmtRow = (r: ElSheetRow) => {
-      const tag = r.matchType === 'exact' ? '[exact]' : `[description-match, score ${r.score}]`;
-      const price = `list £${r.listPrice.toFixed(2)}${r.ntp ? ` | NTP £${r.ntp.toFixed(2)}` : ''}`;
-      return `${r.catNo} — ${r.description}${r.family ? ` (${r.family})` : ''}: ${price} ${tag}`;
-    };
     const sheetBlock = sheetRows.length
       ? [
           `Eaton EL price-sheet rows relevant to this email / question (ex VAT — the AUTHORITATIVE internal source; cite as "EL price sheet"):`,
-          ...sheetRows.slice(0, 14).map(fmtRow),
+          ...sheetRows.slice(0, 14).map(fmtElRow),
           `[exact] = confirmed part-number match. [description-match] = a candidate found by description; present it as "closest match in the sheet", not a confirmed part.`,
         ].join('\n')
       : `No catalogue number or description from this email/question matched the Eaton EL price sheet. Do NOT invent one — say it isn't in the sheet and offer to run the EL Pricer or search the web.`;
@@ -3474,7 +5233,7 @@ async function startServer() {
         { role: 'user' as const, parts: [{ text: question }, ...imageParts] },
       ];
       const response = await ai.models.generateContent({
-        model: AI_MODEL_SMART,
+        model: smartModel(),
         contents,
         // 2.5-pro thinking tokens share the output budget in this SDK — keep headroom.
         config: { systemInstruction: systemCtx, maxOutputTokens: 6144, temperature: 0.3 },
@@ -3971,11 +5730,14 @@ async function startServer() {
           + `Reply with ONLY a JSON object, no prose:\n`
           + `{"intent":"search"|"chat"|"crm","term":"<keywords to search, filler removed>",`
           + `"scope":"mine"|"all","mode":"list"|"count"|"who"|"material","salesman":"<full name or empty>"}\n`
-          + `Rules:\n`
+          + `Rules (apply in order):\n`
+          + `- CONVERSATION CONTINUITY IS DECISIVE. Read the recent conversation. If the assistant's last reply was answering a PRODUCT / PART / PRICE / ALTERNATIVE / DATASHEET question (about a catalogue number or a product — NOT about the user's past quotes), then a short follow-up that refines or continues it STAYS intent="chat". Examples that MUST stay chat in that context: "family names and part codes", "give me the codes", "list them", "cut the crap", "just the codes", "what about cheaper ones", "in the sheet", "and the prices", "search the web", "more options". NEVER flip to quote-search just because such a follow-up contains the words "family", "part", "code", "price", or "name".\n`
+          + `- DEFAULT to intent="chat" when unsure. Choose intent="search" ONLY when the user clearly wants their OWN PAST QUOTES — signalled by a customer/company name, a salesman name, an SR/quote number, "my quotes", "quotes for/from…", or "how many quotes". A product / price / alternative / datasheet question is NEVER a quote search.\n`
           + `- intent="crm" if they want to EDIT the CRM: add/update a contact, note a fact about a customer/account, mark a quote won/lost, create an account, set a note, or tag an account.\n`
-          + `- intent="search" if they want to find/count quotes, who made them, or what's inside them.\n`
-          + `- A message that is JUST a spec/rating (e.g. "4kVA"), a catalogue/fitting number, a customer name, or a salesman name — with no app/how-to question — is intent="search".\n`
-          + `- FOLLOW-UPS: if the new message is "try again", "do it", "again", "yes", "retry", "go", or similar, repeat the intent and term of the MOST RECENT search request in the conversation above (do NOT use the literal words "try again" as the term).\n`
+          + `- intent="search" if they want to find/count their past quotes, who made them, or what's inside them.\n`
+          + `- A message that is JUST a bare spec/rating (e.g. "4kVA"), a customer name, or a salesman name — with no product or how-to question and no conversation implying otherwise — is intent="search". (A bare catalogue number IS a product lookup → intent="chat", see below.)\n`
+          + `- BUT a message asking to FIND AN ALTERNATIVE / EQUIVALENT / REPLACEMENT / SUBSTITUTE / CROSS-REFERENCE for a part, to COMPARE parts, for a DATASHEET / SPEC of a part, or to look a part up in the PRICE SHEET / PRICE LIST / PRICING SHEET / EL sheet (its price, description, whether it exists, whether it is an Eaton item), is intent="chat" (a product question answered from the internal EL price sheet + knowledge + live web) — NOT a quote search — EVEN IF it contains a catalogue/part number. The "quote search" is ONLY for the user's own past SharePoint quotes; it is NOT the product price sheet. E.g. "alternative to 40071352916", "equivalent of <cat-no>", "datasheet for <cat-no>", "look it up in the pricing sheet", "is <cat-no> an Eaton item", "what's the price of <cat-no>" are ALL intent="chat".\n`
+          + `- FOLLOW-UPS: if the new message is "try again", "do it", "again", "yes", "retry", "go", or similar, repeat the intent (chat OR search) and term of the MOST RECENT request in the conversation above — if the last exchange was a product/alternative chat, "try again" stays chat (do NOT use the literal words "try again" as the term).\n`
           + `- salesman = the team member's full name ONLY if the query is about quotes a specific salesman made/raised/owns (e.g. "quotes from Joe Bayley", "how many did Ryan do"); else "".\n`
           + `- scope="all" only if they explicitly ask about everyone/the whole team, else "mine".\n`
           + `- mode="count" for "how many", "who" for who-quoted/salesman, "material" for catalogue/fitting/part questions, else "list".\n`
@@ -4334,17 +6096,56 @@ async function startServer() {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`);
     res.setHeader('Cache-Control', 'no-store');
-    pmoDownloads.delete(id);
+    // Deliberately NOT deleted here: the user may download first and only then
+    // decide to file it into the PMO folder (or the other way round). The
+    // 10-minute sweep set up by /api/run/pmo cleans both up either way.
     const stream = createReadStream(filePath);
     stream.on('error', (err: any) => {
       if (!res.headersSent) res.status(500).send(`Read error: ${err.message}`);
       else res.destroy();
     });
-    stream.on('end', () => {
-      try { unlinkSync(filePath); } catch {}
-      try { rmdirSync(entry.tmpDir); } catch {}
-    });
     stream.pipe(res);
+  });
+
+  // Where a checked PMO belongs. NOT next to the log: the log lives in
+  // Z:\_PMO-Pending Folder but the documents themselves are filed in the shared
+  // Y:\CBU\1 - PMO folder, which is what the PMO team actually reads.
+  const PMO_DOC_FOLDER = String.raw`Y:\CBU\1 - PMO`;
+  function pmoFolder(): string {
+    return loadPyCfg().pmo_out_dir || PMO_DOC_FOLDER;
+  }
+
+  // GET /api/pmo/folder — is the shared folder reachable right now?
+  app.get('/api/pmo/folder', (_req, res) => {
+    const folder = pmoFolder();
+    res.json({ folder, available: existsSync(folder) });
+  });
+
+  // POST /api/pmo/save/:id { overwrite? } — copy the generated document into the
+  // shared PMO folder. Only ever called from the button the user presses after
+  // checking the document, and it refuses to clobber an existing file unless the
+  // caller explicitly says so.
+  app.post('/api/pmo/save/:id', (req, res) => {
+    const entry = pmoDownloads.get(req.params.id);
+    if (!entry) { res.status(404).json({ error: 'That document has expired — re-run the PMO.' }); return; }
+    if (!existsSync(entry.filePath)) { res.status(404).json({ error: 'Generated file is no longer on disk.' }); return; }
+
+    const folder = pmoFolder();
+    if (!existsSync(folder)) {
+      res.status(400).json({ error: `PMO folder not reachable: ${folder}. Check the Z: drive is connected.` });
+      return;
+    }
+    const target = path.join(folder, entry.filename);
+    if (existsSync(target) && !(req.body || {}).overwrite) {
+      res.status(409).json({ error: 'A file with that name is already in the PMO folder.', exists: true, path: target });
+      return;
+    }
+    try {
+      copyFileSync(entry.filePath, target);
+      res.json({ ok: true, path: target, folder });
+    } catch (e: any) {
+      res.status(500).json({ error: `Couldn't write to ${folder}: ${e.message}` });
+    }
   });
 
   // ── Doc Packs ─────────────────────────────────────────────────────────────

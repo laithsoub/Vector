@@ -266,6 +266,116 @@ function SecretField({ label, hint, value, onChange }: {
   );
 }
 
+// ── AI model picker (Ask Vector "smart" model) ─────────────────────────────────
+// Lists the models THIS key actually exposes (server → Google ListModels) as a
+// datalist, but stays an editable combobox so a brand-new id (e.g. a gemini-3 tier)
+// can be typed even if the live listing is unavailable. Blank = server default.
+function AiModelField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [models, setModels]   = useState<Array<{ id: string; label: string }>>([]);
+  const [current, setCurrent] = useState('');
+  const [fallback, setFallback] = useState('');
+  const [err, setErr]         = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function load() {
+    setLoading(true); setErr(null);
+    try {
+      const r = await api.aiModels();
+      setModels(r.models || []);
+      setCurrent(r.current || '');
+      setFallback(r.fallback || '');
+      setErr(r.error || null);
+    } catch (e: any) { setErr(e.message); }
+    setLoading(false);
+  }
+  useEffect(() => { load(); }, []);
+
+  const sel = value || current;
+
+  return (
+    <div className="mt-4 pt-4 border-t border-[var(--line)]">
+      <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)] mb-2">Ask Vector AI model</label>
+      <div className="flex items-center gap-2">
+        <input
+          list="ai-model-list"
+          value={sel}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder={fallback || 'gemini-2.5-flash'}
+          onChange={e => onChange(e.target.value.trim())}
+          className="flex-1 h-[34px] px-2.5 rounded-[9px] text-[11.5px] mono border border-[var(--line-2)] bg-[var(--s1)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
+        <datalist id="ai-model-list">
+          {models.map(m => <option key={m.id} value={m.id}>{m.label !== m.id ? `${m.label} — ${m.id}` : m.id}</option>)}
+        </datalist>
+        <Button tone="outline" size="md" Icon={RefreshCw} onClick={load} disabled={loading}>
+          {loading ? '…' : 'Refresh'}
+        </Button>
+      </div>
+      {err
+        ? <p className="text-[10px] mt-2 leading-relaxed" style={{ color: 'var(--warn)' }}>Couldn’t list models ({err}). You can still type an id — it’s used as-is. Current: <span className="mono">{sel || fallback}</span>.</p>
+        : <p className="text-[10px] text-[var(--t4)] mt-2 leading-relaxed">{models.length} model(s) available on your key. Drives Ask Vector chat, Inbox summaries & follow-ups. Blank = server default (<span className="mono">{fallback || 'gemini-2.5-flash'}</span>).</p>}
+    </div>
+  );
+}
+
+// ── Job report categories ─────────────────────────────────────────────────────
+// The buckets the Report tab sorts your work into. One per line, order preserved.
+// Keep the LAST entry as a catch-all — anything the AI can't place lands there.
+// Blank = the server's default list. Editing the list re-classifies on next scan.
+const DEFAULT_JOB_CATEGORIES = [
+  'Technical response',
+  'Pricing / quotation',
+  'PMO',
+  'Forwarding / routing',
+  'Quote upload / SharePoint',
+  'D&Q filing',
+  'Meetings / internal',
+  'Admin / other',
+];
+
+function JobCategoriesField({
+  value, onChange,
+}: {
+  value: string[];
+  onChange: (v: string[]) => void;
+}) {
+  const usingDefaults = !value.length;
+  const text = (usingDefaults ? DEFAULT_JOB_CATEGORIES : value).join('\n');
+
+  return (
+    <div className="mt-4 pt-4 border-t border-[var(--line)]">
+      <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)] mb-2">
+        Job report categories
+      </label>
+      <textarea
+        value={text}
+        rows={8}
+        spellCheck={false}
+        onChange={e => {
+          const lines = e.target.value.split('\n').map(s => s.replace(/^\s+/, ''));
+          // Keep raw lines while typing; strip empties only on the saved value.
+          const clean = lines.map(s => s.trim()).filter(Boolean);
+          onChange(clean.length ? lines.filter((_, i) => i < 20) : []);
+        }}
+        className="w-full px-2.5 py-2 rounded-[9px] text-[11.5px] leading-relaxed border border-[var(--line-2)] bg-[var(--s1)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none resize-y"
+      />
+      <div className="flex items-center justify-between mt-2 gap-3">
+        <p className="text-[10px] text-[var(--t4)] leading-relaxed">
+          One category per line — the Report tab sorts every job into exactly one of these.
+          The <b>last line is the catch-all</b> for anything that doesn’t fit.
+          {usingDefaults && ' Currently using the defaults.'}
+        </p>
+        {!usingDefaults && (
+          <button type="button" onClick={() => onChange([])}
+            className="shrink-0 text-[10.5px] font-medium" style={{ color: 'var(--accent-text)' }}>
+            Reset
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Settings page ────────────────────────────────────────────────────────
 export function SettingsPage({
   config, onSave,
@@ -331,6 +441,14 @@ export function SettingsPage({
               : "From console.google.com → API key — powers the Ask AI feature"}
             value={form.gemini_key ?? ''}
             onChange={v => setForm(f => f ? { ...f, gemini_key: v } : f)}
+          />
+          <AiModelField
+            value={form.ai_model ?? ''}
+            onChange={v => setForm(f => f ? { ...f, ai_model: v } : f)}
+          />
+          <JobCategoriesField
+            value={form.job_categories ?? []}
+            onChange={v => setForm(f => f ? { ...f, job_categories: v } : f)}
           />
         </div>
 

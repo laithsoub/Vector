@@ -32,6 +32,18 @@ function PmoForm({ toast }: { toast: ToastFn }) {
   const [dlName,  setDlName]  = useState('');
   const [emailData, setEmailData] = useState<Record<string,string>>({});
   const [copied,    setCopied]    = useState(false);
+  const [saving,    setSaving]    = useState(false);
+  const [saved,     setSaved]     = useState(false);
+  const [savedPath, setSavedPath] = useState('');
+  const [folder,    setFolder]    = useState('');
+  const [folderAvailable, setFolderAvailable] = useState<boolean | null>(null);
+
+  // Where a checked PMO gets filed, and whether that drive is up right now.
+  useEffect(() => {
+    fetch('/api/pmo/folder').then(r => r.json())
+      .then(d => { setFolder(d.folder || ''); setFolderAvailable(!!d.available); })
+      .catch(() => setFolderAvailable(null));
+  }, []);
 
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -44,6 +56,7 @@ function PmoForm({ toast }: { toast: ToastFn }) {
     if (!allReady || running) return;
     setRunning(true); setLines([]); setDone(null);
     setDlId(''); setDlName(''); setEmailData({}); setCopied(false);
+    setSaved(false); setSavedPath('');
 
     const fd = new FormData();
     fd.append('quote_pdf', quotePdf!);
@@ -96,6 +109,35 @@ function PmoForm({ toast }: { toast: ToastFn }) {
       toast('err', e.message);
     }
     setRunning(false);
+  }
+
+  // Copy the finished document into the shared PMO folder. Never automatic —
+  // the whole point is that you check it first, then file it.
+  async function saveToFolder(overwrite: boolean) {
+    setSaving(true);
+    try {
+      const resp = await fetch(`/api/pmo/save/${dlId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ overwrite }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.status === 409 && data.exists) {
+        if (window.confirm(`A file with that name is already in the PMO folder:\n\n${data.path}\n\nReplace it?`)) {
+          setSaving(false);
+          return saveToFolder(true);
+        }
+      } else if (!resp.ok) {
+        throw new Error(data.error || `${resp.status}`);
+      } else {
+        setSaved(true);
+        setSavedPath(data.path);
+        toast('ok', 'Saved to the PMO folder');
+      }
+    } catch (e: any) {
+      toast('err', `Couldn't save: ${e.message}`);
+    }
+    setSaving(false);
   }
 
   async function downloadDocx() {
@@ -263,6 +305,37 @@ Best,`;
               </div>
               <ChevronRight className="w-4 h-4 text-[var(--accent-text)] group-hover:translate-x-0.5 transition-transform" />
             </button>
+
+            {/* Filing it in the shared PMO folder is a separate, deliberate step:
+                check the document first, then put it where the PMO team looks. */}
+            <div className="mt-2.5 flex items-center gap-2.5">
+              <button onClick={() => saveToFolder(false)} disabled={saving || saved}
+                className={cn(
+                  'flex-1 flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-colors',
+                  saved
+                    ? 'ring-1 ring-inset'
+                    : 'border border-[var(--line-2)] bg-[var(--s2)] hover:bg-[var(--s-hover)] disabled:opacity-60',
+                )}
+                style={saved ? { background: 'var(--ok-soft)', borderColor: 'transparent' } : undefined}>
+                {saving ? <Loader2 className="w-4 h-4 animate-spin shrink-0 text-[var(--t3)]" />
+                        : saved ? <CheckCircle2 className="w-4 h-4 shrink-0" style={{ color: 'var(--ok)' }} />
+                        : <FolderOpen className="w-4 h-4 shrink-0 text-[var(--t3)]" />}
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12px] font-semibold"
+                        style={{ color: saved ? 'var(--ok)' : 'var(--t1)' }}>
+                    {saved ? 'Filed in the PMO folder' : 'Checked it — save to PMO folder'}
+                  </span>
+                  <span className="block text-[10.5px] text-[var(--t3)] truncate mt-0.5">
+                    {saved ? savedPath : (folder || 'the shared PMO pending folder')}
+                  </span>
+                </span>
+              </button>
+            </div>
+            {folderAvailable === false && !saved && (
+              <p className="mt-1.5 text-[10.5px]" style={{ color: 'var(--warn)' }}>
+                Folder not reachable right now — check the Z: drive is connected.
+              </p>
+            )}
           </Card>
         )}
 

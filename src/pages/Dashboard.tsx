@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
 import {
   FileUp, FileText, Trash2, AlertCircle, UploadCloud, Calendar, Play, Loader2, Check,
-  TrendingUp, ChevronRight, Archive, Mail, Paperclip,
+  TrendingUp, ChevronRight, Archive, Mail, Paperclip, MailSearch, X, CloudOff,
 } from 'lucide-react';
 
 import { cn } from '../lib/cn';
@@ -11,7 +11,7 @@ import { Card, CardTitle, Pill, StatusDot, KpiTile, fmtMoney, relTime } from '..
 import { MiniBars, PRODUCT_COLORS } from '../lib/charts';
 import { api, runStreamingScript } from '../lib/api';
 import type { ConflictItem } from '../lib/api';
-import type { Job, PdfFile, DashboardStats, ArchiveDay } from '../types';
+import type { Job, PdfFile, DashboardStats, ArchiveDay, CheckupItem, CheckupResponse } from '../types';
 import type { ToastFn } from '../App';
 
 const PRODUCT_OPTS = [
@@ -56,6 +56,52 @@ export function DashboardPage({
   // ── Inbox preview ─────────────────────────────────────────────────────────
   const [inboxEmails, setInboxEmails]   = useState<any[]>([]);
   const [inboxLoading, setInboxLoading] = useState(true);
+
+  // ── Quick check-up ────────────────────────────────────────────────────────
+  const [checkup, setCheckup]           = useState<CheckupResponse | null>(null);
+  const [checkupRunning, setCheckupRun] = useState(false);
+  const [checkupOpen, setCheckupOpen]   = useState(false);
+  const [queueing, setQueueing]         = useState(false);
+  const [picked, setPicked]             = useState<Set<string>>(new Set());
+
+  async function runCheckup() {
+    setCheckupRun(true);
+    setCheckupOpen(true);
+    try {
+      const r = await api.quotesCheckup(30);
+      if (r.error) { toast('err', r.error); setCheckup(null); }
+      else {
+        setCheckup(r);
+        // Pre-select exactly what needs action — confirmed-missing quotes only.
+        setPicked(new Set(r.items.filter(i => i.status === 'missing').map(i => i.entryId)));
+        if (r.warning) toast('warn', r.warning);
+        else toast(r.counts.missing ? 'warn' : 'ok',
+          r.counts.missing
+            ? `${r.counts.missing} quote${r.counts.missing > 1 ? 's' : ''} not on SharePoint`
+            : 'All quote emails are already uploaded');
+      }
+    } catch (e: any) { toast('err', e.message); }
+    setCheckupRun(false);
+  }
+
+  async function queuePicked() {
+    if (!picked.size) return;
+    setQueueing(true);
+    try {
+      const r = await api.quotesCheckupQueue([...picked]);
+      if (r.count) {
+        toast('ok', `${r.count} file${r.count > 1 ? 's' : ''} added to the queue`);
+        setCheckupOpen(false);
+        // Land on Stage 1 with the bundle already in the queue.
+        document.getElementById('vec-upload-workflow')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else {
+        toast('warn', r.error || 'Nothing could be saved from those emails');
+      }
+      if (r.failed?.length) toast('warn', `${r.failed.length} email(s) failed — see server log`);
+      refresh();
+    } catch (e: any) { toast('err', e.message); }
+    setQueueing(false);
+  }
 
   const loadInbox = useCallback(async () => {
     try {
@@ -275,19 +321,46 @@ export function DashboardPage({
         <div className="col-span-12 lg:col-span-8 space-y-5">
 
           <Card padded={false}>
-            <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
+            <div id="vec-upload-workflow" className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
               <div>
                 <h2 className="text-[14px] font-semibold tracking-[-0.015em]">Upload workflow</h2>
                 <p className="text-[11.5px] text-[var(--t3)] mt-1">Drop files → tag → run. Each run pushes to SharePoint.</p>
               </div>
-              <div className="flex items-center gap-1.5">
-                <WfStep n={1} label="Files"   done={pdfs.length > 0} />
-                <span className="w-[22px] h-px bg-[var(--line-2)]" />
-                <WfStep n={2} label="Details" done={allResolved && !!arrived} />
-                <span className="w-[22px] h-px bg-[var(--line-2)]" />
-                <WfStep n={3} label="Run"     done={step1 === 'done' || step2 === 'done'} />
+              <div className="flex items-center gap-2.5">
+                <button onClick={runCheckup} disabled={checkupRunning}
+                  title="Scan the last 30 days of mail for quotes that never reached SharePoint"
+                  className="inline-flex items-center gap-1.5 h-[28px] px-2.5 rounded-[8px] text-[11px] font-semibold border transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                  style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)', borderColor: 'var(--accent-line)' }}>
+                  {checkupRunning
+                    ? <><Loader2 className="w-3 h-3 animate-spin" /> Checking…</>
+                    : <><MailSearch className="w-3 h-3" /> Quick check-up</>}
+                  {!checkupRunning && checkup && checkup.counts.missing > 0 && (
+                    <span className="ml-0.5 px-1.5 rounded-full text-[9.5px] font-bold num"
+                          style={{ background: 'var(--warn)', color: '#fff' }}>{checkup.counts.missing}</span>
+                  )}
+                </button>
+                <div className="flex items-center gap-1.5">
+                  <WfStep n={1} label="Files"   done={pdfs.length > 0} />
+                  <span className="w-[22px] h-px bg-[var(--line-2)]" />
+                  <WfStep n={2} label="Details" done={allResolved && !!arrived} />
+                  <span className="w-[22px] h-px bg-[var(--line-2)]" />
+                  <WfStep n={3} label="Run"     done={step1 === 'done' || step2 === 'done'} />
+                </div>
               </div>
             </div>
+
+            {checkupOpen && (
+              <CheckupPanel
+                data={checkup}
+                running={checkupRunning}
+                queueing={queueing}
+                picked={picked}
+                setPicked={setPicked}
+                onQueue={queuePicked}
+                onClose={() => setCheckupOpen(false)}
+                onRerun={runCheckup}
+              />
+            )}
 
             {/* Stage 1 — Files */}
             <Stage n={1} title="Files" right={<Pill tone="neutral">{pdfs.length} file{pdfs.length !== 1 ? 's' : ''}</Pill>}>
@@ -568,6 +641,159 @@ export function DashboardPage({
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Quick check-up panel ───────────────────────────────────────────────────
+// Only 'missing' is actionable — the rest are shown so the scan is auditable
+// (you can see WHY something was left out rather than trusting a silent filter).
+const CHECKUP_META: Record<string, { label: string; tone: string; hint: string }> = {
+  missing:    { label: 'Not uploaded', tone: 'var(--err)',   hint: 'No row on the Quotations List' },
+  unverified: { label: 'Unverified',   tone: 'var(--warn)',  hint: 'SharePoint could not be checked' },
+  noref:      { label: 'No reference', tone: 'var(--warn)',  hint: 'Quote mail with no SR/CR number' },
+  queued:     { label: 'In queue',     tone: 'var(--accent-text)', hint: 'Already waiting in this queue' },
+  processed:  { label: 'Processed',    tone: 'var(--ok)',    hint: 'Run through Step 1 on this machine' },
+  uploaded:   { label: 'Uploaded',     tone: 'var(--ok)',    hint: 'Already on the Quotations List' },
+};
+
+function CheckupPanel({
+  data, running, queueing, picked, setPicked, onQueue, onClose, onRerun,
+}: {
+  data: CheckupResponse | null;
+  running: boolean;
+  queueing: boolean;
+  picked: Set<string>;
+  setPicked: React.Dispatch<React.SetStateAction<Set<string>>>;
+  onQueue: () => void;
+  onClose: () => void;
+  onRerun: () => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+
+  const items     = data?.items ?? [];
+  const actionable = items.filter(i => i.status === 'missing' || i.status === 'unverified' || i.status === 'noref');
+  const rest      = items.filter(i => !actionable.includes(i));
+  const shown     = showAll ? items : actionable;
+
+  function toggle(id: string) {
+    setPicked(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <div className="px-5 py-4 border-b border-[var(--line)]" style={{ background: 'var(--s1)' }}>
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <MailSearch className="w-3.5 h-3.5" style={{ color: 'var(--accent-text)' }} />
+          <h3 className="text-[12.5px] font-semibold">Quote check-up</h3>
+          {data && (
+            <span className="text-[10.5px] text-[var(--t3)]">
+              {data.scanned} email{data.scanned !== 1 ? 's' : ''} scanned · last {data.days} days
+            </span>
+          )}
+        </div>
+        <button onClick={onClose} className="text-[var(--t3)] hover:text-[var(--t1)]"><X className="w-3.5 h-3.5" /></button>
+      </div>
+
+      {running ? (
+        <div className="flex items-center gap-2 py-6 justify-center text-[11.5px] text-[var(--t3)]">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Reading your mail and checking SharePoint…
+        </div>
+      ) : !data ? (
+        <p className="py-6 text-center text-[11.5px] text-[var(--t3)]">Check-up did not complete.</p>
+      ) : (
+        <>
+          {!data.connected && (
+            <div className="flex items-start gap-2 mb-3 px-3 py-2 rounded-[10px] text-[11px]"
+                 style={{ background: 'var(--warn-soft)', color: 'var(--t2)', border: '1px solid color-mix(in oklab, var(--warn) 35%, transparent)' }}>
+              <CloudOff className="w-3.5 h-3.5 shrink-0 mt-px" style={{ color: 'var(--warn)' }} />
+              <span>Not connected to JOE — nothing could be confirmed against SharePoint. Connect, then run the check-up again.</span>
+            </div>
+          )}
+
+          {items.length === 0 ? (
+            <p className="py-6 text-center text-[11.5px] text-[var(--t3)]">
+              No quote emails found in the last {data.days} days.
+            </p>
+          ) : shown.length === 0 ? (
+            <p className="py-5 text-center text-[11.5px]" style={{ color: 'var(--ok)' }}>
+              Every quote email found is already uploaded. Nothing to do.
+            </p>
+          ) : (
+            <div className="space-y-1 max-h-72 overflow-y-auto vec-scroll pr-0.5">
+              {shown.map(it => {
+                const meta     = CHECKUP_META[it.status] || CHECKUP_META.noref;
+                const selectable = it.status !== 'uploaded';
+                const on       = picked.has(it.entryId);
+                return (
+                  <div key={it.entryId}
+                    className="flex items-start gap-2.5 px-2 py-1.5 rounded-[9px] hover:bg-[var(--s3)]">
+                    <input type="checkbox" checked={on} disabled={!selectable}
+                      onChange={() => toggle(it.entryId)}
+                      style={{ accentColor: 'var(--accent)' }}
+                      className="mt-[3px] shrink-0 disabled:opacity-40" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-[11.5px] font-medium text-[var(--t1)]" title={it.subject}>
+                          {it.subject}
+                        </span>
+                        <span className="shrink-0 text-[9px] font-bold uppercase tracking-wide px-1.5 py-px rounded-[5px]"
+                          style={{ color: meta.tone, background: 'color-mix(in oklab, currentColor 12%, transparent)' }}
+                          title={meta.hint}>
+                          {meta.label}
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-[var(--t3)] truncate">
+                        {it.sfid && <span className="mono">{it.refs[0] || it.sfid}</span>}
+                        {it.sfid && ' · '}
+                        {it.sender || it.senderEmail}
+                        {' · '}<span className="num">{relTime(it.received)}</span>
+                        {' · '}{it.folder.split('\\').pop()}
+                      </p>
+                      <p className="text-[10px] text-[var(--t4)] truncate">
+                        {it.docs.map(d => d.name).join(', ')}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex items-center justify-between mt-3 pt-3 border-t border-[var(--line)]">
+            <div className="flex items-center gap-3 text-[10.5px] text-[var(--t3)]">
+              <span><b className="text-[var(--t1)] num">{data.counts.missing}</b> not uploaded</span>
+              {data.counts.unverified > 0 && <span><b className="num">{data.counts.unverified}</b> unverified</span>}
+              <span><b className="num">{data.counts.uploaded}</b> already filed</span>
+              {rest.length > 0 && (
+                <button onClick={() => setShowAll(v => !v)} className="font-medium" style={{ color: 'var(--accent-text)' }}>
+                  {showAll ? 'Show only actionable' : `Show all ${items.length}`}
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={onRerun} disabled={queueing}
+                className="h-[30px] px-3 rounded-[8px] text-[11px] font-semibold text-[var(--t1)] border border-[var(--line-2)] bg-[var(--s2)] hover:bg-[var(--s-hover)] disabled:opacity-60">
+                Re-scan
+              </button>
+              <button onClick={onQueue} disabled={!picked.size || queueing}
+                style={picked.size && !queueing
+                  ? { background: 'var(--accent)', color: 'var(--accent-ink)', boxShadow: 'var(--glow)' }
+                  : { background: 'var(--s2)', color: 'var(--t3)', border: '1px solid var(--line-2)' }}
+                className="h-[30px] px-3.5 rounded-[8px] text-[11px] font-semibold inline-flex items-center gap-1.5 disabled:cursor-not-allowed">
+                {queueing
+                  ? <><Loader2 className="w-3 h-3 animate-spin" /> Queueing…</>
+                  : <><UploadCloud className="w-3 h-3" /> Send {picked.size || ''} to upload</>}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

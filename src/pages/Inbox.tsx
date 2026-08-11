@@ -37,6 +37,7 @@ let _detail: EmailDetail | null = null;
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
 import { fmtGBP } from '../lib/ui';
+import type { TodoBucket } from '../types';
 import type { ToastFn } from '../App';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -1144,6 +1145,9 @@ function EmailDetailPanel({
   const [sendingReply, setSendingReply]             = useState(false);
   const [replySent, setReplySent]                   = useState(false);
   const [analysisLiked, setAnalysisLiked]           = useState<'up' | 'down' | null>(null);
+  // Which bucket this email was filed under on the To-Do board, if any.
+  const [todoBucket, setTodoBucket]                 = useState<TodoBucket | null>(null);
+  const [addingTodo, setAddingTodo]                 = useState(false);
   const [lightbox, setLightbox]                     = useState<{ src: string; name: string } | null>(null);
   const [chatMessages, setChatMessages]             = useState<Array<{ role: 'user' | 'ai'; text: string }>>([]);
   const [chatInput, setChatInput]                   = useState('');
@@ -1237,6 +1241,7 @@ function EmailDetailPanel({
     setAnalysis(_summaryCache[id] || '');
     setDraft(''); setReplyText(''); setEditingReply(false);
     setReplySent(false); setAnalysisLiked(null);
+    setTodoBucket(null);
     setChatMessages([]); setChatInput('');
     setActivePanel(null); setIncluded(new Set());
     setAttachSuggestions([]); setSelectedAtts([]);
@@ -1354,6 +1359,46 @@ function EmailDetailPanel({
       }
     } catch (e: any) { toast('err', e.message); }
     setSendingWithAtts(false);
+  }
+
+  // Park this email on the To-Do board under the bucket the user picked. The
+  // AI summary becomes the item's context and every real attachment is carried
+  // over by index, so a hand-off later can re-attach them off the original mail.
+  async function addToTodo(bucket: TodoBucket) {
+    if (!detail) return;
+    setAddingTodo(true);
+    try {
+      const due = new Date();
+      due.setDate(due.getDate() + (bucket === 'direct' ? 1 : 2));
+      const r = await api.todoSave({
+        conv: '',                       // hand-filed: never re-triaged by a scan
+        entryId: detail.entryId,
+        subject: detail.subject,
+        sender: detail.sender,
+        senderEmail: detail.senderEmail,
+        received: detail.received,
+        bucket,
+        title: detail.subject || '(no subject)',
+        summary: analysis,
+        // needs_info is nearly always a question back to whoever wrote in.
+        recipients: bucket === 'needs_info' && detail.senderEmail
+          ? [{ name: detail.sender || detail.senderEmail, email: detail.senderEmail }]
+          : [],
+        attachments: detail.attachments
+          .filter(a => !a.isInline)
+          .map(a => ({ index: a.index, name: a.name, size: a.size })),
+        due: due.toISOString().slice(0, 10),
+        source: 'inbox',
+      });
+      if (r.item) {
+        setTodoBucket(bucket);
+        toast('ok', 'Added to your To-Do list');
+      }
+    } catch (e: any) {
+      toast('err', e.message);
+    } finally {
+      setAddingTodo(false);
+    }
   }
 
   async function submitAnalysisFeedback(type: 'up' | 'down') {
@@ -1696,6 +1741,48 @@ function EmailDetailPanel({
                           </div>
                         )
                     }
+
+                    {/* ── Park it on the To-Do board ──
+                        One click files the summary, the attachments and (for a
+                        blocked item) the sender as the person to chase. Nothing
+                        is emailed here — the hand-off is written and sent from
+                        the To-Do tab. */}
+                    {analysis && !analyzing && (
+                      <div className="pt-2.5 border-t border-[var(--line)]">
+                        {todoBucket ? (
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
+                            <p className="text-[11px] text-[var(--t2)] flex-1">
+                              On your To-Do list as{' '}
+                              <span className="font-semibold">
+                                {todoBucket === 'direct' ? 'yours to finish'
+                                  : todoBucket === 'needs_info' ? 'waiting on info'
+                                  : 'one for the team'}
+                              </span>.
+                            </p>
+                            <button onClick={() => setAppTab('Todo')}
+                              className="text-[10.5px] font-semibold text-violet-600 dark:text-violet-300 hover:underline">
+                              Open To-Do
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[10.5px] text-[var(--t3)] mr-0.5">Add to To-Do:</span>
+                            {([
+                              ['direct',     'I can do this'],
+                              ['needs_info', 'Needs more info'],
+                              ['needs_team', 'Needs the team'],
+                            ] as Array<[TodoBucket, string]>).map(([b, label]) => (
+                              <button key={b} onClick={() => addToTodo(b)} disabled={addingTodo}
+                                className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium bg-[var(--s3)] text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:text-[var(--t1)] hover:ring-violet-400 disabled:opacity-50 transition-colors">
+                                {addingTodo ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Plus className="w-2.5 h-2.5" />}
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Inline follow-up chat (only once there is a summary) */}
                     {analysis && (

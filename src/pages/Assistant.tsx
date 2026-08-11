@@ -4,10 +4,12 @@ import {
   Sparkles, Send, Trash2, Copy, Check, Loader2, AlertCircle,
   Mail, ClipboardList, Zap, HelpCircle, ChevronRight, CornerDownLeft,
   MessageSquare, Plus, Search, ExternalLink, FolderOpen, X, FileText, User,
+  Download,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
 import { relTime } from '../lib/ui';
+import { exportAnswer, EXPORT_FORMATS, type ExportFormat } from '../lib/export';
 import type { ToastFn } from '../App';
 import type { DqDoc } from '../types';
 
@@ -28,6 +30,8 @@ interface Message {
   ts: number;
   results?: DqDoc[];                                    // quote/file cards from a smart search
   meta?: { count: number; scope: string; term: string }; // search summary header
+  suggestions?: string[];                               // AI quick-action offers (clickable chips)
+  title?: string;                                       // AI topic title (used to name exports)
 }
 
 interface Conversation {
@@ -92,6 +96,18 @@ const QUICK_PROMPTS: Array<{
   },
 ];
 
+// ─── Fallback export title — derive a topic when the AI didn't supply one ───────
+function deriveTitle(text: string): string {
+  const t = text || '';
+  const h = t.match(/^#{1,6}\s+(.+)$/m);                              // first heading
+  if (h) return h[1].replace(/\*\*/g, '').trim().slice(0, 60);
+  const cat = t.match(/\b\d{6,}\b|\b[A-Z]{2,}[A-Z0-9-]{3,}\b/);        // catalogue no / code
+  const bold = t.match(/\*\*(.+?)\*\*/);                              // first bold phrase
+  if (bold) return (bold[1].trim() + (cat ? ` ${cat[0]}` : '')).slice(0, 60);
+  const words = t.replace(/[#*`>|_-]/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 7).join(' ');
+  return words.slice(0, 60) || 'Vector answer';
+}
+
 // ─── Email detection ──────────────────────────────────────────────────────────
 function looksLikeEmail(text: string) {
   if (text.length < 80) return false;
@@ -113,6 +129,7 @@ function Markdown({ text }: { text: string }) {
   let ulBuf: string[] = [];
   let olBuf: string[] = [];
   let codeBuf: string[] = [];
+  let tableBuf: string[] = [];
   let inCode = false;
 
   const flushUl = () => {
@@ -152,6 +169,36 @@ function Markdown({ text }: { text: string }) {
     );
     codeBuf = [];
   };
+  // GFM tables: a header row, a |---|---| separator, then body rows.
+  const flushTable = () => {
+    if (!tableBuf.length) return;
+    const cells = (l: string) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(c => c.trim());
+    const isSep = tableBuf.length >= 2 && /-/.test(tableBuf[1]) && /^[\s|:-]+$/.test(tableBuf[1]);
+    if (isSep) {
+      const header = cells(tableBuf[0]);
+      const rows = tableBuf.slice(2).map(cells);
+      out.push(
+        <div key={out.length} className="my-2.5 overflow-x-auto rounded-lg ring-1 ring-inset ring-[var(--line-2)]">
+          <table className="w-full text-[12px] border-collapse">
+            <thead>
+              <tr>{header.map((h, i) => (
+                <th key={i} className="text-left font-semibold text-[var(--t1)] px-2.5 py-1.5 border-b border-[var(--line-2)] bg-[var(--s3)] whitespace-nowrap">{inlineRender(h)}</th>
+              ))}</tr>
+            </thead>
+            <tbody>{rows.map((r, ri) => (
+              <tr key={ri} className="odd:bg-[var(--s1)] even:bg-[var(--s2)]">
+                {r.map((c, ci) => <td key={ci} className="px-2.5 py-1.5 text-[var(--t2)] align-top border-b border-[var(--line)]">{inlineRender(c)}</td>)}
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>,
+      );
+    } else {
+      // Not a real table — render the buffered lines as plain paragraphs.
+      for (const l of tableBuf) out.push(<p key={out.length} className="text-[12.5px] text-[var(--t2)] leading-relaxed">{inlineRender(l)}</p>);
+    }
+    tableBuf = [];
+  };
 
   for (const line of lines) {
     const raw = line.trim();
@@ -161,6 +208,10 @@ function Markdown({ text }: { text: string }) {
       continue;
     }
     if (inCode) { codeBuf.push(line); continue; }
+    // Table rows: buffer consecutive pipe lines; anything else flushes the table.
+    const isTableRow = raw.includes('|') && !raw.startsWith('#') && !/^[-*•]\s/.test(raw) && !/^\d+\.\s/.test(raw);
+    if (isTableRow) { flushUl(); flushOl(); tableBuf.push(raw); continue; }
+    flushTable();
     if (!raw) { flushUl(); flushOl(); out.push(<div key={out.length} className="h-1.5" />); continue; }
     if (/^---+$/.test(raw)) { flushUl(); flushOl(); out.push(<hr key={out.length} className="my-3 border-violet-200/60 dark:border-violet-800/40" />); continue; }
     if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[12px] font-bold mt-3 mb-0.5 text-[var(--t1)]">{inlineRender(raw.slice(4))}</p>); continue; }
@@ -171,7 +222,7 @@ function Markdown({ text }: { text: string }) {
     flushUl(); flushOl();
     out.push(<p key={out.length} className="text-[12.5px] text-[var(--t2)] leading-relaxed">{inlineRender(raw)}</p>);
   }
-  flushUl(); flushOl(); flushCode();
+  flushUl(); flushOl(); flushCode(); flushTable();
   return <div className="space-y-0.5">{out}</div>;
 }
 
@@ -234,30 +285,110 @@ function QuoteResultCard({ doc }: { doc: DqDoc }) {
   );
 }
 
-// ─── Thinking phrases — rotates status text so the wait isn't a blank stare ───
-const THINKING_PHRASES = [
-  'Reading your message…',
-  'Working out what you need…',
-  'Searching your quotes…',
-  'Digging through the D&Q index…',
-  'Pulling the details together…',
-  'Almost there…',
-];
-function ThinkingPhrases() {
+// ─── Thinking phrases — status text that MATCHES the request, not a generic loop ─
+// Client-side heuristic mirrors the server routing so the wait text is honest:
+// part/price/alternative → sheet + web; quote-search signals → quotes; email → triage.
+function phrasesFor(q: string): string[] {
+  const s = (q || '').toLowerCase();
+  const web   = /\b(datasheet|data sheet|spec|specification|alternativ|equivalent|replace|substitut|cross[\s-]?reference|compare|competitor|look ?up|dig it up|double ?check|verify|search (the )?(web|internet|online)|online|latest|newest)\b/.test(s);
+  const part  = web || /\b(price|pricing|cost|ntp|catalogue|catalog|cat[\s-]?no|part\s*(no|number)|driver|luminaire|fitting|lumen|bulkhead|exit sign|emergency|\b\d{5,}\b)\b/.test(s);
+  const table = /\b(table|tabulate|columns?|grid|side by side|spreadsheet|list them out)\b/.test(s);
+  const draft = /\b(draft|write|compose|email|reply|respond|message|letter|note to|send (to|an)|inject)\b/.test(s);
+  const pmo   = /\bpmo\b/.test(s);
+  const step1 = /\b(step\s*1|extract|run step|upload|sharepoint|quotationfactory)\b/.test(s);
+  const quote = /\b(quote|quotes|sr\d|customer|blair|craig|joe bayley|fenton|ollie|ryan|how many|who (made|quoted|did)|my quotes|kva)\b/.test(s);
+  const email = /\b(from:|to:|subject:|dear |regards|@)\b/.test(s) || s.length > 400;
+
+  if (table) return ['Reading your message…', 'Gathering the rows…', 'Building the table…', 'Lining up the columns…'];
+  if (draft) return ['Reading the thread…', 'Deciding what to say…', 'Drafting the email…', 'Polishing the wording…'];
+  if (pmo)   return ['Reading your message…', 'Walking the PMO steps…', 'Lining up PO → Word doc…', 'Putting it together…'];
+  if (step1) return ['Reading your message…', 'Checking the PDF queue…', 'Mapping the extraction…', 'Prepping the SharePoint push…'];
+  if (part) return [
+    'Reading your message…',
+    'Checking the Eaton EL price sheet…',
+    'Matching the catalogue number…',
+    ...(web ? ['Searching the web to verify specs & alternatives…', 'Cross-checking sources…'] : ['Pulling same-family alternatives…']),
+    'Putting the details together…',
+  ];
+  if (quote) return ['Reading your message…', 'Searching your quotes…', 'Digging through the D&Q index…', 'Ranking the matches…'];
+  if (email) return ['Reading the email…', 'Working out what it needs…', 'Drafting the response…'];
+  return ['Reading your message…', 'Working out what you need…', 'Pulling the details together…', 'Almost there…'];
+}
+function ThinkingPhrases({ query }: { query: string }) {
+  const phrases = React.useMemo(() => phrasesFor(query), [query]);
   const [i, setI] = useState(0);
+  useEffect(() => { setI(0); }, [phrases]);
   useEffect(() => {
-    const t = setInterval(() => setI(p => Math.min(p + 1, THINKING_PHRASES.length - 1)), 1500);
+    const t = setInterval(() => setI(p => Math.min(p + 1, phrases.length - 1)), 1500);
     return () => clearInterval(t);
-  }, []);
+  }, [phrases]);
   return (
     <span className="text-[11.5px] text-[var(--t3)] italic transition-opacity">
-      {THINKING_PHRASES[i]}
+      {phrases[i]}
     </span>
   );
 }
 
+// ─── Export menu — PDF/Word/Excel/CSV/TXT/MD/HTML/JSON of an answer or thread ───
+function ExportMenu({ content, title, filename, toast, up = false, pill = false, align = 'left' }: {
+  content: string; title: string; filename: string; toast: ToastFn; up?: boolean; pill?: boolean; align?: 'left' | 'right';
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<ExportFormat | null>(null);
+
+  async function pick(fmt: ExportFormat) {
+    setBusy(fmt);
+    try {
+      await exportAnswer(fmt, { content, title, filename });
+      toast('ok', `Exported ${fmt.toUpperCase()}`);
+      setOpen(false);
+    } catch (e: any) {
+      toast('err', e?.message || 'Export failed');
+    }
+    setBusy(null);
+  }
+
+  return (
+    <div className="relative inline-block">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className={cn(
+          pill
+            ? 'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors'
+            : 'flex items-center gap-1 text-[10.5px] text-[var(--t3)] hover:text-[var(--t1)] transition-colors',
+        )}>
+        <Download className={pill ? 'w-3.5 h-3.5' : 'w-3 h-3'} /> Export
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className={cn(
+            'absolute z-50 w-40 rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] shadow-lg overflow-hidden py-1',
+            up ? 'bottom-full mb-1' : 'top-full mt-1',
+            align === 'right' ? 'right-0' : 'left-0',
+          )}>
+            {EXPORT_FORMATS.map(f => (
+              <button
+                key={f.id}
+                disabled={!!busy}
+                onClick={() => pick(f.id)}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[var(--t2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+                {busy === f.id ? <Loader2 className="w-3 h-3 animate-spin shrink-0" /> : <FileText className="w-3 h-3 shrink-0 text-[var(--t4)]" />}
+                <span className="flex-1">{f.label}</span>
+                <span className="text-[10px] text-[var(--t4)] mono">.{f.ext}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Message bubble ───────────────────────────────────────────────────────────
-function Bubble({ msg, onCopy }: { msg: Message; onCopy: () => void }) {
+function Bubble({ msg, onCopy, toast, exportTitle }: {
+  msg: Message; onCopy: () => void; toast: ToastFn; exportTitle?: string;
+}) {
   const [copied, setCopied] = useState(false);
   const isUser = msg.role === 'user';
 
@@ -318,6 +449,14 @@ function Bubble({ msg, onCopy }: { msg: Message; onCopy: () => void }) {
               ? <><Check className="w-3 h-3 text-emerald-500" /> Copied</>
               : <><Copy className="w-3 h-3" /> Copy</>}
           </button>
+          {!isUser && (
+            <ExportMenu
+              content={msg.text}
+              title={exportTitle || 'Ask Vector answer'}
+              filename={(exportTitle || 'vector-answer').slice(0, 50)}
+              toast={toast}
+            />
+          )}
           <span className="text-[10px] text-[var(--t4)]">
             {new Date(msg.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
           </span>
@@ -661,6 +800,8 @@ export function AssistantPage({
         ts: Date.now(),
         results: r.results && r.results.length ? r.results : undefined,
         meta: r.meta,
+        suggestions: r.suggestions && r.suggestions.length ? r.suggestions : undefined,
+        title: r.title || undefined,
       };
       const finalMessages = [...updatedMsgsWithUser, aiMsg];
       const finalConv: Conversation = {
@@ -702,6 +843,17 @@ export function AssistantPage({
   }
 
   const isEmpty = messages.length === 0;
+  // Name the whole-conversation export after its actual topic: prefer the latest AI
+  // title, fall back to a derived topic, then the stored conversation title.
+  const lastAiTitle = [...messages].reverse().find(m => m.role === 'assistant' && m.title)?.title;
+  const lastAiText  = [...messages].reverse().find(m => m.role === 'assistant')?.text;
+  const convTitle = lastAiTitle
+    || (lastAiText ? deriveTitle(lastAiText) : '')
+    || convs.find(c => c.id === activeId)?.title
+    || 'Ask Vector conversation';
+  const transcript = messages
+    .map(m => `## ${m.role === 'user' ? 'You' : 'Ask Vector'}\n\n${m.text}`)
+    .join('\n\n---\n\n');
 
   return (
     // Break out of the parent p-6 to fill the full content area; 2-column shell:
@@ -738,6 +890,10 @@ export function AssistantPage({
             <span className="hidden sm:inline-flex items-center gap-1.5 text-[10.5px] font-medium px-2 py-0.5 rounded-full ring-1 ring-inset bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 ring-amber-200 dark:ring-amber-700/30">
               <AlertCircle className="w-3 h-3" /> No Gemini key
             </span>
+          )}
+
+          {messages.length > 0 && (
+            <ExportMenu content={transcript} title={convTitle} filename={convTitle} toast={toast} pill align="right" />
           )}
 
           {messages.length > 0 && (
@@ -861,17 +1017,13 @@ export function AssistantPage({
                   }}
                   className={cn(
                     'flex items-start gap-3 px-3.5 py-3 rounded-xl ring-1 ring-inset text-left transition-all group shadow-sm',
-                    p.quoteSearch
-                      ? 'bg-[var(--accent-soft)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)]'
-                      : 'bg-[var(--s1)] ring-[var(--line)] hover:ring-violet-300 dark:hover:ring-violet-600/60 hover:bg-violet-50/60 dark:hover:bg-violet-900/10',
+                    'bg-[var(--s1)] ring-[var(--line)] hover:ring-violet-300 dark:hover:ring-violet-600/60 hover:bg-violet-50/60 dark:hover:bg-violet-900/10',
                   )}>
                   <div className={cn(
                     'w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 transition-colors',
-                    p.quoteSearch
-                      ? 'bg-[var(--accent-soft)] group-hover:bg-[var(--accent-soft)]'
-                      : 'bg-violet-100 dark:bg-violet-900/50 group-hover:bg-violet-200 dark:group-hover:bg-violet-800/60',
+                    'bg-violet-100 dark:bg-violet-900/50 group-hover:bg-violet-200 dark:group-hover:bg-violet-800/60',
                   )}>
-                    <p.icon className={cn('w-3.5 h-3.5', p.quoteSearch ? 'text-[var(--accent-text)]' : 'text-violet-500')} />
+                    <p.icon className="w-3.5 h-3.5 text-violet-500" />
                   </div>
                   <div className="min-w-0">
                     <p className="text-[12.5px] font-semibold text-[var(--t1)] leading-snug">{p.label}</p>
@@ -884,9 +1036,33 @@ export function AssistantPage({
         ) : (
           /* ── Conversation ── */
           <div className="px-5 py-5 space-y-5 w-full max-w-3xl mx-auto">
-            {messages.map(msg => (
-              <Bubble key={msg.id} msg={msg} onCopy={() => toast('ok', 'Copied to clipboard')} />
-            ))}
+            {messages.map((msg, idx) => {
+              const isLast = idx === messages.length - 1;
+              const showOffers = msg.role === 'assistant' && isLast && !loading
+                && !!msg.suggestions && msg.suggestions.length > 0;
+              const exportTitle = msg.role === 'assistant'
+                ? (msg.title || deriveTitle(msg.text)) : 'Ask Vector answer';
+              return (
+                <div key={msg.id} className="space-y-2">
+                  <Bubble msg={msg} onCopy={() => toast('ok', 'Copied to clipboard')} toast={toast} exportTitle={exportTitle} />
+                  {/* AI quick-action offers — click to have Vector do it next */}
+                  {showOffers && (
+                    <div className="ml-10 flex flex-wrap gap-1.5">
+                      {msg.suggestions!.map((s, i) => (
+                        <button
+                          key={i}
+                          onClick={() => send(s)}
+                          disabled={loading || !aiAvailable}
+                          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-medium bg-violet-50 dark:bg-violet-900/20 ring-1 ring-inset ring-violet-200 dark:ring-violet-700/40 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+                          <Sparkles className="w-3 h-3 shrink-0" />
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
             {/* Typing indicator */}
             {loading && (
@@ -902,7 +1078,7 @@ export function AssistantPage({
                           style={{ animationDelay: `${i * 160}ms` }} />
                       ))}
                     </div>
-                    <ThinkingPhrases />
+                    <ThinkingPhrases query={[...messages].reverse().find(m => m.role === 'user')?.text || ''} />
                   </div>
                 </div>
               </div>
@@ -919,10 +1095,11 @@ export function AssistantPage({
         {/* Quick prompt chips — shown inside conversation */}
         {!isEmpty && (
           <div className="flex gap-1.5 mb-3 overflow-x-auto pb-0.5 -mx-1 px-1 scrollbar-none">
-            {/* Quote search chip — always enabled */}
+            {/* Quote search chip — opens the quote-search modal (not a mode toggle) */}
             <button
               onClick={() => setQuoteSearchOpen(true)}
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-medium whitespace-nowrap shrink-0 bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent-line)] text-[var(--accent-text)] hover:bg-brand-100 dark:hover:bg-brand-900/50 transition-colors">
+              title="Open quote search (searches your past SharePoint quotes)"
+              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-medium whitespace-nowrap shrink-0 bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-violet-50 dark:hover:bg-violet-900/20 hover:ring-violet-200 dark:hover:ring-violet-700/40 hover:text-violet-700 dark:hover:text-violet-300 transition-colors">
               <Search className="w-3 h-3 shrink-0" />
               Search for a Quote
             </button>

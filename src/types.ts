@@ -34,6 +34,157 @@ export interface Config {
   dq_store:    string;
   gemini_key?:     string;
   gemini_key_set?: boolean;
+  ai_model?:       string;   // Ask Vector "smart" model id (Settings dropdown); blank = server default
+  job_categories?: string[]; // Report tab buckets; blank = server defaults
+}
+
+// ─── Quick check-up: quote mail vs the Quotations List ───────────────────────
+
+// 'missing'    — SharePoint answered and has no row for this reference
+// 'unverified' — has a reference but SharePoint couldn't be asked (not connected)
+// 'noref'      — quote-looking mail carrying no reference at all
+export type CheckupStatus =
+  | 'missing' | 'unverified' | 'uploaded' | 'queued' | 'processed' | 'noref';
+
+export interface CheckupDoc  { index: number; name: string; size: number }
+
+export interface CheckupItem {
+  entryId:        string;
+  subject:        string;
+  sender:         string;
+  senderEmail:    string;
+  received:       string;
+  folder:         string;
+  isNotification: boolean;
+  refs:           string[];
+  sfid:           string | null;
+  docs:           CheckupDoc[];
+  status:         CheckupStatus;
+  spTitle:        string | null;
+  spCustomer:     string | null;
+}
+
+export interface CheckupResponse {
+  items:     CheckupItem[];
+  scanned:   number;
+  days:      number;
+  connected: boolean;
+  counts:    { missing: number; unverified: number; uploaded: number; queued: number };
+  warning:   string | null;
+  error?:    string;
+}
+
+// ─── Job report ──────────────────────────────────────────────────────────────
+
+export interface JobThread {
+  conv:        string;
+  topic:       string;
+  category:    string;
+  summary:     string;
+  counterpart: string;
+  msgs:        number;
+  sent:        number;
+  first:       string;
+  last:        string;
+  folders:     string[];
+  completed:   boolean;
+  hasAtt:      boolean;
+}
+
+export interface JobsReport {
+  range:       { from: string; to: string };
+  generatedAt: string;
+  totals: {
+    threads: number; messages: number; replies: number;
+    completedFiled: number; scanned: number;
+  };
+  byCategory: Array<{ category: string; threads: number; messages: number; replies: number; pct: number }>;
+  daily:      Array<{ date: string; count: number }>;
+  folders:    Array<{ folder: string; count: number }>;
+  threads:    JobThread[];
+  truncated:  boolean;
+}
+
+export interface JobsReportStatus {
+  running:     boolean;
+  phase:       'idle' | 'scanning' | 'grouping' | 'classifying' | 'done' | 'error';
+  message:     string;
+  messages:    number;
+  threads:     number;
+  classified:  number;
+  toClassify:  number;
+  from:        string;
+  to:          string;
+  error:       string | null;
+  truncated:   boolean;
+  startedAt:   string | null;
+  started?:    boolean;
+}
+
+// ─── To-Do (unanswered mail triaged into things still owed) ──────────────────
+
+/** direct = doable here · needs_info = blocked on a fact · needs_team = someone else must act */
+export type TodoBucket = 'direct' | 'needs_info' | 'needs_team';
+/** open = still owed · waiting = delegated, awaiting an answer · done = closed */
+export type TodoStatus = 'open' | 'waiting' | 'done';
+
+export interface TodoAttachment { index: number; name: string; size?: number; }
+export interface TodoRecipient   { name: string; email: string; }
+
+export interface TodoItem {
+  id:           number;
+  conv:         string;
+  entryId:      string;          // source email — where attachments are pulled from
+  subject:      string;
+  sender:       string;
+  senderEmail:  string;
+  received:     string;
+  bucket:       TodoBucket;
+  title:        string;
+  summary:      string;          // extract of the source email
+  action:       string;          // the concrete next step
+  blocker:      string;          // what is missing / who must act
+  notes:        string;
+  recipients:   TodoRecipient[];
+  attachments:  TodoAttachment[];
+  draftSubject: string;
+  draftBody:    string;          // never sent until the user presses Send
+  due:          string;          // YYYY-MM-DD
+  priority:     'high' | 'normal';
+  status:       TodoStatus;
+  source:       'scan' | 'manual' | 'inbox' | string;
+  createdAt:    string;
+  updatedAt:    string;
+  doneAt:       string | null;
+  sentAt:       string | null;
+}
+
+export interface TodoScanStatus {
+  running:   boolean;
+  phase:     'idle' | 'scanning' | 'triaging' | 'done' | 'error';
+  message:   string;
+  threads:   number;
+  triaged:   number;
+  created:   number;
+  updated:   number;
+  days:      number;
+  mailbox:   string;
+  error:     string | null;
+  startedAt: string | null;
+  started?:  boolean;
+  // Persisted alongside the run, so a restart or refresh still shows the last
+  // scan's outcome instead of an empty panel.
+  counts:         { total: number; open: number; waiting: number; done: number };
+  lastScanAt:     string | null;
+  lastContactsAt: string | null;
+}
+
+export interface TodoRecipientOption {
+  name:     string;
+  email:    string;
+  count:    number;               // messages exchanged — drives the ranking
+  lastSeen: string;
+  source:   'outlook' | 'crm' | 'both';
 }
 
 export interface PdfFile    { name: string; size: number; modified: string; }
@@ -163,12 +314,59 @@ export interface CrmQuote {
   state:     'open' | 'won' | 'lost';
 }
 
+// A quote found by sweeping Outlook rather than SharePoint. `side` is who the
+// job belongs to — 'mine' = this desk issued or filed it, 'team' = a colleague
+// did and it is merely visible from here.
+export interface CrmMailQuote {
+  key:         string;              // normalised SF id, or BidManager number
+  kind:        'sfid' | 'bm';
+  ref:         string;              // the reference as it was written in the mail
+  subject:     string;
+  account:     string | null;
+  companyId:   number | null;
+  matchedBy:   'reference' | 'name' | 'subject' | null;
+  sender:      string;
+  senderEmail: string;
+  recipients:  string;
+  first:       string;
+  last:        string;
+  entryId:     string;
+  folder:      string;              // where the representative message sits
+  store:       string;
+  folders:     string[];            // every folder this quote turned up in
+  docs:        Array<{ index: number; name: string; size: number }>;
+  msgs:        number;
+  side:        'mine' | 'team';     // effective side (override wins)
+  scannerSide: 'mine' | 'team';     // what the scan itself decided
+  overridden:  boolean;
+  why:         string;              // plain-English reason for the verdict
+  whyFolder:   string;              // the folder that reason came from
+}
+
+export interface CrmMailScanStatus {
+  running:    boolean;
+  phase:      'idle' | 'scanning' | 'matching' | 'done' | 'error';
+  message:    string;
+  error:      string | null;
+  days:       number;
+  scanned:    number;
+  found:      number;
+  mine:       number;
+  team:       number;
+  startedAt:  string | null;
+  finishedAt: string | null;
+  counts:     { total: number; mine: number; team: number };
+  lastScanAt: string | null;
+  started?:   boolean;
+}
+
 export interface CrmCompanyDetail {
   company:  CrmCompany;
   contacts: CrmContact[];
   facts:    CrmFact[];
   quotes:   CrmQuote[];
   enriched: boolean;   // true when quotes were enriched from SharePoint
+  mailQuotes?: CrmMailQuote[];
   opp:      { count: number; value: number };
 }
 

@@ -5,7 +5,7 @@ import {
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
   Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
   Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge, Pin, PinOff,
-  Lock, MessageSquarePlus, Rocket, Megaphone,
+  Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
@@ -18,19 +18,21 @@ import type { Config } from './types';
 
 import { DashboardPage }   from './pages/Dashboard';
 import { AnalyticsPage }   from './pages/Analytics';
+import { ReportPage }      from './pages/Report';
 import { HistoryPage }     from './pages/History';
 import { InboxPage }       from './pages/Inbox';
 import { SettingsPage }    from './pages/Settings';
 import { OverlayPage }     from './pages/Overlay';
 import { CrmPage }         from './pages/Crm';
 import { ELInfoPage }      from './pages/ELInfo';
+import { TodoPage }        from './pages/Todo';
 // AI Assistant + Tools pages are lazy-imported below, gated on STRIPPED. In the
 // stripped ship build that gate is a compile-time `true`, so Rollup dead-code-
 // eliminates their code from the bundle; locally (full app) they load normally.
 
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 type TabId =
-  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Inbox' | 'CRM' | 'ELInfo'
+  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Report' | 'Inbox' | 'Todo' | 'CRM' | 'ELInfo'
   | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Docs' | 'Settings';
 
 // Stripped ship build vs full local app. The desktop ship is produced with
@@ -44,7 +46,7 @@ const STRIPPED = import.meta.env.PROD;
 // the stripped ship (personal API keys / tooling not ready for rollout), full
 // locally.
 const LOCKED_TABS = new Set<TabId>(
-  STRIPPED ? ['Assistant', 'ELInfo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
+  STRIPPED ? ['Assistant', 'ELInfo', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
 );
 const isLocked = (t: TabId) => LOCKED_TABS.has(t);
 
@@ -62,6 +64,7 @@ const CBUCalculator  = STRIPPED ? null : React.lazy(() => import('./CBUCalculato
 const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
   Assistant:  { title: 'Ask Vector',        desc: 'Your in-app AI copilot for quotes, specs, and projects is being prepared for the whole team. Stay tuned.' },
   ELInfo:     { title: 'EL Internal Info',  desc: 'Your EL division internal-updates hub — digest, files and AI chat — is coming soon to your workspace.' },
+  Todo:       { title: 'To-Do',             desc: 'AI triage of the shared mailbox into what you can finish, what is blocked, and what the team must pick up. Coming soon.' },
   Schematics: { title: 'Schematics Reader', desc: 'Automated schematic analysis is coming soon to your workspace.' },
   PMO:        { title: 'PMO',               desc: 'PMO automation is being readied for the team and will land here soon.' },
   CBU:        { title: 'CBU Sizer',         desc: 'The CBU sizing tool is coming soon to your workspace.' },
@@ -77,10 +80,12 @@ const NAV_STRUCTURE = {
       { id: 'Dashboard' as TabId, Icon: LayoutDashboard, labelKey: 'dashboard' as const },
       { id: 'Assistant' as TabId, Icon: Sparkles,         labelKey: 'assistant' as const },
       { id: 'Inbox'     as TabId, Icon: Mail,            labelKey: 'inbox'     as const },
+      { id: 'Todo'      as TabId, Icon: ListTodo,        labelKey: 'todo'      as const },
       { id: 'CRM'       as TabId, Icon: Users,           labelKey: 'crm'       as const },
       { id: 'ELInfo'    as TabId, Icon: Megaphone,       labelKey: 'elInfo'    as const },
       { id: 'History'   as TabId, Icon: HistoryIcon,     labelKey: 'history'   as const },
       { id: 'Analytics' as TabId, Icon: BarChart3,       labelKey: 'analytics' as const },
+      { id: 'Report'    as TabId, Icon: ClipboardList,  labelKey: 'report'    as const },
     ],
   },
   tools: {
@@ -100,10 +105,12 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   Dashboard: { t: 'dashboard',  s: 'sub_dashboard'  },
   Assistant: { t: 'assistant',  s: 'sub_assistant'  },
   Inbox:     { t: 'inbox',      s: 'sub_inbox'      },
+  Todo:      { t: 'todo',       s: 'sub_todo'       },
   CRM:       { t: 'crm',        s: 'sub_crm'       },
   ELInfo:    { t: 'elInfo',     s: 'sub_elInfo'    },
   History:   { t: 'history',    s: 'sub_history'   },
   Analytics: { t: 'analytics',  s: 'sub_analytics' },
+  Report:    { t: 'report',     s: 'sub_report'    },
   PMO:       { t: 'pmo',        s: 'sub_pmo'       },
   CBU:        { t: 'cbuSizer',    s: 'sub_cbu'        },
   Commission: { t: 'commission',  s: 'sub_commission' },
@@ -409,6 +416,7 @@ const SHORTCUTS = [
   { key: 'Alt + 3',   desc: 'Inbox' },
   { key: 'Alt + 4',   desc: 'History' },
   { key: 'Alt + 5',   desc: 'Analytics' },
+  { key: 'Alt + 6',   desc: 'Job report' },
   { key: '?',         desc: 'Toggle this panel' },
   { key: 'Esc',       desc: 'Close any modal / panel' },
 ];
@@ -836,7 +844,7 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
 // ────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ────────────────────────────────────────────────────────────────────────────
-const VALID_TABS: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'CRM', 'ELInfo', 'History', 'Analytics', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'Settings'];
+const VALID_TABS: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'Todo', 'CRM', 'ELInfo', 'History', 'Analytics', 'Report', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'Settings'];
 
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
@@ -1004,7 +1012,7 @@ export default function App() {
 
   // Keyboard shortcuts
   useEffect(() => {
-    const workflowTabs: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'History', 'Analytics'];
+    const workflowTabs: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'History', 'Analytics', 'Report'];
     const h = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (['INPUT', 'TEXTAREA'].includes(tag)) return;
@@ -1113,6 +1121,8 @@ export default function App() {
                       <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
                       {t === 'Analytics'  && <AnalyticsPage />}
+                      {t === 'Report'     && <ReportPage      toast={toast} />}
+                      {t === 'Todo'       && <TodoPage        toast={toast} />}
                       {t === 'History'    && <HistoryPage      toast={toast} />}
                       {t === 'CRM'        && <CrmPage          toast={toast} />}
                       {t === 'ELInfo'     && <ELInfoPage       toast={toast} />}

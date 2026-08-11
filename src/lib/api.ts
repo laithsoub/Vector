@@ -6,7 +6,9 @@ import axios from 'axios';
 import type {
   Job, DashboardStats, Config, PdfFile, ArchiveDay,
   AnalyticsResponse, SearchResult, DqDoc,
-  CrmCompanyCard, CrmCompanyDetail, CrmInsight,
+  CrmCompanyCard, CrmCompanyDetail, CrmInsight, CrmMailQuote, CrmMailScanStatus,
+  CheckupResponse, JobsReport, JobsReportStatus,
+  TodoItem, TodoScanStatus, TodoRecipientOption,
 } from '../types';
 
 export interface UserDoc {
@@ -65,13 +67,14 @@ export const api = {
   // Search & Copilot
   search:        (q: string) => axios.get<{ results: SearchResult[]; error?: string }>('/api/search', { params: { q } }).then(r => r.data),
   ai:            (query: string, history?: Array<{role:string;text:string}>) =>
-                   axios.post<{ answer: string | null; error?: string; source?: string }>(
+                   axios.post<{ answer: string | null; error?: string; source?: string; suggestions?: string[]; title?: string }>(
                      '/api/ai', { query, history }, { timeout: 60_000 }).then(r => r.data),
   aiStatus:      () => axios.get<{ available: boolean }>('/api/ai/status').then(r => r.data),
+  aiModels:      () => axios.get<{ models: Array<{ id: string; label: string }>; current: string; fallback: string; error?: string }>('/api/ai-models').then(r => r.data),
   // Smart in-chat quote search: classifies the message, searches the D&Q Store +
   // Quotations List when it's a search, and returns a prose answer + result cards.
   quoteAsk:      (query: string, history?: Array<{role:string;text:string}>) =>
-                   axios.post<{ answer: string | null; results?: DqDoc[]; meta?: { count: number; scope: string; term: string }; error?: string }>(
+                   axios.post<{ answer: string | null; results?: DqDoc[]; meta?: { count: number; scope: string; term: string }; error?: string; suggestions?: string[]; title?: string }>(
                      '/api/quote-ask', { query, history }, { timeout: 60_000 }).then(r => r.data),
 
   // Analytics
@@ -145,6 +148,57 @@ export const api = {
                     axios.get<{ items: CrmInsight[]; error?: string; source?: string }>(`/api/crm/company/${id}/insights`, { params: refresh ? { refresh: 1 } : {}, timeout: 60_000 }).then(r => r.data),
   crmDocs:        (id: number, mine = true) =>
                     axios.get<{ results: DqDoc[]; error?: string }>(`/api/crm/company/${id}/docs`, { params: { mine: mine ? 1 : 0 }, timeout: 45_000 }).then(r => r.data),
+
+  // ── CRM · mailbox source (quotes swept out of Outlook, mine vs the team's) ──
+  // The sweep walks every folder of every store, so give it real time.
+  crmMailStatus:  () => axios.get<CrmMailScanStatus>('/api/crm/mailbox/status', { timeout: 15_000 }).then(r => r.data),
+  crmMailScan:    (days = 90) =>
+                    axios.post<CrmMailScanStatus>('/api/crm/mailbox/scan', { days }, { timeout: 30_000 }).then(r => r.data),
+  crmMailQuotes:  (side: 'mine' | 'team' | 'all', q = '') =>
+                    axios.get<{ quotes: CrmMailQuote[]; counts: { total: number; mine: number; team: number }; lastScanAt: string | null }>(
+                      '/api/crm/mailbox/quotes', { params: { side, q }, timeout: 20_000 }).then(r => r.data),
+  crmMailSide:    (qkey: string, side: 'mine' | 'team' | '') =>
+                    axios.post<{ ok: boolean; quote: CrmMailQuote; counts: { total: number; mine: number; team: number } }>(
+                      '/api/crm/mailbox/quote/side', { qkey, side }).then(r => r.data),
+
+  // ── Quick check-up (quote mail not yet on the Quotations List) ─────────────
+  // Scans Outlook then checks SharePoint per reference, so allow real time.
+  quotesCheckup:      (days = 30, signal?: AbortSignal) =>
+                        axios.get<CheckupResponse>('/api/quotes/checkup', { params: { days }, timeout: 300_000, signal }).then(r => r.data),
+  quotesCheckupQueue: (entryIds: string[]) =>
+                        axios.post<{ ok: boolean; saved: string[]; count: number; failed: any[]; error?: string }>(
+                          '/api/quotes/checkup/queue', { entryIds }, { timeout: 180_000 }).then(r => r.data),
+
+  // ── Job report (whole-mailbox work log over a period) ──────────────────────
+  jobsReportScan:   (from: string, to: string) =>
+                      axios.post<JobsReportStatus>('/api/jobs-report/scan', { from, to }, { timeout: 30_000 }).then(r => r.data),
+  jobsReportStatus: () => axios.get<JobsReportStatus>('/api/jobs-report/status', { timeout: 15_000 }).then(r => r.data),
+  jobsReportResult: () => axios.get<{ report: JobsReport | null; lastScanAt?: string; categories: string[] }>(
+                            '/api/jobs-report/result', { timeout: 20_000 }).then(r => r.data),
+
+  // ── To-Do (triage of the shared mailbox into things still owed) ────────────
+  // The scan sweeps every folder of the shared box, so give it real time.
+  todoList:       (status: 'all' | 'open' | 'done' = 'all') =>
+                    axios.get<{ items: TodoItem[]; lastScanAt: string | null; lastContactsAt: string | null; mailbox: string }>(
+                      '/api/todo', { params: { status }, timeout: 20_000 }).then(r => r.data),
+  todoScan:       (days = 30) =>
+                    axios.post<TodoScanStatus>('/api/todo/scan', { days }, { timeout: 30_000 }).then(r => r.data),
+  todoScanStatus: () => axios.get<TodoScanStatus>('/api/todo/scan/status', { timeout: 15_000 }).then(r => r.data),
+  todoSave:       (patch: Partial<TodoItem> & { id?: number }) =>
+                    axios.post<{ ok: boolean; item: TodoItem; error?: string }>('/api/todo', patch, { timeout: 20_000 }).then(r => r.data),
+  todoDelete:     (id: number) => axios.delete<{ ok: boolean }>(`/api/todo/${id}`, { timeout: 15_000 }).then(r => r.data),
+  // draft:true stops in the Outlook Drafts folder; otherwise the mail is sent.
+  todoSend:       (id: number, draft = false) =>
+                    axios.post<{ ok: boolean; draft?: boolean; item?: TodoItem; error?: string }>(
+                      `/api/todo/${id}/send`, { draft }, { timeout: 60_000 }).then(r => r.data),
+  todoWriteDraft: (id: number, signal?: AbortSignal) =>
+                    axios.post<{ ok?: boolean; subject?: string; body?: string; error?: string }>(
+                      '/api/todo/draft', { id }, { timeout: 60_000, signal }).then(r => r.data),
+  todoRecipients: () => axios.get<{ recipients: TodoRecipientOption[]; lastContactsAt: string | null }>(
+                          '/api/todo/recipients', { timeout: 20_000 }).then(r => r.data),
+  todoRefreshRecipients: (days = 365) =>
+                    axios.post<{ ok: boolean; count?: number; scanned?: number; error?: string }>(
+                      '/api/todo/recipients/refresh', { days }, { timeout: 300_000 }).then(r => r.data),
 
   // Retry queue
   retryQueue:     () => axios.get<any[]>('/api/retry').then(r => r.data),

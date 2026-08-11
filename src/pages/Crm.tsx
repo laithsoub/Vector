@@ -8,6 +8,7 @@ import {
   Plus, Search, Mail, Phone, Trash2, Pencil, ArrowLeft,
   Star, Check, X, RefreshCw, Loader2, UserPlus, GitMerge, AlertTriangle,
   Sparkles, FileText, ExternalLink, Pin, CheckSquare, Square, Database, Filter,
+  Inbox, Users, User, Paperclip, FolderOpen, ArrowLeftRight, Building2,
 } from 'lucide-react';
 
 import { cn } from '../lib/cn';
@@ -15,7 +16,10 @@ import { openExternal, isTauri } from '../lib/shell';
 import { Card, Pill, Button, fmtMoneyFull, relTime } from '../lib/ui';
 import { api } from '../lib/api';
 import type { CrmSyncStatus, CrmQuoteHit } from '../lib/api';
-import type { CrmCompanyCard, CrmCompanyDetail, CrmContact, CrmQuote, CrmInsight, DqDoc } from '../types';
+import type {
+  CrmCompanyCard, CrmCompanyDetail, CrmContact, CrmQuote, CrmInsight, DqDoc,
+  CrmMailQuote, CrmMailScanStatus,
+} from '../types';
 import type { ToastFn } from '../App';
 
 const inputCls =
@@ -27,6 +31,11 @@ const selectCls =
   'text-[var(--t2)] focus:outline-none focus:border-[var(--accent-line)] cursor-pointer';
 
 export function CrmPage({ toast }: { toast: ToastFn }) {
+  // Two sources of truth sit side by side: the SharePoint Quotations List
+  // (Accounts) and the mailbox sweep (Mailbox quotes). They answer different
+  // questions — "who is this customer?" vs "what quotes can I see from here?".
+  const [tab, setTab]             = useState<'accounts' | 'mailbox'>('accounts');
+  const [mailCounts, setCounts]   = useState<{ total: number; mine: number; team: number } | null>(null);
   const [companies, setCompanies] = useState<CrmCompanyCard[]>([]);
   const [loading, setLoading]     = useState(true);
   const [query, setQuery]         = useState('');
@@ -57,6 +66,9 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
     try { const s = await api.crmSyncStatus(); setSync(s); return s; } catch { return null; }
   }, []);
   useEffect(() => { loadSync(); }, [loadSync]);
+
+  // Tab badge only — the mailbox tab loads its own rows when it opens.
+  useEffect(() => { api.crmMailStatus().then(s => setCounts(s.counts)).catch(() => {}); }, []);
 
   // Poll while a sync is running; on completion refresh + toast once.
   useEffect(() => {
@@ -158,6 +170,22 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
 
   return (
     <div className="space-y-5">
+      {/* ── Source switch ────────────────────────────────────────────────────── */}
+      <div className="flex items-center gap-1 p-1 rounded-[11px] w-fit"
+           style={{ background: 'var(--s3)', border: '1px solid var(--line)' }}>
+        <TabBtn active={tab === 'accounts'} Icon={Database} onClick={() => setTab('accounts')}
+                label="Accounts" sub="from SharePoint" count={companies.length || null} />
+        <TabBtn active={tab === 'mailbox'} Icon={Inbox} onClick={() => setTab('mailbox')}
+                label="Mailbox quotes" sub="from Outlook" count={mailCounts?.total || null} />
+      </div>
+
+      {tab === 'mailbox' ? (
+        <MailboxQuotes
+          toast={toast}
+          onCounts={setCounts}
+          onOpenAccount={id => { setSelected(id); setTab('accounts'); }} />
+      ) : (
+      <>
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative flex-1 min-w-[200px] max-w-md">
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
@@ -346,6 +374,336 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
         )}
       </div>
       </div>
+      </>
+      )}
+    </div>
+  );
+}
+
+// ─── Source tab button ───────────────────────────────────────────────────────
+function TabBtn({ active, Icon, label, sub, count, onClick }: {
+  active: boolean; Icon: typeof Database; label: string; sub: string;
+  count: number | null; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick}
+      style={active ? { background: 'var(--s1)', boxShadow: 'var(--card-sh)' } : undefined}
+      className={cn('flex items-center gap-2 h-[34px] px-3 rounded-[9px] transition-colors',
+        active ? '' : 'hover:bg-[var(--s-hover)]')}>
+      <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--t3)' }} />
+      <span className="text-left leading-tight">
+        <span className={cn('block text-[12px]', active ? 'font-semibold text-[var(--t1)]' : 'text-[var(--t2)]')}>
+          {label}
+        </span>
+        <span className="block text-[9.5px] text-[var(--t4)]">{sub}</span>
+      </span>
+      {count != null && (
+        <span className="text-[10.5px] tabular-nums px-1.5 py-px rounded-full"
+              style={{ background: active ? 'var(--accent-soft)' : 'var(--s2)', color: 'var(--t3)' }}>
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ─── Mailbox quotes — everything quoted that this desk can see ──────────────
+// ═══════════════════════════════════════════════════════════════════════════
+// Two lists off one sweep: "Mine" is the work this desk issued or filed, "Team"
+// is what colleagues issued and merely shared here (the UKQuoteFactoryEL box,
+// their "Completed by …" folders, cc'd mail in the personal box). Every row
+// carries the reason for its verdict, and any row can be moved by hand.
+function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
+  toast: ToastFn;
+  onOpenAccount: (id: number) => void;
+  onCounts: (c: { total: number; mine: number; team: number }) => void;
+}) {
+  const [side, setSide]       = useState<'mine' | 'team'>('mine');
+  const [quotes, setQuotes]   = useState<CrmMailQuote[]>([]);
+  const [counts, setCounts]   = useState({ total: 0, mine: 0, team: 0 });
+  const [lastScan, setLast]   = useState<string | null>(null);
+  const [query, setQuery]     = useState('');
+  const [days, setDays]       = useState(90);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus]   = useState<CrmMailScanStatus | null>(null);
+  const wasRunning            = useRef(false);
+
+  const applyCounts = useCallback((c: { total: number; mine: number; team: number }) => {
+    setCounts(c); onCounts(c);
+  }, [onCounts]);
+
+  const load = useCallback(async (q = query, s = side) => {
+    setLoading(true);
+    try {
+      const r = await api.crmMailQuotes(s, q.trim());
+      setQuotes(r.quotes); applyCounts(r.counts); setLast(r.lastScanAt);
+    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+    setLoading(false);
+  }, [query, side, applyCounts, toast]);
+
+  useEffect(() => { load(query, side); /* eslint-disable-next-line */ }, [side]);
+
+  // Debounce typing, then re-query the server (the list can run to hundreds).
+  useEffect(() => {
+    const t = setTimeout(() => load(query, side), 220);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  const loadStatus = useCallback(async () => {
+    try { const s = await api.crmMailStatus(); setStatus(s); return s; } catch { return null; }
+  }, []);
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  // Poll while a sweep runs; refresh the list once it lands.
+  useEffect(() => {
+    if (!status?.running) {
+      if (wasRunning.current) {
+        wasRunning.current = false;
+        if (status?.phase === 'done')  { toast('ok', status.message); load(query, side); }
+        if (status?.phase === 'error')   toast('err', status.message);
+      }
+      return;
+    }
+    wasRunning.current = true;
+    const id = window.setInterval(loadStatus, 2000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.running, status?.phase, status?.message, loadStatus]);
+
+  async function scan() {
+    try {
+      const s = await api.crmMailScan(days);
+      setStatus(s);
+      toast('info', `Reading every mail folder over the last ${days} days — Outlook must stay open`);
+    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+  }
+
+  async function move(q: CrmMailQuote, to: 'mine' | 'team' | '') {
+    try {
+      const r = await api.crmMailSide(q.key, to);
+      applyCounts(r.counts);
+      // It just left this list unless the override put it back where it was.
+      setQuotes(prev => r.quote.side === side
+        ? prev.map(x => (x.key === q.key ? r.quote : x))
+        : prev.filter(x => x.key !== q.key));
+      toast('ok', to ? `Moved to ${to === 'mine' ? 'Mine' : 'Team'}` : 'Back to the scan’s own verdict');
+    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+  }
+
+  const running = !!status?.running;
+  const never   = !lastScan && !running;
+
+  return (
+    <div className="space-y-4">
+      {/* ── Mine / Team + controls ─────────────────────────────────────────── */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex items-center gap-1 p-1 rounded-[10px]"
+             style={{ background: 'var(--s3)', border: '1px solid var(--line)' }}>
+          <SideBtn active={side === 'mine'} Icon={User} label="Mine" count={counts.mine}
+                   onClick={() => setSide('mine')} />
+          <SideBtn active={side === 'team'} Icon={Users} label="Team" count={counts.team}
+                   onClick={() => setSide('team')} />
+        </div>
+
+        <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+          <input value={query} onChange={e => setQuery(e.target.value)}
+            placeholder="Search reference, project, sender, folder…"
+            className={cn(inputCls, 'pl-8')} />
+        </div>
+
+        <div className="flex-1" />
+
+        <select value={days} onChange={e => setDays(Number(e.target.value))}
+                className={selectCls} title="How far back to sweep" disabled={running}>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+          <option value={180}>Last 6 months</option>
+          <option value={365}>Last year</option>
+        </select>
+        <Button tone={never ? 'primary' : 'outline'} size="sm"
+                Icon={running ? Loader2 : RefreshCw} disabled={running} onClick={scan}
+                className={running ? '[&_svg]:animate-spin' : ''}>
+          {running ? 'Scanning…' : lastScan ? 'Re-scan mailbox' : 'Scan mailbox'}
+        </Button>
+        <Button tone="ghost" size="sm" Icon={RefreshCw} onClick={() => load(query, side)}>Refresh</Button>
+      </div>
+
+      {lastScan && !running && (
+        <p className="text-[11px] text-[var(--t4)]">
+          {counts.total} quote{counts.total === 1 ? '' : 's'} indexed · swept {relTime(lastScan)}
+          {status?.scanned ? ` · ${status.scanned.toLocaleString()} messages read` : ''}
+        </p>
+      )}
+
+      {status && (running || status.phase === 'error') && (
+        <div className="rounded-[12px] v3-card px-4 py-3 space-y-2">
+          <div className="flex items-center gap-2 text-[12px]">
+            {running && <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" style={{ color: 'var(--accent)' }} />}
+            {status.phase === 'error' && <AlertTriangle className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--err)' }} />}
+            <span className="flex-1" style={{ color: status.phase === 'error' ? 'var(--err)' : 'var(--t2)' }}>
+              {status.message}
+            </span>
+          </div>
+          {running && (
+            <p className="text-[10.5px] text-[var(--t4)]">
+              Outlook must stay open. Every folder of every mailbox is read, so a long window takes a few minutes.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* ── The list ───────────────────────────────────────────────────────── */}
+      {never ? (
+        <Card className="text-center py-16">
+          <Inbox className="w-8 h-8 text-[var(--t4)] mx-auto mb-3" />
+          <p className="text-[13px] font-medium text-[var(--t2)]">No mailbox sweep yet</p>
+          <p className="text-[11.5px] text-[var(--t4)] mt-1 max-w-md mx-auto">
+            Vector will read every folder of every mailbox you have open — your own and the shared
+            quote factory — and index every quote reference it finds, split into your work and the team’s.
+          </p>
+        </Card>
+      ) : loading ? (
+        <div className="flex items-center justify-center py-16 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>
+      ) : quotes.length === 0 ? (
+        <Card className="text-center py-14 text-[13px] text-[var(--t3)]">
+          {query.trim()
+            ? <>No {side === 'mine' ? 'quote of yours' : 'team quote'} matches “{query.trim()}”.</>
+            : side === 'mine'
+              ? <>Nothing here yet — no quote in the swept window was sent or filed by you.</>
+              : <>Nothing here yet — every quote found in the swept window is yours.</>}
+        </Card>
+      ) : (
+        <div className="rounded-[14px] v3-card divide-y divide-[var(--line)] overflow-hidden">
+          {quotes.map(q => (
+            <MailQuoteRow key={q.key} q={q} side={side} toast={toast}
+                          onOpenAccount={onOpenAccount} onMove={move} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SideBtn({ active, Icon, label, count, onClick }: {
+  active: boolean; Icon: typeof User; label: string; count: number; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick}
+      style={active ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : undefined}
+      className={cn('h-[30px] px-3 rounded-[8px] text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors',
+        active ? '' : 'text-[var(--t2)] hover:bg-[var(--s-hover)]')}>
+      <Icon className="w-3.5 h-3.5" />
+      {label}
+      <span className="tabular-nums text-[10.5px] px-1.5 rounded-full"
+            style={active ? { background: 'rgba(255,255,255,.22)' } : { background: 'var(--s2)', color: 'var(--t3)' }}>
+        {count}
+      </span>
+    </button>
+  );
+}
+
+// ─── One quote found in the mailbox ──────────────────────────────────────────
+function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
+  q: CrmMailQuote; side: 'mine' | 'team'; toast: ToastFn;
+  onOpenAccount: (id: number) => void;
+  onMove: (q: CrmMailQuote, to: 'mine' | 'team' | '') => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const other = side === 'mine' ? 'team' : 'mine';
+
+  async function openInOutlook() {
+    try {
+      const r = await api.outlookOpenInOutlook(q.entryId);
+      if ((r as any).error) toast('err', (r as any).error);
+    } catch (e: any) { toast('err', e.message); }
+  }
+
+  return (
+    <div className="px-4 py-2.5 hover:bg-[var(--s3)] transition-colors">
+      <div className="flex items-start gap-3">
+        <span className="shrink-0 mt-px px-1.5 py-0.5 rounded-[6px] text-[10px] font-semibold mono"
+              style={q.kind === 'bm'
+                ? { background: 'var(--violet-soft)', color: 'var(--violet)' }
+                : { background: 'var(--accent-soft)', color: 'var(--accent-text)' }}
+              title={q.kind === 'bm' ? 'BidManager number' : 'Salesforce reference'}>
+          {q.ref || q.key}
+        </span>
+
+        <div className="min-w-0 flex-1">
+          <p className="text-[12px] text-[var(--t1)] truncate">{q.subject}</p>
+          <div className="flex items-center gap-2 flex-wrap mt-0.5 text-[10.5px] text-[var(--t3)]">
+            {q.account && (
+              q.companyId
+                ? <button onClick={() => onOpenAccount(q.companyId!)}
+                          className="inline-flex items-center gap-1 hover:underline" style={{ color: 'var(--accent-text)' }}>
+                    <Building2 className="w-3 h-3" />{q.account}
+                  </button>
+                : <span className="inline-flex items-center gap-1"><Building2 className="w-3 h-3" />{q.account}</span>
+            )}
+            <span>{q.sender || q.senderEmail || 'unknown sender'}</span>
+            <span className="tabular-nums">{(q.last || '').slice(0, 10)}</span>
+            <span className="tabular-nums">{q.msgs} msg</span>
+            {q.docs.length > 0 && (
+              <span className="inline-flex items-center gap-1"><Paperclip className="w-3 h-3" />{q.docs.length}</span>
+            )}
+            {q.overridden && <Pill tone="neutral">moved by hand</Pill>}
+          </div>
+        </div>
+
+        <div className="shrink-0 flex items-center gap-1">
+          <button onClick={() => setOpen(o => !o)}
+            className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)]">
+            {open ? 'Less' : 'Why?'}
+          </button>
+          <button onClick={openInOutlook} title="Open this mail in Outlook"
+            className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)] inline-flex items-center gap-1">
+            <ExternalLink className="w-3 h-3" /> Open
+          </button>
+          <button onClick={() => onMove(q, other)} title={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`}
+            className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)] inline-flex items-center gap-1">
+            <ArrowLeftRight className="w-3 h-3" /> {other === 'mine' ? 'Mine' : 'Team'}
+          </button>
+        </div>
+      </div>
+
+      {open && (
+        <div className="mt-2 ml-1 pl-3 space-y-1 text-[10.5px] text-[var(--t2)]"
+             style={{ borderLeft: '2px solid var(--line-2)' }}>
+          <p>
+            <span className="text-[var(--t3)]">Filed as {side === 'mine' ? 'yours' : 'the team’s'} because </span>
+            {q.why || 'no reason recorded'}
+            {q.whyFolder && <span className="text-[var(--t3)]"> ({q.whyFolder})</span>}
+          </p>
+          {q.overridden && (
+            <p className="text-[var(--t3)]">
+              You moved this one — the scan itself said {q.scannerSide === 'mine' ? 'yours' : 'the team’s'}.{' '}
+              <button onClick={() => onMove(q, '')} className="hover:underline" style={{ color: 'var(--accent-text)' }}>
+                Undo
+              </button>
+            </p>
+          )}
+          <p className="flex items-start gap-1.5">
+            <FolderOpen className="w-3 h-3 shrink-0 mt-px text-[var(--t3)]" />
+            <span>{q.folders.join(' · ') || q.folder || '—'}</span>
+          </p>
+          {q.recipients && <p><span className="text-[var(--t3)]">To:</span> {q.recipients}</p>}
+          <p><span className="text-[var(--t3)]">Seen:</span>{' '}
+            <span className="tabular-nums">{(q.first || '').slice(0, 10)} → {(q.last || '').slice(0, 10)}</span>
+          </p>
+          {q.docs.length > 0 && (
+            <p className="flex items-start gap-1.5">
+              <Paperclip className="w-3 h-3 shrink-0 mt-px text-[var(--t3)]" />
+              <span>{q.docs.map(d => d.name).join(' · ')}</span>
+            </p>
+          )}
+          {!q.companyId && q.account && (
+            <p className="text-[var(--t3)]">Not matched to an account yet — no card claims “{q.account}”.</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -454,6 +812,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
     return <div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
   }
   const { company, contacts, facts, quotes, opp, enriched } = data;
+  const mailQuotes = data.mailQuotes ?? [];
 
   async function saveContact(vals: Partial<CrmContact>) {
     try {
@@ -680,6 +1039,45 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
           </div>
         )}
       </Card>
+
+      {/* Quotes the mailbox sweep tied to this account — including any that never
+          reached the Quotations List, which is precisely what makes them worth
+          showing next to the table above. */}
+      {mailQuotes.length > 0 && (
+        <Card padded={false}>
+          <div className="flex items-center justify-between px-5 pt-4 pb-3 gap-3">
+            <h3 className="text-[13px] font-semibold text-[var(--t1)] inline-flex items-center gap-2">
+              <Inbox className="w-3.5 h-3.5 text-[var(--t3)]" /> From the mailbox
+              <span className="text-[11px] font-normal text-[var(--t3)] tabular-nums">{mailQuotes.length}</span>
+            </h3>
+            <span className="text-[11px] text-[var(--t3)]">Found in Outlook, not in the Quotations List</span>
+          </div>
+          <div className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
+            {mailQuotes.map(q => (
+              <div key={q.key} className="px-5 py-2 flex items-center gap-3">
+                <span className="shrink-0 px-1.5 py-0.5 rounded-[6px] text-[10px] font-semibold mono"
+                      style={q.kind === 'bm'
+                        ? { background: 'var(--violet-soft)', color: 'var(--violet)' }
+                        : { background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
+                  {q.ref || q.key}
+                </span>
+                <span className="min-w-0 flex-1 text-[12px] text-[var(--t1)] truncate" title={q.subject}>
+                  {q.subject}
+                </span>
+                <Pill tone={q.side === 'mine' ? 'brand' : 'neutral'}>{q.side === 'mine' ? 'Mine' : 'Team'}</Pill>
+                {q.docs.length > 0 && (
+                  <span className="shrink-0 inline-flex items-center gap-1 text-[10.5px] text-[var(--t3)]">
+                    <Paperclip className="w-3 h-3" />{q.docs.length}
+                  </span>
+                )}
+                <span className="shrink-0 text-[10.5px] text-[var(--t3)] tabular-nums w-[68px] text-right">
+                  {(q.last || '').slice(0, 10)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
