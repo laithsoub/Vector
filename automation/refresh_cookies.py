@@ -230,6 +230,21 @@ fetch('https://graph.microsoft.com/v1.0/me', {
         return None
 
 
+def _stuck_on_login(port=9222):
+    """
+    True when the debug Edge is parked on the Entra sign-in / account-picker
+    page. Since Edge 151 the dedicated debug profile is no longer signed in
+    silently: the flow stops at "Pick an account" and waits for one click, so
+    rtFa is never issued and the cookie wait below would just time out.
+    """
+    try:
+        tabs = json.loads(urllib.request.urlopen(f"http://localhost:{port}/json", timeout=3).read())
+        return any("login.microsoftonline.com" in t.get("url", "")
+                   or "login.live.com" in t.get("url", "") for t in tabs)
+    except Exception:
+        return False
+
+
 def _wait_for_edge(port=9222, wait=30):
     for _ in range(wait):
         try:
@@ -557,15 +572,27 @@ if __name__ == "__main__":
     print("[*] Waiting for SharePoint login in Edge...", flush=True)
     print("    (Log in to SharePoint in the Edge window if prompted)", flush=True)
     fed = rt = None
+    warned_login = False
     for attempt in range(120):
         fed, rt = _query_cookies()
         if fed and rt: break
         if attempt % 5 == 0 and attempt > 0:
             print(f"[*] Still waiting for login... ({attempt}s)", flush=True)
+            if not warned_login and _stuck_on_login():
+                warned_login = True
+                print("[!] The Vector Edge window is showing the Microsoft sign-in page.", flush=True)
+                print("    Switch to it and click your account tile once — the sign-in", flush=True)
+                print("    then sticks and this step stops asking.", flush=True)
         time.sleep(1)
 
     if not fed or not rt:
         print("[ERR] Timed out waiting for SharePoint cookies.", flush=True)
+        if _stuck_on_login():
+            print("      Cause: the Vector Edge window is stuck on 'Pick an account'.", flush=True)
+            print("      Click your account there, then run Connect to JOE again.", flush=True)
+        elif fed and not rt:
+            print("      FedAuth arrived but rtFa did not — the SharePoint session is stale.", flush=True)
+            print("      Reload eaton.sharepoint.com in the Vector Edge window, then retry.", flush=True)
         sys.exit(1)
 
     print(f"[OK] FedAuth  ({len(fed)} chars)", flush=True)

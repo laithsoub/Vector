@@ -3,6 +3,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, FileText, Sparkles, Copy, AlertTriangle, X, Loader2, ChevronDown, ChevronUp, RotateCcw, ClipboardList, History, Trash2, Image as ImageIcon, FileSpreadsheet, MoreHorizontal, Check, RefreshCw, Paperclip, Plus } from 'lucide-react';
 import { Card, CardTitle, Button, fmtGBP } from '../lib/ui';
 import { cn } from '../lib/cn';
+import { failed, plural } from '../lib/errors';
 import { runTask, isCancel } from '../lib/tasks';
 
 interface PricedItem {
@@ -114,7 +115,7 @@ function ItemMenu({
 
   return (
     <div ref={ref} className="relative">
-      <button
+      <button aria-label="Feedback on this match"
         onClick={() => setOpen(o => !o)}
         title="Feedback on this match"
         className="w-5 h-5 rounded flex items-center justify-center text-amber-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors">
@@ -256,7 +257,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
     for (const f of Array.from(files)) {
       const kind = classifyAttachment(f);
       if (!kind) {
-        toast('warn', `${f.name}: unsupported file type — PDF, image, or Excel/CSV only`);
+        toast('warn', `${f.name} was skipped — only PDF, image, Excel and CSV files can be priced`);
         continue;
       }
       const att: Attachment = {
@@ -324,7 +325,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
   // Shared: turn a finished PriceResult into UI state, a toast, and a saved run.
   function finalizeResult(data: PriceResult) {
     if (data.error) {
-      toast('err', data.error);
+      toast('err', failed('price this list', data.error));
       setResult(data);
       return;
     }
@@ -332,11 +333,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
     const matched = data.items.filter(i => i.matched).length;
     const cands   = data.candidates?.length || 0;
     if (matched > 0) {
-      toast('ok', `Priced ${matched} item${matched === 1 ? '' : 's'}${cands ? ` · ${cands} suggestion${cands === 1 ? '' : 's'}` : ''}`);
+      toast('ok', `Priced ${plural(matched, 'item')}${cands ? ` · ${plural(cands, 'suggestion')} to review` : ''}`);
     } else if (cands > 0) {
-      toast('ok', `Found ${cands} candidate match${cands === 1 ? '' : 'es'} — pick one to add`);
+      toast('ok', `No exact match — found ${plural(cands, 'candidate')} to pick from`);
     } else {
-      toast('warn', 'No matches or candidates found — try a more specific description');
+      toast('warn', 'Nothing matched the price list — try a more specific description or a catalogue number');
     }
     const entry: RunEntry = {
       id: Date.now().toString(),
@@ -360,7 +361,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
 
   async function run() {
     if (!text.trim() && attachments.length === 0) {
-      toast('warn', 'Enter a description, cat numbers, or attach a PDF/image');
+      toast('warn', 'Type a description or catalogue numbers, or attach a PDF or image');
       return;
     }
     setLoading(true);
@@ -420,11 +421,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           }
         }
         if (finalData) finalizeResult(finalData);
-        else toast('warn', 'No items read — try again');
+        else toast('warn', 'No items were read from that input — try again');
       });
     } catch (e: any) {
-      if (!isCancel(e)) toast('err', e.message);
-      else toast('warn', 'Pricing canceled');
+      if (!isCancel(e)) toast('err', failed('price this list', e));
+      else toast('warn', 'Pricing cancelled — nothing was saved');
     } finally {
       setStreaming(false);
     }
@@ -433,7 +434,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
   function copyEmail() {
     if (!result) return;
     navigator.clipboard.writeText(buildEmailText(result, projectName));
-    toast('ok', 'Email text copied to clipboard');
+    toast('ok', `Email text copied to the clipboard — ${plural(result.items.filter(i => i.matched).length, 'priced item')}`);
   }
 
   const matched   = result?.items.filter(i => i.matched)  || [];
@@ -447,9 +448,9 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
         method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: catNo,
       });
       const data: PriceResult = await resp.json();
-      if (data.error) { toast('err', data.error); return; }
+      if (data.error) { toast('err', failed(`look up ${catNo}`, data.error)); return; }
       const found = data.items.find(i => i.matched);
-      if (!found) { toast('warn', `Still couldn't find ${catNo}`); return; }
+      if (!found) { toast('warn', `${catNo} is still not in the price list — check the catalogue number`); return; }
       setResult(prev => {
         if (!prev) return prev;
         const items = prev.items.map(it =>
@@ -459,14 +460,14 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
         );
         return { ...prev, items, total_ntp: items.filter(i => i.matched).reduce((s, i) => s + i.line_ntp, 0) };
       });
-      toast('ok', `Updated: ${originalInput} → ${found.cat_no}`);
-    } catch (e: any) { toast('err', e.message); }
+      toast('ok', `${originalInput} corrected to ${found.cat_no}`);
+    } catch (e: any) { toast('err', failed(`look up ${catNo}`, e)); }
   }
 
   function pickCandidate(c: VisualCandidate, replace: boolean) {
     if (!result) return;
     if (!c.matched || c.ntp == null) {
-      toast('warn', `${c.cat_no} is not in the price list — try retry/correct on it`);
+      toast('warn', `${c.cat_no} is not in the price list — use Retry or Correct to fix the number`);
       return;
     }
     const qty = c.suggested_qty && c.suggested_qty > 0 ? c.suggested_qty : 1;
@@ -494,7 +495,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
         total_ntp: items.filter(i => i.matched).reduce((s, i) => s + i.line_ntp, 0),
       };
     });
-    toast('ok', replace ? `Replaced with ${c.cat_no}` : `Added ${c.cat_no} × ${qty}`);
+    toast('ok', replace ? `List replaced with ${c.cat_no}` : `Added ${c.cat_no} × ${qty} to the list`);
   }
 
   function onDropZone(e: React.DragEvent) {
@@ -562,7 +563,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                     <p className="text-[var(--t1)] font-medium truncate max-w-[180px]">{a.name}</p>
                     <p className="text-[10px] text-[var(--t3)]">{(a.size / 1024).toFixed(0)} KB · {a.kind === 'pdf' ? 'PDF' : a.kind === 'excel' ? 'Excel' : 'Image'}</p>
                   </div>
-                  <button
+                  <button aria-label="Remove attachment"
                     onClick={() => removeAttachment(a.id)}
                     className="ml-1 text-[var(--t4)] hover:text-red-500 transition-colors">
                     <X className="w-3.5 h-3.5" />
@@ -575,7 +576,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           {/* Toolbar */}
           <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--line)]">
             <div className="flex items-center gap-1.5">
-              <button
+              <button aria-label="Attach PDF or image"
                 type="button"
                 onClick={() => fileRef.current?.click()}
                 title="Attach PDF or image"
@@ -933,7 +934,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                   £{run.totalNtp.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
-                  <button
+                  <button aria-label="Restore"
                     title="Restore"
                     onClick={e => {
                       e.stopPropagation();
@@ -945,7 +946,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                     className="p-1 rounded text-[var(--t3)] hover:text-[var(--accent-text)] transition-colors">
                     <RotateCcw style={{ width: 11, height: 11 }} />
                   </button>
-                  <button
+                  <button aria-label="Remove"
                     title="Remove"
                     onClick={e => {
                       e.stopPropagation();

@@ -81,6 +81,25 @@ def save_cookies(fed: str, rt: str):
         pass
 
 
+def decrypt_secret(blob: str):
+    """Decrypt a 'v1:' value written by Node's encSecret (or by _enc here).
+
+    Anything without the prefix is returned unchanged: config.json written before
+    the Gemini key was encrypted still holds it in plain text, and that has to keep
+    working. Returns '' when the value is present but undecryptable — a wrong key
+    should read as "no key", never as a corrupt one handed to the API.
+    """
+    s = (blob or "").strip()
+    if not s:
+        return ""
+    if not s.startswith("v1:"):
+        return s
+    try:
+        return _dec(s, _key()) or ""
+    except Exception:
+        return ""
+
+
 def save_token(path: str, text: str):
     """Encrypt an arbitrary token/JSON string to a file."""
     with open(path, "w", encoding="utf-8") as f:

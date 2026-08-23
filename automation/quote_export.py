@@ -280,20 +280,20 @@ def main():
     try:
         import fitz
     except ImportError:
-        print("__ERROR__:PyMuPDF (fitz) not installed"); sys.exit(1)
+        print("__ERROR__:PyMuPDF is not installed — run: pip install pymupdf"); sys.exit(1)
 
     if not os.path.exists(TEMPLATE):
-        print(f"__ERROR__:Base quote template missing: {TEMPLATE}"); sys.exit(1)
+        print(f"__ERROR__:the base quote template is missing: {TEMPLATE}"); sys.exit(1)
 
     try:
         data = json.loads(open(args.input, encoding="utf-8").read())
     except Exception as e:
-        print(f"__ERROR__:Could not read input: {e}"); sys.exit(1)
+        print(f"__ERROR__:could not read the input: {e}"); sys.exit(1)
 
     header = data.get("header") or {}
     lines = [l for l in (data.get("lines") or []) if (l.get("description") or l.get("catNo") or l.get("product"))]
     if not lines:
-        print("__ERROR__:No line items to quote"); sys.exit(1)
+        print("__ERROR__:no line items to quote"); sys.exit(1)
 
     os.makedirs(args.outdir, exist_ok=True)
     out = os.path.join(args.outdir, "Quote.pdf")
@@ -307,10 +307,10 @@ def main():
     except Exception as e:
         import traceback
         sys.stderr.write(traceback.format_exc())
-        print(f"__ERROR__:Failed to build quote: {e}"); sys.exit(1)
+        print(f"__ERROR__:the quote could not be built: {e}"); sys.exit(1)
 
     if not os.path.exists(out):
-        print("__ERROR__:Quote PDF not produced"); sys.exit(1)
+        print("__ERROR__:the quote PDF was not produced"); sys.exit(1)
     print(f"__PDF__:{out}")
     sys.exit(0)
 

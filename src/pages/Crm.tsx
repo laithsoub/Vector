@@ -15,6 +15,7 @@ import { cn } from '../lib/cn';
 import { openExternal, isTauri } from '../lib/shell';
 import { Card, Pill, Button, fmtMoneyFull, relTime } from '../lib/ui';
 import { api } from '../lib/api';
+import { failed, plural } from '../lib/errors';
 import type { CrmSyncStatus, CrmQuoteHit } from '../lib/api';
 import type {
   CrmCompanyCard, CrmCompanyDetail, CrmContact, CrmQuote, CrmInsight, DqDoc,
@@ -56,7 +57,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try { setCompanies(await api.crmCompanies()); }
-    catch (e: any) { toast('err', `Couldn't load CRM: ${e.message}`); }
+    catch (e: any) { toast('err', failed('load the CRM accounts', e)); }
     setLoading(false);
   }, [toast]);
 
@@ -75,20 +76,22 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
     if (!sync?.running) {
       if (wasRunning.current) {
         wasRunning.current = false;
-        if (sync?.phase === 'done')     { toast('ok', sync.message); refresh(); }
-        else if (sync?.phase === 'error')    toast('err', sync.message);
-        else if (sync?.phase === 'canceled') toast('info', sync.message);
+        if (sync?.phase === 'done')     { toast('ok', sync.message || 'CRM sync finished'); refresh(); }
+        else if (sync?.phase === 'error')    toast('err', failed('finish the CRM sync', sync.message));
+        else if (sync?.phase === 'canceled') toast('info', 'CRM sync cancelled — nothing was changed');
       }
       return;
     }
     wasRunning.current = true;
-    const id = window.setInterval(loadSync, 1500);
+    // 1.5s is right for a progress bar being watched, wasteful for one that is not.
+    const tick = () => { if (!document.hidden) loadSync(); };
+    const id = window.setInterval(tick, 1500);
     return () => window.clearInterval(id);
   }, [sync?.running, sync?.phase, sync?.message, loadSync, refresh, toast]);
 
   async function startSync() {
-    try { const r = await api.crmSync(); if ((r as any).error) { toast('err', (r as any).error); return; } setSync(r); }
-    catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+    try { const r = await api.crmSync(); if ((r as any).error) { toast('err', failed('start the CRM sync', (r as any).error)); return; } setSync(r); }
+    catch (e: any) { toast('err', failed('start the CRM sync', e)); }
   }
   async function stopSync() { try { await api.crmSyncStop(); await loadSync(); } catch { /* ignore */ } }
 
@@ -160,9 +163,9 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
     try {
       const sources = [...picked].filter(id => id !== targetId);
       await api.crmMerge(targetId, sources);
-      toast('ok', `Merged ${sources.length} card${sources.length > 1 ? 's' : ''}`);
+      toast('ok', `Merged ${plural(sources.length, 'account')} into ${companies.find(c => c.id === targetId)?.name || 'the target account'}`);
       toggleMerge(); refresh();
-    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+    } catch (e: any) { toast('err', failed('merge the accounts', e)); }
     setMerging(false);
   }
 
@@ -283,8 +286,8 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
         <CompanyForm
           onCancel={() => setAdding(false)}
           onSave={async vals => {
-            try { await api.crmSaveCompany(vals); toast('ok', 'Account added'); setAdding(false); refresh(); }
-            catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+            try { await api.crmSaveCompany(vals); toast('ok', `Account "${vals.name}" added`); setAdding(false); refresh(); }
+            catch (e: any) { toast('err', failed('add the account', e)); }
           }} />
       )}
 
@@ -438,7 +441,7 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
     try {
       const r = await api.crmMailQuotes(s, q.trim());
       setQuotes(r.quotes); applyCounts(r.counts); setLast(r.lastScanAt);
-    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+    } catch (e: any) { toast('err', failed('load the quote list', e)); }
     setLoading(false);
   }, [query, side, applyCounts, toast]);
 
@@ -461,13 +464,14 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
     if (!status?.running) {
       if (wasRunning.current) {
         wasRunning.current = false;
-        if (status?.phase === 'done')  { toast('ok', status.message); load(query, side); }
-        if (status?.phase === 'error')   toast('err', status.message);
+        if (status?.phase === 'done')  { toast('ok', status.message || 'Mailbox scan finished'); load(query, side); }
+        if (status?.phase === 'error')   toast('err', failed('finish the mailbox scan', status.message));
       }
       return;
     }
     wasRunning.current = true;
-    const id = window.setInterval(loadStatus, 2000);
+    const tick = () => { if (!document.hidden) loadStatus(); };
+    const id = window.setInterval(tick, 2000);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.running, status?.phase, status?.message, loadStatus]);
@@ -476,8 +480,8 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
     try {
       const s = await api.crmMailScan(days);
       setStatus(s);
-      toast('info', `Reading every mail folder over the last ${days} days — Outlook must stay open`);
-    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+      toast('info', `Scanning every mail folder from the last ${days} days — keep Outlook open`);
+    } catch (e: any) { toast('err', failed('start the mailbox scan', e)); }
   }
 
   async function move(q: CrmMailQuote, to: 'mine' | 'team' | '') {
@@ -488,8 +492,8 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
       setQuotes(prev => r.quote.side === side
         ? prev.map(x => (x.key === q.key ? r.quote : x))
         : prev.filter(x => x.key !== q.key));
-      toast('ok', to ? `Moved to ${to === 'mine' ? 'Mine' : 'Team'}` : 'Back to the scan’s own verdict');
-    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+      toast('ok', to ? `Quote moved to ${to === 'mine' ? 'Mine' : 'Team'}` : "Override cleared — back to the scan's own verdict");
+    } catch (e: any) { toast('err', failed('move the quote', e)); }
   }
 
   const running = !!status?.running;
@@ -617,8 +621,8 @@ function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
   async function openInOutlook() {
     try {
       const r = await api.outlookOpenInOutlook(q.entryId);
-      if ((r as any).error) toast('err', (r as any).error);
-    } catch (e: any) { toast('err', e.message); }
+      if ((r as any).error) toast('err', failed('open the quote email in Outlook', (r as any).error));
+    } catch (e: any) { toast('err', failed('open the quote email in Outlook', e)); }
   }
 
   return (
@@ -658,11 +662,11 @@ function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
             className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)]">
             {open ? 'Less' : 'Why?'}
           </button>
-          <button onClick={openInOutlook} title="Open this mail in Outlook"
+          <button aria-label="Open this mail in Outlook" onClick={openInOutlook} title="Open this mail in Outlook"
             className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)] inline-flex items-center gap-1">
             <ExternalLink className="w-3 h-3" /> Open
           </button>
-          <button onClick={() => onMove(q, other)} title={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`}
+          <button aria-label={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`} onClick={() => onMove(q, other)} title={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`}
             className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)] inline-flex items-center gap-1">
             <ArrowLeftRight className="w-3 h-3" /> {other === 'mine' ? 'Mine' : 'Team'}
           </button>
@@ -802,7 +806,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
   const load = useCallback(async () => {
     setLoading(true);
     try { setData(await api.crmCompany(id)); }
-    catch (e: any) { toast('err', e.message); }
+    catch (e: any) { toast('err', failed('load this account', e)); }
     setLoading(false);
   }, [id, toast]);
 
@@ -817,19 +821,19 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
   async function saveContact(vals: Partial<CrmContact>) {
     try {
       await api.crmSaveContact({ companyId: id, name: vals.name!, role: vals.role, email: vals.email, phone: vals.phone, notes: vals.notes, id: vals.id });
-      toast('ok', vals.id ? 'Contact updated' : 'Contact added'); setContactForm(null); load();
-    } catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+      toast('ok', `Contact ${vals.name} ${vals.id ? 'updated' : 'added'}`); setContactForm(null); load();
+    } catch (e: any) { toast('err', failed(`save the contact ${vals.name}`, e)); }
   }
   async function delContact(cid: number) { await api.crmDeleteContact(cid); load(); }
   async function addFact() {
     const t = factText.trim(); if (!t) return;
     try { await api.crmAddFact(id, t); setFactText(''); load(); }
-    catch (e: any) { toast('err', e.message); }
+    catch (e: any) { toast('err', failed('add the fact', e)); }
   }
   async function delFact(fid: number) { await api.crmDeleteFact(fid); load(); }
   async function setState(q: CrmQuote, state: 'open' | 'won' | 'lost') {
     try { await api.crmQuoteState(q.key, state); load(); }
-    catch (e: any) { toast('err', e.message); }
+    catch (e: any) { toast('err', failed(`mark quote ${q.key} as ${state}`, e)); }
   }
   // Open a quote's PDF — local archive if this machine processed it, else the
   // D&Q Store copy on SharePoint. In a plain browser we pre-open a blank tab
@@ -843,11 +847,11 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
       const j = await res.json().catch(() => ({} as any));
       if (!res.ok || !j.url) {
         pre?.close();
-        toast('warn', j.error || 'PDF not found for this quote.');
+        toast('warn', failed(`open the PDF for ${q.key}`, j.error || 'no copy found locally or in the D&Q Store'));
         return;
       }
       if (pre) pre.location.href = j.url; else await openExternal(j.url);
-    } catch (e: any) { pre?.close(); toast('err', e.message); }
+    } catch (e: any) { pre?.close(); toast('err', failed(`open the PDF for ${q.key}`, e)); }
   }
   const totalIssued = quotes.reduce((s, q) => s + (q.price || 0), 0);
 
@@ -860,7 +864,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         <Button tone="ghost" size="sm" Icon={Trash2}
           onClick={async () => {
             if (!confirm(`Delete "${company.name}" and its contacts/facts? Quotes in history are not affected.`)) return;
-            await api.crmDeleteCompany(id); toast('ok', 'Account deleted'); onBack();
+            await api.crmDeleteCompany(id); toast('ok', `Account "${company.name}" deleted`); onBack();
           }}>Delete</Button>
       </div>
 
@@ -868,8 +872,8 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         <CompanyForm initial={company}
           onCancel={() => setEditing(false)}
           onSave={async vals => {
-            try { await api.crmSaveCompany({ ...vals, id }); toast('ok', 'Saved'); setEditing(false); load(); }
-            catch (e: any) { toast('err', e.response?.data?.error || e.message); }
+            try { await api.crmSaveCompany({ ...vals, id }); toast('ok', `Account "${vals.name}" saved`); setEditing(false); load(); }
+            catch (e: any) { toast('err', failed('save the account', e)); }
           }} />
       )}
 
@@ -936,8 +940,8 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                   </div>
                   {!ct.auto && (
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => setContactForm(ct)} className="p-1 text-[var(--t3)] hover:text-[var(--accent-text)]"><Pencil className="w-3.5 h-3.5" /></button>
-                      <button onClick={() => delContact(ct.id)} className="p-1 text-[var(--t3)] hover:text-[var(--err)]"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <button aria-label="Edit contact" onClick={() => setContactForm(ct)} className="p-1 text-[var(--t3)] hover:text-[var(--accent-text)]"><Pencil className="w-3.5 h-3.5" /></button>
+                      <button aria-label="Delete contact" onClick={() => delContact(ct.id)} className="p-1 text-[var(--t3)] hover:text-[var(--err)]"><Trash2 className="w-3.5 h-3.5" /></button>
                     </div>
                   )}
                 </li>
@@ -965,7 +969,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                     ? <Sparkles className="w-3 h-3 text-[var(--violet)] mt-1 shrink-0" />
                     : <Star className="w-3 h-3 text-[var(--warn)] mt-1 shrink-0" />}
                   <span className="flex-1">{f.text}</span>
-                  <button onClick={() => delFact(f.id)} className="p-0.5 text-[var(--t4)] hover:text-[var(--err)] opacity-0 group-hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
+                  <button aria-label="Delete fact" onClick={() => delFact(f.id)} className="p-0.5 text-[var(--t4)] hover:text-[var(--err)] opacity-0 group-hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
                 </li>
               ))}
             </ul>
@@ -1006,7 +1010,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                   <tr key={q.id} className="border-b border-[var(--line)]">
                     <td className="px-5 py-2 font-mono text-[10.5px] text-[var(--t3)] whitespace-nowrap">{q.ref || '—'}</td>
                     <td className="px-3 py-2 text-[var(--t1)]">
-                      <button onClick={() => openPdf(q)} title="Open archived PDF"
+                      <button aria-label="Open archived PDF" onClick={() => openPdf(q)} title="Open archived PDF"
                         className="inline-flex items-center gap-1 text-left hover:text-[var(--accent-text)] hover:underline">
                         <FileText className="w-3 h-3 shrink-0 opacity-60" />
                         {q.name || '—'}
@@ -1091,15 +1095,15 @@ function InsightsCard({ id, toast, onPinned }: { id: number; toast: ToastFn; onP
     setLoad(true);
     try {
       const r = await api.crmInsights(id, refresh);
-      if (r.error) toast('warn', r.error);
+      if (r.error) toast('warn', failed('generate the AI insights', r.error));
       setItems(r.items || []);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('generate the AI insights', e)); }
     setLoad(false);
   }, [id, toast]);
 
   async function pin(text: string) {
-    try { await api.crmAddFact(id, text, 'ai'); toast('ok', 'Pinned to facts'); onPinned(); }
-    catch (e: any) { toast('err', e.message); }
+    try { await api.crmAddFact(id, text, 'ai'); toast('ok', "Insight pinned to this account's facts"); onPinned(); }
+    catch (e: any) { toast('err', failed('pin the insight to the facts', e)); }
   }
 
   return (
@@ -1126,7 +1130,7 @@ function InsightsCard({ id, toast, onPinned }: { id: number; toast: ToastFn; onP
                 ? <AlertTriangle className="w-3.5 h-3.5 text-[var(--warn)] mt-0.5 shrink-0" />
                 : <Sparkles className="w-3.5 h-3.5 text-[var(--violet)] mt-0.5 shrink-0" />}
               <span className="flex-1">{it.text}</span>
-              <button onClick={() => pin(it.text)} title="Pin to facts"
+              <button aria-label="Pin to facts" onClick={() => pin(it.text)} title="Pin to facts"
                 className="p-0.5 text-[var(--t4)] hover:text-[var(--accent-text)] opacity-0 group-hover:opacity-100"><Pin className="w-3.5 h-3.5" /></button>
             </li>
           ))}
@@ -1145,9 +1149,9 @@ function DocsCard({ id, toast }: { id: number; toast: ToastFn }) {
     setLoad(true);
     try {
       const r = await api.crmDocs(id);
-      if (r.error) toast('warn', r.error);
+      if (r.error) toast('warn', failed('search the D&Q Store', r.error));
       setDocs(r.results || []);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('search the D&Q Store', e)); }
     setLoad(false);
   }
 

@@ -254,6 +254,14 @@ Full Outlook integration via COM automation. Email-detail action bar: **Summariz
 - **Inline EL Pricer** — appears in the email detail; prices attached PDFs, **images and Excel/CSV** (Excel routed through a `--mode unified` manifest).
 - **Quick Quote** — see §6.9.
 - **PDF Queue** — one-click to queue PDF attachments from SR00 emails
+- **Quote-folder search** (added 2026-08-12) — the list-pane search box has two layers. Typing filters the emails already loaded (instant). **Enter** (or the globe button) searches the quote folders: subject, sender, To/CC, **body** and **attachment filenames**. Matched terms are highlighted in the rows, each hit shows the folder it lives in, Esc / "Back to list" returns to the normal view.
+  - **Scope is a hard allowlist** — `SEARCH_SCOPE` in `outlook_reader.py`: the `UKQuoteFactoryEL` store, root folders `Inbox` (48 items) and `Completed by Laith` (2 052). Everything else is deliberately out: the personal mailbox, `email drop` (a dump that duplicates Inbox mail), Deleted Items, Public Folders. Matching is on the store's display name + root-level folder name, so the identically named "Completed by Laith" under the personal store's Deleted Items is never picked up.
+  - **Local index** — those messages are mirrored into `DATA_DIR/mail_index.db` (SQLite, gitignored via `*.db`). A search is then a millisecond `LIKE` over `blob` (subject + sender + recipients + attachment names + first 40 KB of body); `fields=meta` searches `meta_blob` only. Attachment-name search is free, because the names are in the blob.
+  - **Why an index**: reading one message through Outlook COM costs ~64 ms, so a live sweep re-reads minutes of mail per query. First build ≈ 2–4 min; incremental syncs walk off the end of the new mail in seconds. Indexing uses `att_info_light()` — the Content-ID probe in `att_info()` is a MAPI round trip per attachment (~5 per quote mail) and dominated the build until it was dropped; cid: resolution only matters when an email is opened, which re-fetches it live anyway.
+  - **Sync**: `folder_state.complete` marks a folder that has been read to its oldest message; only then may an incremental run stop at a stretch of already-known mail (otherwise the known part is just the newest slice of a half-built index). Pruning deleted/moved mail happens **only on a full run**, which is the only one that saw every message. Server syncs 20 s after boot, then every 10 min, and after any search that had to answer live.
+  - **Live fallback** (`source=live`, or `auto` with a cold index) still walks the same two folders through `Items.Restrict` + DASL — MAPI, **not** the Windows Search index, which is stale on this machine and is why Classic Outlook's own search misses mail that is plainly there. Time-budgeted; partial results come back with `truncated: true`.
+  - Endpoints: `GET /api/outlook/search?q=&limit=&fields=all|meta&source=auto|index|live`, `GET /api/outlook/index/status`, `POST /api/outlook/index/sync {full}`. Python: `--action search|index|index-status --dest <db>`.
+- **Concurrent email fetches are coalesced** — the pane refreshes every 30 s and Outlook COM serialises, so identical in-flight `/api/outlook/emails` requests now share one python process. Without it, slow COM work left ~17 stacked python processes all waiting on Outlook.
 
 **Module-level state** — tab switches don't lose data (`_available`, `_mailboxes`, `_summaryCache`, …). Wrapper setters keep the module var in sync with React state.
 
@@ -571,6 +579,9 @@ All endpoints are on `http://localhost:3000`.
 | GET | `/api/outlook/mailboxes` | List personal + shared mailboxes |
 | GET | `/api/outlook/emails` | List emails (`?storeId=&limit=&unread=`) |
 | GET | `/api/outlook/email/:id` | Get full email with body + attachments |
+| GET | `/api/outlook/search` | Search the quote folders via the local index, live MAPI/DASL fallback (`?q=&limit=&fields=all\|meta&source=auto\|index\|live`) |
+| GET | `/api/outlook/index/status` | Local mail index: rows, per-folder state, last sync |
+| POST | `/api/outlook/index/sync` | Re-read the scoped folders into the index (`{full:true}` rebuilds) |
 | GET | `/api/outlook/summary/:entryId` | Load persisted summary (no AI spend) |
 | POST | `/api/outlook/summarize` | AI summary + vision over inline/opted-in images; persists |
 | POST | `/api/outlook/draft-reply` | AI draft reply |
@@ -641,8 +652,32 @@ Captures SharePoint session cookies from the running Edge browser (CDP on port 9
 ### `pdf_to_csv.py`
 Step 1a — the extraction pipeline. Converts Word/Excel to PDF (LibreOffice), detects language, runs Azure Document Intelligence if configured, otherwise falls back to local/language-specific extractors. Produces the CSV consumed by the upload step.
 
+**Salesforce id recovery (UK).** The id is written three different ways and the label patterns are not enough on their own:
+
+- `006QO00000x2HCUYA2` — the full 18-char form SharePoint stores;
+- `CR00x2HCUYA2` / `SR00…` / `EU00…` — short form, in BidManager exports and file names;
+- `00yduKjYAI`, `00zc0jpYAA` — bare tail, inside project references and quotation names. The last 3 chars are Salesforce's checksum, drawn from `[A-Z0-5]` — **do not** assume it always reads `YAx`, that is only how the ids seen so far happen to look. `_is_sfid_tail()` instead requires mixed case, which is what actually separates an id from a date or order number.
+
+`canonical_sfid()` expands all three to 18 chars and **rejects anything else**, so a customer name after `Project Reference:` ("Eversheds", "RAF", "Wanlip") can no longer land in the SALESFORCE ID column and get dropped downstream. `find_sfid()` then searches page 1, the quotation name, and the file name in that order.
+
+**REQUESTED FROM comes from the mailbox, not the PDF.** No quotation format carries it — a UK quote's page 1 names the *inside sales* contact ("Contact Person: Laith AL-Soub") and the shared mailbox, and `SALESMAN_MAP` only covers 4 people. `find_requester()` therefore searches `mail_index.db` (path via `MAGIC_MAIL_INDEX`, set by `/api/run/step1`) for the SF-id tail, then the quotation code, then the name, and takes the **earliest** `@eaton.com` sender on that thread, skipping the shared accounts in `_SHARED_MAILBOXES` (`ukquotefactoryel@`, `ukcommorders@`, …) which forward requests but do not make them. The index stores senders as `Lastname, Firstname`, which is exactly what the people-picker resolves against. Runs for every language, and is a no-op when the index is absent (ship builds).
+
+`parse_bidmanager_bom()` reads the **"Detail Bill of Material"** layout, which shares no labels with a normal UK quotation — id and name come off the `Project Name:` line (folding in the wrapped continuation line), the code from `Negotiation No` + `Alternate No`. `parse_quote_filename()` is the last-resort fallback; note that `\b` never fires on Eaton's underscore-joined file names, so its patterns use explicit alphanumeric lookarounds.
+
 ### `Automation_V4.py`
 Step 1b — uploads the extracted quote to the SharePoint QuotationFactory list. Holds the SharePoint cookies (FED_AUTH / RT_FA) that Step 2 also reads.
+
+**Pre-upload check (`--check`)** — emits `__CONFLICTS__:<json>`, one entry per CSV row that needs a decision, keyed by **row index** (not by Salesforce id, which a BidManager quote does not have). Three kinds:
+
+| kind | meaning | default action |
+|---|---|---|
+| `duplicate` | already in the list, or twice in this batch | `replace` (`add` for a name-only match, `skip` for a batch twin) |
+| `blank` | no id, no code, no name — extraction failed | `skip` |
+| `incomplete` | uploadable but missing SALESFORCE ID / REQUESTED FROM | `add` |
+
+Duplicates are matched in order: Salesforce id (every stored spelling — expanded `006QO00000…`, short `CR00…`/`SR00…`/`EU00…`/`QR00…`, and `startswith` for the `-A1R` revision suffixes) → quotation code (`Title`, the only identity a BidManager quote has) → quotation name + customer.
+
+**A quotation code is not unique.** `EU1L0806X6K1-0000` belongs to both the Eversheds and the HMP Standford hill quotes — different jobs, different Salesforce ids. `_match_by_code()` therefore drops any candidate whose id disagrees with the row's; without that guard the modal would offer "replace" against an unrelated row. Matching on the id alone missed most real duplicates: 69% of the list has no Salesforce id at all.
 
 ### `dq_store_upload.py`
 Step 2 — creates the D&Q Store archive folder and uploads the PDF(s) to the SharePoint D&Q Store library. Uses the cookies from `Automation_V4.py`.
@@ -654,7 +689,7 @@ PMO module — fills a Word template from a Quote PDF + 1–20 DOCU_ID PDFs + a 
 CBU cable sizing — parsing and export.
 
 ### `commission_export.py`
-Commission export.
+Commission export. Builds a **one-page, customer-facing** price sheet with reportlab — the tier maths is duplicated from `src/pages/Commission.tsx`, so a rate change has to be made in both. It deliberately does **not** convert `docs/commission_calculators.xlsx` to PDF: that sheet holds every tier, the day rate, the cover uplift and margin scratch cells side by side, so the old LibreOffice conversion shipped 5 pages of internals to the customer.
 
 ### `xlsx_extractor.py`
 Italian-format xlsx quote extractor, used as a fallback branch by the extraction pipeline.

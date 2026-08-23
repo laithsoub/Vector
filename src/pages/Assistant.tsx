@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
+import { failed } from '../lib/errors';
 import { relTime } from '../lib/ui';
 import { exportAnswer, EXPORT_FORMATS, type ExportFormat } from '../lib/export';
 import type { ToastFn } from '../App';
@@ -15,7 +16,16 @@ import type { DqDoc } from '../types';
 
 const CONVS_KEY  = 'mu_assistant_convs';
 const ACTIVE_KEY = 'mu_assistant_active';
+// localStorage is ~5 MB for the whole origin and this is not the only thing in it.
+const MAX_STORED_CONVS = 40;
 let _mid = Date.now();
+
+// Quote cards are the bulk of a stored conversation and can always be searched
+// again; the prose answer that referenced them is what is worth keeping.
+function stripResults(c: Conversation): Conversation {
+  if (!c.messages.some(m => m.results?.length)) return c;
+  return { ...c, messages: c.messages.map(m => (m.results ? { ...m, results: undefined } : m)) };
+}
 
 function genId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
@@ -340,10 +350,10 @@ function ExportMenu({ content, title, filename, toast, up = false, pill = false,
     setBusy(fmt);
     try {
       await exportAnswer(fmt, { content, title, filename });
-      toast('ok', `Exported ${fmt.toUpperCase()}`);
+      toast('ok', `Answer exported to ${fmt.toUpperCase()}`);
       setOpen(false);
     } catch (e: any) {
-      toast('err', e?.message || 'Export failed');
+      toast('err', failed(`export the answer to ${fmt.toUpperCase()}`, e));
     }
     setBusy(null);
   }
@@ -533,7 +543,7 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
             <p className="text-[13px] font-semibold">{mineOnly ? 'Search my quotes' : 'Search the D&Q Store'}</p>
             <p className="text-[11px] text-[var(--t3)]">Customer, KVA, or catalog/fitting — searches inside the quote, not just the name</p>
           </div>
-          <button onClick={onClose}
+          <button aria-label="Close quote search" onClick={onClose}
             className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors">
             <X className="w-4 h-4" />
           </button>
@@ -553,7 +563,7 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
                 placeholder="e.g.  quotes from Joe Bayley,  4kva,  ACM1,  EC141"
                 className="flex-1 bg-transparent text-[12.5px] text-[var(--t1)] placeholder:text-[var(--t3)] outline-none min-w-0"
               />
-              {q && <button onClick={() => setQ('')} className="text-[var(--t3)] hover:text-ink-600 dark:hover:text-ink-200 shrink-0"><X className="w-3 h-3" /></button>}
+              {q && <button aria-label="Clear search" onClick={() => setQ('')} className="text-[var(--t3)] hover:text-ink-600 dark:hover:text-ink-200 shrink-0"><X className="w-3 h-3" /></button>}
             </div>
             <button
               onClick={() => search()}
@@ -566,7 +576,7 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
 
           {/* Mine-only toggle */}
           <div className="flex items-center gap-2 mt-2.5">
-            <button onClick={() => toggleMine(!mineOnly)}
+            <button aria-label={mineOnly ? 'Showing only quotes you uploaded — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'} onClick={() => toggleMine(!mineOnly)}
               title={mineOnly ? 'Showing only quotes you uploaded — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'}
               className={cn(
                 'h-6 px-2 rounded-md text-[10.5px] font-medium flex items-center gap-1.5 ring-1 ring-inset transition-colors',
@@ -660,19 +670,6 @@ export function AssistantPage({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [quoteSearchOpen, setQuoteSearchOpen] = useState(false);
 
-  // ── Side SharePoint search (real D&Q index) ──────────────────────────────
-  const [searchQ, setSearchQ]         = useState('');
-  const [searchRes, setSearchRes]     = useState<DqDoc[] | null>(null);
-  const [searching, setSearching]     = useState(false);
-  async function runSearch() {
-    const q = searchQ.trim();
-    if (!q) { setSearchRes(null); return; }
-    setSearching(true); setSearchRes(null);
-    try { const r = await api.dqSearch(q); setSearchRes(r.results || []); }
-    catch { setSearchRes([]); }
-    setSearching(false);
-  }
-
   const endRef       = useRef<HTMLDivElement>(null);
   const textareaRef  = useRef<HTMLTextAreaElement>(null);
   const historyRef   = useRef<HTMLDivElement>(null);
@@ -682,10 +679,21 @@ export function AssistantPage({
     localStorage.setItem(ACTIVE_KEY, activeId);
   }, [activeId]);
 
-  // Persist convs
+  // Persist convs. Unbounded, this eventually throws QuotaExceededError from
+  // inside an effect and takes the tab down with it — the history is full
+  // transcripts plus every quote card the search returned. So: keep the most
+  // recent conversations, drop the result cards from the ones not open (they are
+  // re-fetchable and by far the heaviest part), and if the browser still says no,
+  // shed the oldest until it fits.
   useEffect(() => {
-    localStorage.setItem(CONVS_KEY, JSON.stringify(convs));
-  }, [convs]);
+    const trimmed = convs.slice(0, MAX_STORED_CONVS).map(c => c.id === activeId ? c : stripResults(c));
+    for (let keep = trimmed.length; keep >= 0; keep--) {
+      try {
+        localStorage.setItem(CONVS_KEY, JSON.stringify(trimmed.slice(0, keep)));
+        return;
+      } catch { /* quota — try again with fewer */ }
+    }
+  }, [convs, activeId]);
 
   // Scroll to bottom on new message
   useEffect(() => {
@@ -838,7 +846,7 @@ export function AssistantPage({
     const current = convs.find(c => c.id === activeId);
     if (!current) return;
     upsertConv({ ...current, messages: [], ts: Date.now() });
-    toast('info', 'Conversation cleared');
+    toast('info', 'Conversation cleared — it stays in your history list');
     setTimeout(() => textareaRef.current?.focus(), 50);
   }
 
@@ -856,12 +864,14 @@ export function AssistantPage({
     .join('\n\n---\n\n');
 
   return (
-    // Break out of the parent p-6 to fill the full content area; 2-column shell:
-    // chat (left) + SharePoint search panel (right).
+    // Break out of the parent p-6 to fill the full content area. Single column:
+    // the D&Q Store is reached from the chat itself (/api/quote-ask searches it and
+    // answers with result cards), from the "Search for a Quote" chip, and from the
+    // Search tab — a fixed 340px panel repeating all three only narrowed the chat.
     <div className="-mx-6 -my-6 flex" style={{ height: 'calc(100vh - 60px)', background: 'var(--bg)' }}>
 
       {/* ── Chat column ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 min-w-0 flex flex-col border-r border-[var(--line)]">
+      <div className="flex-1 min-w-0 flex flex-col">
 
       {/* ── Top bar ─────────────────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center justify-between px-5 py-2.5 bg-[var(--s1)] border-b border-[var(--line)]">
@@ -962,7 +972,7 @@ export function AssistantPage({
                             {conv.messages.length > 0 && ` · ${conv.messages.length} msg${conv.messages.length !== 1 ? 's' : ''}`}
                           </p>
                         </div>
-                        <button
+                        <button aria-label="Delete conversation"
                           onClick={e => { e.stopPropagation(); deleteConv(conv.id); }}
                           className="opacity-0 group-hover:opacity-100 p-1 rounded text-[var(--t4)] hover:text-red-500 dark:hover:text-red-400 transition-all shrink-0">
                           <Trash2 className="w-3.5 h-3.5" />
@@ -1044,7 +1054,7 @@ export function AssistantPage({
                 ? (msg.title || deriveTitle(msg.text)) : 'Ask Vector answer';
               return (
                 <div key={msg.id} className="space-y-2">
-                  <Bubble msg={msg} onCopy={() => toast('ok', 'Copied to clipboard')} toast={toast} exportTitle={exportTitle} />
+                  <Bubble msg={msg} onCopy={() => toast('ok', 'Answer copied to the clipboard')} toast={toast} exportTitle={exportTitle} />
                   {/* AI quick-action offers — click to have Vector do it next */}
                   {showOffers && (
                     <div className="ml-10 flex flex-wrap gap-1.5">
@@ -1096,7 +1106,7 @@ export function AssistantPage({
         {!isEmpty && (
           <div className="flex gap-1.5 mb-3 overflow-x-auto pb-0.5 -mx-1 px-1 scrollbar-none">
             {/* Quote search chip — opens the quote-search modal (not a mode toggle) */}
-            <button
+            <button aria-label="Open quote search (searches your past SharePoint quotes)"
               onClick={() => setQuoteSearchOpen(true)}
               title="Open quote search (searches your past SharePoint quotes)"
               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-medium whitespace-nowrap shrink-0 bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-violet-50 dark:hover:bg-violet-900/20 hover:ring-violet-200 dark:hover:ring-violet-700/40 hover:text-violet-700 dark:hover:text-violet-300 transition-colors">
@@ -1161,40 +1171,6 @@ export function AssistantPage({
         </p>
       </div>
       </div>{/* end chat column */}
-
-      {/* ── SharePoint search column ────────────────────────────────────────── */}
-      <aside className="hidden lg:flex w-[340px] shrink-0 flex-col bg-[var(--s1)]">
-        <div className="shrink-0 flex items-center gap-2 px-5 py-3.5 border-b border-[var(--line)]">
-          <Search className="w-3.5 h-3.5 text-[var(--t3)]" />
-          <span className="text-[13px] font-semibold flex-1">SharePoint search</span>
-        </div>
-        <div className="shrink-0 flex gap-2 px-4 py-3 border-b border-[var(--line)]">
-          <input value={searchQ} onChange={e => setSearchQ(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') runSearch(); }}
-            placeholder="SR number, customer, title…"
-            className="flex-1 h-8 px-2.5 rounded-md text-[12px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] focus:ring-[var(--accent-line)] focus:outline-none" />
-          <button onClick={runSearch} disabled={searching}
-            style={{ background: 'var(--t1)', color: 'var(--bg)' }}
-            className="h-8 px-3.5 rounded-[9px] text-[11.5px] font-semibold hover:opacity-90 disabled:opacity-50 transition-opacity">
-            Search
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-3 min-h-0">
-          {searching ? (
-            <div className="py-10 flex justify-center"><Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" /></div>
-          ) : searchRes === null ? (
-            <p className="text-[11.5px] text-[var(--t3)] text-center py-10 px-4">
-              {connected ? 'Search the D&Q Store — try a customer, SR number, kVA rating or fitting code.' : 'Connect to JOE to search SharePoint.'}
-            </p>
-          ) : searchRes.length === 0 ? (
-            <p className="text-[11.5px] text-[var(--t3)] text-center py-10">No results.</p>
-          ) : (
-            <div className="space-y-2">
-              {searchRes.map((d, i) => <QuoteResultCard key={i} doc={d} />)}
-            </div>
-          )}
-        </div>
-      </aside>
 
       {/* Quote search modal */}
       {quoteSearchOpen && <QuoteSearchPanel onClose={() => setQuoteSearchOpen(false)} />}

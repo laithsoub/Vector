@@ -3,6 +3,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Loader2, Plus, Trash2, FileDown, Cpu, Lightbulb, Wrench, RefreshCw, ChevronDown } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
+import { failed, plural } from '../lib/errors';
+import { fmtGBP } from '../lib/ui';
 import { DATA, SALESMEN, SIZES_1PH, SIZES_3PH } from '../lib/cbuData';
 import { extractMaterialHints } from '../lib/elHints';
 import { openExternal } from '../lib/shell';
@@ -66,7 +68,7 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
     setDetecting(true);
     try {
       const r = await api.quoteDetectCbu(emailBody, ALL_SYSTEMS);
-      if (r.system) { setSystem(r.system); setSystemLines(r.system); toast('info', `Detected CBU: ${r.system}`); }
+      if (r.system) { setSystem(r.system); setSystemLines(r.system); toast('info', `Detected ${r.system} in the email — its BOM has been added`); }
     } catch {}
     setDetecting(false);
   }
@@ -77,8 +79,8 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
       const r = await api.quoteLuminaires(hints.trim() ? hints : emailBody);
       const lum: Line[] = (r.items || []).map((it: any) => ({ id: nid(), catNo: it.catNo || '', product: it.product || '', description: it.description || '', qty: it.qty || 1, price: it.price || 0, src: 'lum' as Src }));
       setLines(prev => [...prev.filter(l => l.src !== 'lum'), ...lum]);
-      toast(lum.length ? 'ok' : 'info', lum.length ? `Added ${lum.length} luminaire line${lum.length !== 1 ? 's' : ''}` : 'No priced luminaires found in the email');
-    } catch (e: any) { toast('err', e.message); }
+      toast(lum.length ? 'ok' : 'info', lum.length ? `Added ${plural(lum.length, 'luminaire line')} from the email` : 'No priced luminaires were found in the email');
+    } catch (e: any) { toast('err', failed('pull the luminaires from the email', e)); }
     setPulling(false);
   }
 
@@ -93,7 +95,7 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
   const total = lines.reduce((s, l) => s + (Number(l.qty) || 0) * (Number(l.price) || 0), 0);
 
   async function generate() {
-    if (lines.length === 0) { toast('warn', 'Add at least one line'); return; }
+    if (lines.length === 0) { toast('warn', 'Add at least one line before generating the quote'); return; }
     setGenerating(true);
     try {
       const sm = SALESMEN[smIdx];
@@ -102,9 +104,9 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
         lines: lines.map((l, i) => ({ itemNo: String((i + 1) * 10).padStart(3, '0'), catNo: l.catNo, product: l.product, description: l.description, qty: Number(l.qty) || 0, price: Number(l.price) || 0 })),
         appendComm, appendTC,
       });
-      if (r.error || !r.id) { toast('err', r.error || 'Generation failed'); }
-      else { void openExternal(`/api/download/quote/${r.id}`); toast('ok', 'Quote PDF ready'); }
-    } catch (e: any) { toast('err', e.message); }
+      if (r.error || !r.id) { toast('err', failed('build the quote PDF', r.error)); }
+      else { void openExternal(`/api/download/quote/${r.id}`); toast('ok', `Quote PDF ready — ${plural(lines.length, 'line')}, ${fmtGBP(total)}`); }
+    } catch (e: any) { toast('err', failed('build the quote PDF', e)); }
     setGenerating(false);
   }
 
@@ -176,7 +178,7 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
               <input type="number" value={l.qty} onChange={e => upd(l.id, { qty: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-[10.5px] text-center')} />
               <input type="number" step="0.01" value={l.price} onChange={e => upd(l.id, { price: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-[10.5px] text-right')} />
               <span className="text-[10.5px] text-right text-[var(--t2)] tabular-nums">{gbp((Number(l.qty) || 0) * (Number(l.price) || 0))}</span>
-              <button onClick={() => del(l.id)} className="w-5 h-5 flex items-center justify-center text-[var(--t4)] hover:text-red-500 transition-colors"><Trash2 className="w-3 h-3" /></button>
+              <button aria-label="Delete this line" onClick={() => del(l.id)} className="w-5 h-5 flex items-center justify-center text-[var(--t4)] hover:text-red-500 transition-colors"><Trash2 className="w-3 h-3" /></button>
             </div>
           );
         })}

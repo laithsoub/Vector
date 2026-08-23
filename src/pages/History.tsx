@@ -8,6 +8,7 @@ import { cn } from '../lib/cn';
 import { Card, Pill, Segmented, Button, fmtDur, relTime } from '../lib/ui';
 import { MiniStackedBars, PRODUCT_COLORS } from '../lib/charts';
 import { api } from '../lib/api';
+import { failed } from '../lib/errors';
 import type { Job } from '../types';
 import type { ToastFn } from '../App';
 
@@ -20,7 +21,7 @@ export function HistoryPage({ toast }: { toast: ToastFn }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try { setJobs(await api.jobs()); }
-    catch (e: any) { toast('err', `Couldn't load jobs: ${e.message}`); }
+    catch (e: any) { toast('err', failed('load the run history', e)); }
     setLoading(false);
   }, [toast]);
 

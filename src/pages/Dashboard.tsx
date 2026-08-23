@@ -10,6 +10,8 @@ import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, StatusDot, KpiTile, fmtMoney, relTime } from '../lib/ui';
 import { MiniBars, PRODUCT_COLORS } from '../lib/charts';
 import { api, runStreamingScript } from '../lib/api';
+import { failed, plural } from '../lib/errors';
+import { usePolling } from '../lib/usePolling';
 import type { ConflictItem } from '../lib/api';
 import type { Job, PdfFile, DashboardStats, ArchiveDay, CheckupItem, CheckupResponse } from '../types';
 import type { ToastFn } from '../App';
@@ -69,7 +71,7 @@ export function DashboardPage({
     setCheckupOpen(true);
     try {
       const r = await api.quotesCheckup(30);
-      if (r.error) { toast('err', r.error); setCheckup(null); }
+      if (r.error) { toast('err', failed('run the quote checkup', r.error)); setCheckup(null); }
       else {
         setCheckup(r);
         // Pre-select exactly what needs action — confirmed-missing quotes only.
@@ -77,10 +79,10 @@ export function DashboardPage({
         if (r.warning) toast('warn', r.warning);
         else toast(r.counts.missing ? 'warn' : 'ok',
           r.counts.missing
-            ? `${r.counts.missing} quote${r.counts.missing > 1 ? 's' : ''} not on SharePoint`
-            : 'All quote emails are already uploaded');
+            ? `${plural(r.counts.missing, 'quote')} from the last 30 days are not on SharePoint`
+            : 'Every quote email from the last 30 days is already on SharePoint');
       }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('run the quote checkup', e)); }
     setCheckupRun(false);
   }
 
@@ -90,16 +92,16 @@ export function DashboardPage({
     try {
       const r = await api.quotesCheckupQueue([...picked]);
       if (r.count) {
-        toast('ok', `${r.count} file${r.count > 1 ? 's' : ''} added to the queue`);
+        toast('ok', `${plural(r.count, 'file')} added to the upload queue`);
         setCheckupOpen(false);
         // Land on Stage 1 with the bundle already in the queue.
         document.getElementById('vec-upload-workflow')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       } else {
-        toast('warn', r.error || 'Nothing could be saved from those emails');
+        toast('warn', failed('save any attachment from those emails', r.error));
       }
-      if (r.failed?.length) toast('warn', `${r.failed.length} email(s) failed — see server log`);
+      if (r.failed?.length) toast('warn', `${plural(r.failed.length, 'email')} could not be read — see vector.log`);
       refresh();
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('queue the selected quotes', e)); }
     setQueueing(false);
   }
 
@@ -113,11 +115,8 @@ export function DashboardPage({
     setInboxLoading(false);
   }, []);
 
-  useEffect(() => {
-    loadInbox();
-    const id = setInterval(loadInbox, 60_000);
-    return () => clearInterval(id);
-  }, [loadInbox]);
+  useEffect(() => { loadInbox(); }, [loadInbox]);
+  usePolling(loadInbox, 60_000);
 
   const refresh = useCallback(async () => {
     try {
@@ -128,11 +127,9 @@ export function DashboardPage({
     } catch { /* silent */ }
   }, []);
 
-  useEffect(() => {
-    refresh();
-    const id = setInterval(refresh, 8_000);
-    return () => clearInterval(id);
-  }, [refresh]);
+  useEffect(() => { refresh(); }, [refresh]);
+  // Four endpoints per tick — the one most worth pausing when nobody is looking.
+  usePolling(refresh, 8_000);
 
   // ── Auto-suggest the product line(s) for each queued file ──────────────────
   const pdfKey = pdfs.map(p => p.name).join('|');
@@ -175,9 +172,9 @@ export function DashboardPage({
   const onDrop = useCallback(async (files: File[]) => {
     for (const f of files) {
       try { await api.uploadPdf(f); }
-      catch (e: any) { toast('err', `${f.name}: ${e.message}`); }
+      catch (e: any) { toast('err', failed(`upload ${f.name}`, e)); }
     }
-    if (files.length) toast('info', `${files.length} file${files.length > 1 ? 's' : ''} queued`);
+    if (files.length) toast('info', `${plural(files.length, 'file')} queued for processing`);
     refresh();
   }, [refresh, toast]);
 
@@ -198,7 +195,7 @@ export function DashboardPage({
 
   async function deletePdf(name: string) {
     await api.deletePdf(name);
-    toast('info', `${name} removed`);
+    toast('info', `${name} removed from the queue`);
     refresh();
   }
 
@@ -327,7 +324,7 @@ export function DashboardPage({
                 <p className="text-[11.5px] text-[var(--t3)] mt-1">Drop files → tag → run. Each run pushes to SharePoint.</p>
               </div>
               <div className="flex items-center gap-2.5">
-                <button onClick={runCheckup} disabled={checkupRunning}
+                <button aria-label="Scan the last 30 days of mail for quotes that never reached SharePoint" onClick={runCheckup} disabled={checkupRunning}
                   title="Scan the last 30 days of mail for quotes that never reached SharePoint"
                   className="inline-flex items-center gap-1.5 h-[28px] px-2.5 rounded-[8px] text-[11px] font-semibold border transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   style={{ background: 'var(--accent-soft)', color: 'var(--accent-text)', borderColor: 'var(--accent-line)' }}>
@@ -389,7 +386,7 @@ export function DashboardPage({
                       <span className="truncate flex-1 font-medium text-[var(--t1)]">{p.name}</span>
                       <span className="text-[var(--t3)] num shrink-0">{(p.size / 1024).toFixed(0)} KB</span>
                       <span className="text-[var(--t3)] num shrink-0">{relTime(p.modified)}</span>
-                      <button onClick={() => deletePdf(p.name)}
+                      <button aria-label="Delete this PDF" onClick={() => deletePdf(p.name)}
                         className="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--t3)] hover:text-[var(--err)]">
                         <Trash2 className="w-3 h-3" />
                       </button>
@@ -696,7 +693,7 @@ function CheckupPanel({
             </span>
           )}
         </div>
-        <button onClick={onClose} className="text-[var(--t3)] hover:text-[var(--t1)]"><X className="w-3.5 h-3.5" /></button>
+        <button aria-label="Close" onClick={onClose} className="text-[var(--t3)] hover:text-[var(--t1)]"><X className="w-3.5 h-3.5" /></button>
       </div>
 
       {running ? (
@@ -888,13 +885,22 @@ function ConflictModal({
 }) {
   const [decisions, setDecisions] = useState<Record<string, ConflictDecision>>(() => {
     const d: Record<string, ConflictDecision> = {};
-    for (const c of conflicts) d[c.sfid] = { action: 'replace', existingId: c.existingId };
+    for (const c of conflicts) d[c.key] = { action: c.defaultAction, existingId: c.existingId };
     return d;
   });
 
-  function setAction(sfid: string, action: ConflictDecision['action'], existingId: number) {
-    setDecisions(prev => ({ ...prev, [sfid]: { action, existingId } }));
+  function setAction(key: string, action: ConflictDecision['action'], existingId: number) {
+    setDecisions(prev => ({ ...prev, [key]: { action, existingId } }));
   }
+
+  const dupes      = conflicts.filter(c => c.kind === 'duplicate').length;
+  const blanks     = conflicts.filter(c => c.kind === 'blank').length;
+  const incomplete = conflicts.filter(c => c.kind === 'incomplete').length;
+  const headline   = [
+    dupes      && `${plural(dupes, 'duplicate')}`,
+    blanks     && `${blanks} unreadable`,
+    incomplete && `${incomplete} incomplete`,
+  ].filter(Boolean).join(' · ');
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -902,30 +908,50 @@ function ConflictModal({
         <div className="px-5 py-4 border-b border-[var(--line)]">
           <div className="flex items-center gap-2.5">
             <AlertCircle className="w-4 h-4 shrink-0" style={{ color: 'var(--warn)' }} />
-            <h2 className="text-[13px] font-semibold">Duplicate Quotes Found</h2>
+            <h2 className="text-[13px] font-semibold">Check Before Uploading</h2>
           </div>
           <p className="text-[11.5px] text-[var(--t3)] mt-1.5">
-            {conflicts.length} quote{conflicts.length > 1 ? 's' : ''} already exist in SharePoint. Choose what to do with each:
+            {headline} — choose what to do with each row:
           </p>
         </div>
 
         <div className="px-5 py-4 space-y-3 max-h-80 overflow-y-auto vec-scroll">
           {conflicts.map(c => (
-            <div key={c.sfid} className="rounded-[11px] p-3" style={{ border: '1px solid color-mix(in oklab, var(--warn) 35%, transparent)', background: 'var(--warn-soft)' }}>
-              <p className="text-[11px] font-semibold mono text-[var(--t1)]">{c.sfid}</p>
-              {c.existingTitle    && <p className="text-[10.5px] text-[var(--t2)] truncate mt-0.5">{c.existingTitle}</p>}
-              {c.existingCustomer && <p className="text-[10px] text-[var(--t3)] truncate">{c.existingCustomer}</p>}
+            <div key={c.key} className="rounded-[11px] p-3" style={{ border: '1px solid color-mix(in oklab, var(--warn) 35%, transparent)', background: 'var(--warn-soft)' }}>
+              <div className="flex items-baseline gap-2">
+                <p className="text-[11px] font-semibold mono text-[var(--t1)] truncate">{c.rowLabel}</p>
+                <span className="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--t3)] shrink-0">
+                  {c.kind === 'duplicate' ? `duplicate · ${c.matchedOn}`
+                    : c.kind === 'blank'  ? 'nothing extracted'
+                    : 'missing fields'}
+                </span>
+              </div>
+              {c.sfid && <p className="text-[10px] mono text-[var(--t3)] mt-0.5">{c.sfid}</p>}
+              {c.kind === 'duplicate' && (c.existingTitle || c.existingCustomer) && (
+                <p className="text-[10.5px] text-[var(--t2)] truncate mt-0.5">
+                  Already there: {c.existingTitle}
+                  {c.existingCustomer && ` · ${c.existingCustomer}`}
+                  {c.existingCreated  && ` · ${c.existingCreated}`}
+                </p>
+              )}
+              {c.missing.length > 0 && (
+                <p className="text-[10px] text-[var(--t3)] mt-0.5">
+                  No {c.missing.join(', no ')} — SharePoint row will be incomplete
+                </p>
+              )}
               <div className="flex gap-4 mt-2.5">
                 {(['replace', 'add', 'skip'] as const).map(action => (
-                  <label key={action} className="flex items-center gap-1.5 cursor-pointer">
-                    <input type="radio" name={`dec-${c.sfid}`} value={action}
-                      checked={decisions[c.sfid]?.action === action}
-                      onChange={() => setAction(c.sfid, action, c.existingId)}
-                      style={{ accentColor: 'var(--accent)' }} />
-                    <span className="text-[11px] font-medium text-[var(--t2)]">
-                      {action === 'replace' ? 'Replace' : action === 'add' ? 'Add (keep both)' : 'Skip'}
-                    </span>
-                  </label>
+                  action === 'replace' && !c.existingId ? null : (
+                    <label key={action} className="flex items-center gap-1.5 cursor-pointer">
+                      <input type="radio" name={`dec-${c.key}`} value={action}
+                        checked={decisions[c.key]?.action === action}
+                        onChange={() => setAction(c.key, action, c.existingId)}
+                        style={{ accentColor: 'var(--accent)' }} />
+                      <span className="text-[11px] font-medium text-[var(--t2)]">
+                        {action === 'replace' ? 'Replace' : action === 'add' ? 'Upload anyway' : 'Skip'}
+                      </span>
+                    </label>
+                  )
                 ))}
               </div>
             </div>

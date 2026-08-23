@@ -417,6 +417,7 @@ def normalize_sfid(sfid):
     """Strip revision suffix (e.g. -A1R) and expand short form (CR00/SR00/EU00…) to 18 chars."""
     if not sfid:
         return sfid
+    sfid = sfid.strip()
     if "-" in sfid:
         sfid = sfid.split("-")[0]
     if len(sfid) >= 4 and sfid[2:4] == "00" and sfid[:2].isalpha():
@@ -424,32 +425,203 @@ def normalize_sfid(sfid):
     return sfid
 
 
-def find_existing_items(session, sfids):
-    """Query SharePoint for items matching the given SALESFORCEID values.
-    Returns dict: sfid -> {id, title, name, customer}
+# ─────────────────────────────────────────────
+#  DUPLICATE DETECTION
+#
+#  The old check only ever compared an exactly-18-char SALESFORCEID with `eq`.
+#  That missed three whole classes of duplicate:
+#    * BidManager quotes (QB…/QW…/EE3E…), which carry no Salesforce id at all
+#      — the list holds hundreds of same-code rows uploaded over and over;
+#    * rows whose id is stored in short form (CR00x2HCUYA2) or with a revision
+#      suffix (EU00RP9LWYA1-A5R), which an `eq` on the expanded id never hits;
+#    * two identical rows inside the SAME batch.
+#  We now match on Salesforce id (all spellings), quotation code, and finally
+#  name+customer, and we also compare rows against each other.
+# ─────────────────────────────────────────────
+
+SELECT_COLS = "Id,Title,SALESFORCEID,QUOTATION_x0020_NAME,CUSTOMER,Created"
+
+_SFID_PREFIXES = ("CR", "SR", "EU", "QR")
+
+
+def _odata(v):
+    """Escape a value for an OData string literal."""
+    return str(v).replace("'", "''")
+
+
+def _query(session, filt):
+    """Run one $filter query. Returns [] on any failure (incl. threshold errors)."""
+    url = (f"{SITE_URL}/_api/web/lists/getbytitle('{LIST_NAME}')/items"
+           f"?$filter={filt}&$select={SELECT_COLS}&$top=50")
+    try:
+        r = session.get(url, timeout=TIMEOUT)
+        if r.status_code == 200:
+            return r.json()["d"]["results"]
+        print(f"  [!] Duplicate query rejected (HTTP {r.status_code}) — {filt[:90]}")
+    except requests.exceptions.RequestException as e:
+        print(f"  [!] Duplicate query failed: {e}")
+    return []
+
+
+def _sfid_spellings(sfid):
+    """Every form the same Salesforce id is stored in across the list."""
+    core = normalize_sfid(sfid)
+    if not core:
+        return []
+    out = {core, sfid.strip()}
+    if core.startswith("006QO00000"):
+        tail = core[10:]
+        out.update(f"{p}00{tail}" for p in _SFID_PREFIXES)
+    return [s for s in out if s]
+
+
+def _match_by_sfid(session, sfid):
+    spellings = _sfid_spellings(sfid)
+    if not spellings:
+        return None
+    eq = " or ".join(f"SALESFORCEID eq '{_odata(s)}'" for s in spellings)
+    # startswith also catches the revision-suffixed spellings (…YA1-A5R).
+    sw = " or ".join(f"startswith(SALESFORCEID,'{_odata(s)}')" for s in spellings)
+    return _first(_query(session, f"({eq}) or ({sw})") or _query(session, eq))
+
+
+def _match_by_code(session, code, sfid=""):
+    """Quotation code — the only identity a BidManager quote has.
+
+    A code is NOT unique: 'EU1L0806X6K1-0000' is used by both the Eversheds and
+    the HMP Standford hill quotes, which are different jobs with different
+    Salesforce ids. So when both sides carry an id and the ids disagree, the
+    code match is a coincidence and must be discarded — otherwise the modal
+    would offer to overwrite an unrelated row.
     """
-    results = {}
-    for sfid in sfids:
-        if not sfid:
+    code = (code or "").strip()
+    if not code:
+        return None
+    # startswith absorbs the trailing spaces and '-A1R' revisions in the list.
+    items = _query(session, f"Title eq '{_odata(code)}' or startswith(Title,'{_odata(code)}')")
+    if not items:
+        items = _query(session, f"Title eq '{_odata(code)}'")
+
+    mine = normalize_sfid(sfid).upper()
+    if mine:
+        items = [i for i in items
+                 if normalize_sfid(i.get("SALESFORCEID") or "").upper() in ("", mine)]
+    return _first(items)
+
+
+def _match_by_name(session, name, customer):
+    """Last resort for rows with neither id nor code.
+
+    Returns (hit, confirmed). Without a customer to confirm against, a name
+    match is only a hint — two different jobs at the same site share a name —
+    so the caller must not default such a row to 'replace'.
+    """
+    name = (name or "").strip()
+    if not name:
+        return None, False
+    items = _query(session, f"QUOTATION_x0020_NAME eq '{_odata(name)}'")
+    want = (customer or "").strip().lower()
+    if want:
+        items = [i for i in items if (i.get("CUSTOMER") or "").strip().lower() == want]
+    return _first(items), bool(want)
+
+
+def _first(items):
+    if not items:
+        return None
+    item = items[0]
+    return {
+        "id":       item["Id"],
+        "title":    item.get("Title") or "",
+        "name":     item.get("QUOTATION_x0020_NAME") or "",
+        "customer": item.get("CUSTOMER") or "",
+        "created":  (item.get("Created") or "")[:10],
+    }
+
+
+def _row_identity(row):
+    sf   = (row.get("SALESFORCE ID") or "").strip()
+    code = (row.get("QUOTATION CODE") or "").strip()
+    name = (row.get("QUOTATION NAME") or "").strip()
+    cust = (row.get("CUSTOMER") or "").strip()
+    return sf, code, name, cust
+
+
+def check_rows(session, rows):
+    """Return the list of conflicts/warnings for this batch.
+
+    Each entry is keyed by CSV row index, because a row without a Salesforce id
+    still needs a decision — keying on the id (as before) silently dropped them.
+    """
+    conflicts = []
+    seen = {}                       # identity key -> row index already in this batch
+
+    for i, row in enumerate(rows):
+        sf, code, name, cust = _row_identity(row)
+        label   = code or name or sf or f"row {i + 1}"
+        missing = []
+        if not sf:
+            missing.append("SALESFORCE ID")
+        if not (row.get("REQUESTED FROM EATON (INTERNAL)") or "").strip():
+            missing.append("REQUESTED FROM")
+
+        # ── No identity at all: extraction failed, don't create an empty row ──
+        if not sf and not code and not name:
+            conflicts.append({
+                "key": str(i), "kind": "blank", "matchedOn": "",
+                "sfid": "", "rowLabel": f"row {i + 1}", "missing": missing,
+                "existingId": 0, "existingTitle": "", "existingCustomer": "",
+                "existingCreated": "", "defaultAction": "skip",
+            })
+            print(f"  [!] Row {i + 1}: no SF ID, no quotation code, no name — extraction failed")
             continue
-        try:
-            url = (f"{SITE_URL}/_api/web/lists/getbytitle('{LIST_NAME}')/items"
-                   f"?$filter=SALESFORCEID eq '{sfid}'"
-                   f"&$select=Id,Title,SALESFORCEID,QUOTATION_x0020_NAME,CUSTOMER")
-            r = session.get(url, timeout=TIMEOUT)
-            if r.status_code == 200:
-                items = r.json()["d"]["results"]
-                if items:
-                    item = items[0]
-                    results[sfid] = {
-                        "id":       item["Id"],
-                        "title":    item.get("Title", ""),
-                        "name":     item.get("QUOTATION_x0020_NAME", ""),
-                        "customer": item.get("CUSTOMER", ""),
-                    }
-        except Exception:
-            pass
-    return results
+
+        # ── Duplicate inside this same batch ────────────────────────────────
+        batch_key = normalize_sfid(sf).upper() or re.sub(r"[^A-Za-z0-9]", "", code).upper() \
+                    or re.sub(r"[^A-Za-z0-9]", "", (name + cust)).upper()
+        if batch_key in seen:
+            conflicts.append({
+                "key": str(i), "kind": "duplicate", "matchedOn": "same batch",
+                "sfid": sf, "rowLabel": label, "missing": missing,
+                "existingId": 0, "existingTitle": f"row {seen[batch_key] + 1} of this batch",
+                "existingCustomer": cust, "existingCreated": "", "defaultAction": "skip",
+            })
+            print(f"  [!] Row {i + 1} duplicates row {seen[batch_key] + 1} of this batch: {label}")
+            continue
+        seen[batch_key] = i
+
+        # ── Already in SharePoint? ──────────────────────────────────────────
+        hit, matched, certain = None, "", True
+        if sf:
+            hit, matched = _match_by_sfid(session, sf), "SALESFORCE ID"
+        if not hit and code:
+            hit, matched = _match_by_code(session, code, sf), "QUOTATION CODE"
+        if not hit and name:
+            hit, confirmed = _match_by_name(session, name, cust)
+            matched = "NAME + CUSTOMER" if confirmed else "QUOTATION NAME"
+            certain = confirmed
+
+        if hit:
+            conflicts.append({
+                "key": str(i), "kind": "duplicate", "matchedOn": matched,
+                "sfid": sf, "rowLabel": label, "missing": missing,
+                "existingId": hit["id"], "existingTitle": hit["title"] or hit["name"],
+                "existingCustomer": hit["customer"], "existingCreated": hit["created"],
+                # A name-only match is a hint, not proof — never pre-select an overwrite.
+                "defaultAction": "replace" if certain else "add",
+            })
+            print(f"  [!] Row {i + 1} already in SharePoint (matched on {matched}): "
+                  f"{label} -> item {hit['id']}")
+        elif missing:
+            conflicts.append({
+                "key": str(i), "kind": "incomplete", "matchedOn": "",
+                "sfid": sf, "rowLabel": label, "missing": missing,
+                "existingId": 0, "existingTitle": "", "existingCustomer": cust,
+                "existingCreated": "", "defaultAction": "add",
+            })
+            print(f"  [!] Row {i + 1} incomplete ({', '.join(missing)}): {label}")
+
+    return conflicts
 
 
 def patch_item(session, item_id, payload, digest):
@@ -468,7 +640,8 @@ def patch_item(session, item_id, payload, digest):
 
 
 def upload_rows(session, rows, entity_type, digest, decisions=None):
-    # decisions: dict of sfid -> {"action": "add"|"replace"|"skip", "existingId": int}
+    # decisions: dict of CSV row index (as a string) -> {"action": ..., "existingId": int}
+    # Older callers keyed this by SALESFORCEID; both are accepted.
     url = f"{SITE_URL}/_api/web/lists/getbytitle('{LIST_NAME}')/items"
     post_headers = {
         "Accept": "application/json;odata=verbose",
@@ -493,11 +666,15 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
         print(f"[STATUS] No matching choice found. Status will not be set.")
 
     success, fail, skipped = 0, 0, 0
+    no_sfid, no_requester = [], []
     for i, row in enumerate(rows, 1):
         payload = {"__metadata": {"type": entity_type}}
         for sp_col, csv_col in COLUMN_MAP.items():
             if csv_col not in row:
-                payload[sp_col] = csv_col
+                # The CSV has no such column — leave the field empty. (This used
+                # to write the header NAME into SharePoint as the value.)
+                print(f"  [!] CSV column '{csv_col}' missing — leaving {sp_col} empty")
+                payload[sp_col] = None
             elif sp_col in DATE_COLUMNS:
                 raw_date = row.get(csv_col, "")
                 payload[sp_col] = convert_date(raw_date)
@@ -516,11 +693,18 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
             is_id = ensure_inside_sales_id(session, inside_sales_name, digest)
             if is_id:
                 payload["INSIDE_x0020_SALES0Id"] = is_id
-        internal_requester = row.get("REQUESTED FROM EATON (INTERNAL)", "")
+        label = row.get("QUOTATION NAME") or row.get("QUOTATION CODE") \
+                or row.get("SALESFORCE ID") or f"row {i}"
+
+        internal_requester = (row.get("REQUESTED FROM EATON (INTERNAL)") or "").strip()
         if internal_requester:
             uid = get_user_id(session, internal_requester, digest)
             if uid:
                 payload["REQUESTEDFROM_x0028_INTERNAL_x00Id"] = uid
+            else:
+                no_requester.append(f"{label} (unresolved: {internal_requester})")
+        else:
+            no_requester.append(label)
 
         sfid = normalize_sfid(payload.get("SALESFORCEID", ""))
         payload["SALESFORCEID"] = sfid
@@ -528,18 +712,20 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
             print(f"  [!] SALESFORCEID '{sfid}' is {len(sfid)} chars (need 18) — skipping field, fill manually")
             payload.pop("SALESFORCEID", None)
             sfid = ""
+        if not sfid:
+            no_sfid.append(label)
 
         if processed_value:
             payload["STATUS"] = processed_value
 
         payload = {k: v for k, v in payload.items() if v is not None}
 
-        # Apply conflict decision for this row
-        decision = (decisions or {}).get(sfid, {})
+        # Apply conflict decision for this row — keyed by CSV row index, so a
+        # row with no Salesforce id still gets its decision applied.
+        decision = (decisions or {}).get(str(i - 1)) or (decisions or {}).get(sfid) or {}
         action   = decision.get("action", "add") if decision else "add"
 
         if action == "skip":
-            label = row.get("QUOTATION NAME") or sfid or f"row {i}"
             print(f"  [SKIP] [{i}/{len(rows)}] {label}")
             skipped += 1
             continue
@@ -547,8 +733,10 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
         try:
             if action == "replace":
                 existing_id = decision.get("existingId")
-                label = row.get("QUOTATION NAME") or sfid or f"row {i}"
-                if patch_item(session, existing_id, payload, digest):
+                if not existing_id:
+                    fail += 1
+                    print(f"  [ERR] [{i}/{len(rows)}] Replace requested with no target item: {label}")
+                elif patch_item(session, existing_id, payload, digest):
                     success += 1
                     print(f"  [OK] [{i}/{len(rows)}] REPLACED: {label}")
                 else:
@@ -558,7 +746,6 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
                 r = session.post(url, json=payload, headers=post_headers, timeout=TIMEOUT)
                 if r.status_code in (200, 201):
                     success += 1
-                    label = row.get("QUOTATION NAME") or row.get("SALESFORCE ID") or f"row {i}"
                     print(f"  [OK] [{i}/{len(rows)}] {label}")
                 else:
                     fail += 1
@@ -570,6 +757,16 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
 
     print(f"\n{'='*45}")
     print(f"  Done — {success} uploaded, {skipped} skipped, {fail} failed.")
+    # Name the rows that landed incomplete, so the gap shows up in the Vector
+    # log instead of only in SharePoint weeks later.
+    if no_sfid:
+        print(f"  [!] {len(no_sfid)} row(s) uploaded WITHOUT a Salesforce id:")
+        for lbl in no_sfid[:20]:
+            print(f"        - {lbl}")
+    if no_requester:
+        print(f"  [!] {len(no_requester)} row(s) uploaded WITHOUT 'Requested from Eaton':")
+        for lbl in no_requester[:20]:
+            print(f"        - {lbl}")
     print(f"{'='*45}\n")
     return success, fail, skipped
 
@@ -600,23 +797,12 @@ if __name__ == "__main__":
         sys.exit(1)
 
     if args.check:
-        print("[*] Checking for duplicates in SharePoint...")
-        sfids = [normalize_sfid(row.get("SALESFORCE ID", "")) for row in rows]
-        sfids = [s for s in sfids if s and len(s) == 18]
-        existing = find_existing_items(session, sfids)
-        if existing:
-            conflicts = [
-                {
-                    "sfid":             sfid,
-                    "existingId":       info["id"],
-                    "existingTitle":    info["title"] or info["name"],
-                    "existingCustomer": info["customer"],
-                }
-                for sfid, info in existing.items()
-            ]
+        print("[*] Checking for duplicates and missing fields...")
+        conflicts = check_rows(session, rows)
+        if conflicts:
             print(f"__CONFLICTS__:{json.dumps(conflicts)}")
         else:
-            print("[OK] No duplicates found.")
+            print("[OK] No duplicates found, all rows complete.")
         sys.exit(0)
 
     # Normal upload — read optional conflict decisions from env

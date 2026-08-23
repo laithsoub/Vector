@@ -13,6 +13,7 @@ import {
 import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, relTime } from '../lib/ui';
 import { api } from '../lib/api';
+import { failed, plural } from '../lib/errors';
 import { runTask, isCancel } from '../lib/tasks';
 import type {
   TodoItem, TodoBucket, TodoStatus, TodoScanStatus, TodoRecipientOption, TodoRecipient,
@@ -94,7 +95,7 @@ function RecipientPicker({
           <span key={r.email}
             className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full text-[11px] bg-[var(--accent-soft)] text-[var(--accent-text)] border border-[var(--accent-line)]">
             <span className="truncate max-w-[220px]" title={r.email}>{r.name || r.email}</span>
-            <button onClick={() => onChange(value.filter(v => v.email !== r.email))}
+            <button aria-label="Remove" onClick={() => onChange(value.filter(v => v.email !== r.email))}
               className="p-0.5 rounded-full hover:bg-[var(--s3)] transition-colors" title="Remove">
               <X className="w-3 h-3" />
             </button>
@@ -119,7 +120,7 @@ function RecipientPicker({
               className="pl-8"
             />
           </div>
-          <button onClick={onRefresh} disabled={refreshing}
+          <button aria-label="Re-read who you correspond with from Outlook" onClick={onRefresh} disabled={refreshing}
             title="Re-read who you correspond with from Outlook"
             className="h-[34px] px-3 rounded-[9px] text-[11px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors disabled:opacity-50 flex items-center gap-1.5">
             {refreshing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
@@ -189,39 +190,40 @@ function TodoDetail({
     try {
       const r = await api.todoSave({ ...draft, ...extra, id: draft.id });
       if (r.item) { setDraft(r.item); onSaved(r.item); }
-      if (!quiet) toast('ok', 'Saved');
+      if (!quiet) toast('ok', 'To-Do item saved');
       return r.item;
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('save the To-Do item', e)); }
     finally { setSaving(false); }
   }
 
   async function writeDraft() {
-    if (!draft.recipients.length) { toast('warn', 'Pick who this goes to first'); return; }
+    if (!draft.recipients.length) { toast('warn', 'Pick at least one recipient before writing the message'); return; }
     setWriting(true);
     try {
       // Persist first — the server writes the message from the stored row.
       await save({}, true);
       const r = await runTask('Writing the message…', s => api.todoWriteDraft(draft.id, s));
-      if (r.error) { toast('err', r.error); return; }
+      if (r.error) { toast('err', failed('write the draft message', r.error)); return; }
       setDraft(d => ({ ...d, draftSubject: r.subject || d.draftSubject, draftBody: r.body || d.draftBody }));
-      toast('ok', 'Draft written — read it before sending');
-    } catch (e: any) { if (!isCancel(e)) toast('err', e.message); }
+      toast('ok', 'Draft written — read it before you send it');
+    } catch (e: any) { if (!isCancel(e)) toast('err', failed('write the draft message', e)); }
     finally { setWriting(false); }
   }
 
   async function send(asDraft: boolean) {
-    if (!draft.recipients.length) { toast('warn', 'Pick a recipient first'); return; }
-    if (!draft.draftBody.trim())  { toast('warn', 'Write the message first'); return; }
+    if (!draft.recipients.length) { toast('warn', 'Pick at least one recipient before sending'); return; }
+    if (!draft.draftBody.trim())  { toast('warn', 'The message is empty — write it before sending'); return; }
     setSending(asDraft ? 'draft' : 'send');
+    const who = draft.recipients.map(r => r.email).join(', ');
     try {
       await save({}, true);
       const r = await api.todoSend(draft.id, asDraft);
-      if (!r.ok) { toast('err', r.error || 'Send failed'); return; }
+      if (!r.ok) { toast('err', failed(asDraft ? 'save the message to Outlook drafts' : `send the message to ${who}`, r.error)); return; }
       if (r.item) { setDraft(r.item); onSaved(r.item); }
-      toast('ok', asDraft ? 'Left in your Outlook drafts' : 'Sent — item moved to Waiting');
+      toast('ok', asDraft ? 'Message saved in your Outlook drafts — nothing was sent' : `Message sent to ${who} — item moved to Waiting`);
       setConfirmSend(false);
       if (!asDraft) onClose();
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed(asDraft ? 'save the message to Outlook drafts' : `send the message to ${who}`, e)); }
     finally { setSending(null); }
   }
 
@@ -229,9 +231,9 @@ function TodoDetail({
     try {
       await api.todoDelete(draft.id);
       onDeleted(draft.id);
-      toast('ok', 'Removed');
+      toast('ok', 'Item removed from the To-Do board');
       onClose();
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('remove the To-Do item', e)); }
   }
 
   const meta = bucketMeta(draft.bucket);
@@ -260,7 +262,7 @@ function TodoDetail({
               </p>
             )}
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s2)] transition-colors">
+          <button aria-label="Close" onClick={onClose} className="p-1.5 rounded-lg text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s2)] transition-colors">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -342,7 +344,7 @@ function TodoDetail({
                         className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full text-[11px] bg-[var(--s2)] border border-[var(--line-2)] text-[var(--t2)]">
                         <Paperclip className="w-3 h-3 text-[var(--t4)]" />
                         <span className="truncate max-w-[200px]" title={a.name}>{a.name}</span>
-                        <button onClick={() => set('attachments', draft.attachments.filter(x => x.index !== a.index))}
+                        <button aria-label="Don't attach this" onClick={() => set('attachments', draft.attachments.filter(x => x.index !== a.index))}
                           className="p-0.5 rounded-full hover:bg-[var(--s3)] transition-colors" title="Don't attach this">
                           <X className="w-3 h-3" />
                         </button>
@@ -465,7 +467,7 @@ function TodoCard({
           item.status === 'done' && 'line-through')}>
           {item.title}
         </p>
-        <button onClick={e => { e.stopPropagation(); onDone(); }}
+        <button aria-label={item.status === 'done' ? 'Reopen' : 'Mark done'} onClick={e => { e.stopPropagation(); onDone(); }}
           title={item.status === 'done' ? 'Reopen' : 'Mark done'}
           className="shrink-0 p-1 rounded-md text-[var(--t4)] opacity-0 group-hover:opacity-100 hover:text-[var(--ok)] hover:bg-[var(--ok-soft)] transition-all">
           <CheckCircle2 className="w-3.5 h-3.5" />
@@ -531,7 +533,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
       setItems(r.items);
       setLastScanAt(r.lastScanAt);
       setMailbox(r.mailbox);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('load the To-Do board', e)); }
     setLoading(false);
   }, [toast]);
 
@@ -551,8 +553,8 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
       setStatus(s);
       if (!s.running) {
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-        if (s.phase === 'done')  { await load(); toast('ok', s.message || 'Triage finished'); }
-        if (s.phase === 'error') toast('err', s.error || 'Scan failed');
+        if (s.phase === 'done')  { await load(); toast('ok', s.message || 'Triage finished — the board is up to date'); }
+        if (s.phase === 'error') toast('err', failed('finish the mailbox triage', s.error));
       }
     } catch { /* transient — keep polling */ }
   }, [load, toast]);
@@ -570,20 +572,20 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
     try {
       const s = await api.todoScan(days);
       setStatus(s);
-      if ((s as any).error) { toast('err', (s as any).error); return; }
-      toast('info', 'Reading the shared mailbox — this takes a few minutes');
+      if ((s as any).error) { toast('err', failed('start the mailbox triage', (s as any).error)); return; }
+      toast('info', `Triaging the last ${days} days of the shared mailbox — this takes a few minutes`);
       if (!pollRef.current) pollRef.current = window.setInterval(poll, 2000);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('start the mailbox triage', e)); }
   }
 
   async function refreshOptions() {
     setOptRefreshing(true);
     try {
       const r = await api.todoRefreshRecipients(365);
-      if (!r.ok) { toast('err', r.error || 'Could not read your contacts'); return; }
+      if (!r.ok) { toast('err', failed('refresh the recipient list', r.error)); return; }
       await loadOptions();
-      toast('ok', `${r.count} people from the last year of mail`);
-    } catch (e: any) { toast('err', e.message); }
+      toast('ok', `Recipient list refreshed — ${plural(r.count, 'person', 'people')} from the last year of mail`);
+    } catch (e: any) { toast('err', failed('refresh the recipient list', e)); }
     finally { setOptRefreshing(false); }
   }
 
@@ -596,7 +598,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
     try {
       const r = await api.todoSave({ id: t.id, status: t.status === 'done' ? 'open' : 'done' as TodoStatus });
       if (r.item) upsert(r.item);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed(t.status === 'done' ? 'reopen the item' : 'tick the item off', e)); }
   }
 
   // Dropped on another column → re-bucket it. Optimistic, because the card has
@@ -610,7 +612,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
       if (r.item) upsert(r.item);
     } catch (e: any) {
       setItems(cur => cur.map(t => t.id === id ? prev : t));
-      toast('err', e.message);
+      toast('err', failed(`move the card to ${bucket}`, e));
     }
   }
 
@@ -618,7 +620,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
     try {
       const r = await api.todoSave({ title: 'New to-do', bucket: 'direct', due: today(), source: 'manual' });
       if (r.item) { upsert(r.item); setOpenItem(r.item); }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('add a new To-Do item', e)); }
   }
 
   const shown = useMemo(() => {

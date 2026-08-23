@@ -2,6 +2,7 @@
 pdfplumber>=0.11
 openpyxl>=3.1
 pymupdf>=1.24        # quote_export.py — clones a real EL quote PDF (redact + reinsert)
+reportlab>=4.0       # export_report.py, commission_export.py — build PDFs from scratch
 requests>=2.31
 urllib3>=2.0
 cryptography>=42.0   # AES-256-GCM at-rest encryption for JOE/SharePoint cookies (cookie_crypto.py)

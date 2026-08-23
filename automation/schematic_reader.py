@@ -1154,6 +1154,43 @@ def parse_quantity_from_text(text: str) -> int:
     return 1
 
 
+# Leading list marker on a line pasted out of Outlook/Word/Teams: a bullet
+# glyph, a dash, or an ordinal like "1." / "1)". Word puts the bullet on its own
+# line often enough that a marker-only line must be dropped, not priced.
+_LIST_MARKER_RE = re.compile(
+    r'^\s*(?:[•●◦‣⁃·º*+]+|[-‐-―]+|\d{1,3}[.)])\s*'
+)
+
+
+def clean_list_line(line: str) -> str:
+    """Strip any bullet/ordinal a pasted list carries.
+
+    Returns '' when nothing but punctuation is left — a lone "•" is a list
+    marker, not a part number, and must never become a line item.
+    """
+    out, prev = line.strip(), None
+    while out != prev:
+        prev = out
+        out = _LIST_MARKER_RE.sub('', out).strip()
+    return out if re.search(r'[A-Za-z0-9]', out) else ''
+
+
+def qty_from_line(line: str, cat_no: str) -> int:
+    """Quantity stated on one line — '… — 4 units', 'x4', 'qty 4', '4 off'.
+
+    The catalogue number is removed first: Eaton part numbers are long digit
+    runs (40071354874), and hunting for quantities in the raw line would read
+    digits out of the part number itself.
+    """
+    rest = line
+    if cat_no:
+        try:
+            rest = re.sub(re.escape(cat_no), ' ', rest, count=1, flags=re.I)
+        except Exception:
+            pass
+    return parse_quantity_from_text(rest)
+
+
 def looks_like_cat_no(text: str) -> bool:
     """Return True if text appears to contain an explicit Eaton-style catalogue number."""
     if not text:
@@ -1451,7 +1488,10 @@ def parse_material_list(text: str) -> list[dict]:
         if len(parts) >= 2:
             # Detect which column is the cat number (alphanumeric, may have hyphens)
             for p in parts:
-                if re.match(r'^[A-Z0-9][A-Z0-9\-\.]{2,}$', p, re.I) and not p.isdigit():
+                # A pure number is normally the qty column — except Eaton's own
+                # part numbers are long digit runs (40071354874), so those count
+                # as the catalogue number, not a quantity.
+                if re.match(r'^[A-Z0-9][A-Z0-9\-\.]{2,}$', p, re.I) and (not p.isdigit() or len(p) >= 6):
                     cat_no = p
                     break
             # Detect qty (pure number, small value)
@@ -1467,13 +1507,19 @@ def parse_material_list(text: str) -> list[dict]:
             used = {cat_no, str(qty)}
             desc = ' '.join(p for p in parts if p not in used)
         else:
-            # Single column — might be "MP2ES230CGS x4" or "4 x MP2ES230CGS"
-            m = re.search(r'(\d+)\s*[xX]\s*([A-Z0-9][A-Z0-9\-\.]{2,})', line, re.I)
-            if not m:
-                m = re.search(r'([A-Z0-9][A-Z0-9\-\.]{2,})\s*[xX]\s*(\d+)', line, re.I)
-            if m:
-                cat_no = m.group(2) if m.group(1).isdigit() else m.group(1)
-                qty    = int(m.group(1)) if m.group(1).isdigit() else int(m.group(2))
+            # Single column — might be "4 x MP2ES230CGS" or "MP2ES230CGS x4".
+            # Each form is read on its own terms: deciding the roles from
+            # "which group is all digits" broke on Eaton's numeric part numbers
+            # ("40071354879 x 2" priced part "2", quantity 40071354879).
+            qm = re.search(r'(?<![A-Z0-9])(\d{1,4})\s*[xX]\s*([A-Z0-9][A-Z0-9\-\.]{2,})', line, re.I)
+            if qm:
+                qty, cat_no = int(qm.group(1)), qm.group(2)
+            else:
+                qm = re.search(r'([A-Z0-9][A-Z0-9\-\.]{2,})\s*[xX]\s*(\d{1,4})(?![A-Z0-9])', line, re.I)
+                if qm:
+                    cat_no, qty = qm.group(1), int(qm.group(2))
+            if qm:
+                qty = max(1, min(qty, 9999))
             else:
                 cat_no = line.split()[0] if line.split() else line
                 desc   = ' '.join(line.split()[1:])
@@ -1894,12 +1940,23 @@ def run_list_stream(text: str, lookup: dict, entries: list, api_key: str) -> Non
     # token in (e.g. plain-language descriptions), which is why long lists used
     # to "only read 5-6". Here every line becomes an item; description-only
     # lines carry the whole line as their description.
-    lines = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith('#')]
+    # clean_list_line() drops bullet-only lines: pasting a bulleted list out of
+    # Outlook puts each "•" on its own line, and those used to be priced as
+    # items — showing up as phantom "not found" rows next to the real ones.
+    lines = [clean_list_line(l) for l in text.splitlines() if l.strip() and not l.strip().startswith('#')]
     raw_items: list[dict] = []
     for line in lines:
+        if not line:
+            continue
         parsed = parse_material_list(line)
         if parsed:
-            raw_items.append(parsed[0])
+            it = parsed[0]
+            # A quantity written in prose ("— 4 units") is not something
+            # parse_material_list looks for; without this every such line was
+            # priced at qty 1 and the total came out a quarter of the truth.
+            if int(it.get('qty') or 1) <= 1:
+                it['qty'] = qty_from_line(line, str(it.get('cat_no', '')))
+            raw_items.append(it)
             continue
         parts = [p.strip() for p in re.split(r'[\t,;|]', line) if p.strip()]
         qty, dparts = 1, parts
@@ -1907,6 +1964,8 @@ def run_list_stream(text: str, lookup: dict, entries: list, api_key: str) -> Non
             qty, dparts = max(1, int(parts[-1])), parts[:-1]
         elif parts and parts[0].isdigit():
             qty, dparts = max(1, int(parts[0])), parts[1:]
+        if qty <= 1:
+            qty = qty_from_line(line, '')
         raw_items.append({'cat_no': '', 'description': ' '.join(dparts) or line, 'qty': qty, 'ref': ''})
 
     _stream_price_items(
@@ -2121,8 +2180,16 @@ def main():
         print(json.dumps({'error': 'Price list not found or failed to load'}))
         sys.exit(1)
 
-    cfg     = load_config()
-    api_key = cfg.get('gemini_key') or os.environ.get('GEMINI_API_KEY', '')
+    cfg = load_config()
+    # The key is stored encrypted in config.json (same AES-256-GCM envelope as the
+    # JOE cookies). decrypt_secret passes plain values straight through, so a
+    # config written before that change still works.
+    try:
+        from cookie_crypto import decrypt_secret
+        stored = decrypt_secret(cfg.get('gemini_key', ''))
+    except Exception:
+        stored = cfg.get('gemini_key', '')
+    api_key = stored or os.environ.get('GEMINI_API_KEY', '')
 
     # ── Lookup mode: offline exact/fuzzy cat-no match ONLY ────────────────────
     # For light-weight price-sheet context (e.g. email chat). No description

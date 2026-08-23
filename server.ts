@@ -3,13 +3,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   readFileSync, writeFileSync, existsSync,
-  readdirSync, statSync, unlinkSync, mkdirSync, rmdirSync, createReadStream, copyFileSync
+  readdirSync, statSync, unlinkSync, mkdirSync, rmdirSync, createReadStream, copyFileSync, renameSync
 } from 'fs';
 import os from 'os';
 import { spawn, execFileSync } from 'child_process';
 import { request as httpsRequest } from 'https';
 import { createServer as netCreateServer } from 'net';
 import { AsyncLocalStorage } from 'async_hooks';
+import { createRequire } from 'module';
 import { randomUUID, randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'crypto';
 import initSqlJs from 'sql.js';
 import dotenv from 'dotenv';
@@ -17,9 +18,26 @@ import { GoogleGenAI } from '@google/genai';
 
 dotenv.config();
 
-// Corporate SSL inspection proxies present self-signed certs — same reason all
-// SharePoint calls use rejectUnauthorized:false. Applies to native fetch too.
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// Corporate SSL inspection presents self-signed certs on the Eaton hosts, so the
+// three SharePoint/Graph helpers pass rejectUnauthorized:false themselves (spPost,
+// spGet, graphPost). That stays scoped to those calls on purpose: this used to be
+// a process-wide NODE_TLS_REJECT_UNAUTHORIZED='0', which also stopped verifying
+// the Gemini connection the API key travels on.
+// If the proxy turns out to intercept Google too, the fix is to trust the
+// corporate root — set NODE_EXTRA_CA_CERTS to its .pem — not to switch checking
+// off again. VECTOR_INSECURE_TLS=1 restores the old behaviour as a last resort and
+// says so loudly on startup.
+if (process.env.VECTOR_INSECURE_TLS === '1') {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+  console.warn('[tls] VECTOR_INSECURE_TLS=1 — certificate verification is OFF for every outbound request, including Gemini.');
+} else if (!process.env.NODE_EXTRA_CA_CERTS) {
+  // Eaton's Zscaler proxy re-signs every HTTPS connection, so Node — which does
+  // not use the Windows trust store — rejects them with SELF_SIGNED_CERT_IN_CHAIN
+  // unless it is given the corporate root. `npm run certs` exports it and the dev
+  // scripts point this variable at the result. Setting it here would be too late:
+  // Node reads it once, at startup, before any of this runs.
+  console.warn('[tls] NODE_EXTRA_CA_CERTS is not set — behind the corporate proxy every AI call will fail with SELF_SIGNED_CERT_IN_CHAIN. Run `npm run certs`, then start via `npm run dev`.');
+}
 
 const __filename   = fileURLToPath(import.meta.url);
 const __dirname    = path.dirname(__filename);
@@ -55,7 +73,69 @@ const PRODUCT_META: Record<string, { label: string; color: string }> = {
 // ── Session tracking ───────────────────────────────────────────────────────
 let sessionStartedAt: string | null = null;
 
+// Truncate-then-write leaves nothing behind if the process dies mid-write, and
+// config.json holds credentials that are painful to re-enter. Write beside the
+// target, then rename — atomic on NTFS.
+function writeFileAtomic(target: string, data: string | Buffer) {
+  const tmp = `${target}.${process.pid}.tmp`;
+  writeFileSync(tmp, data);
+  renameSync(tmp, target);
+}
+
+// ── Content-Disposition ──────────────────────────────────────────────────────
+// A quote or a newline in a stored filename breaks out of the quoted parameter,
+// and the browser then saves the file under something other than what the header
+// says. Every download used to build this header by hand and they disagreed about
+// it — some stripped quotes, most did not.
+//
+// The shape here is the one /api/pmo/download already used: an ASCII-safe
+// `filename` that any client can parse, plus RFC 5987 `filename*` carrying the
+// real name with its accents and spaces intact. Modern browsers prefer the
+// second; anything older still gets a sane name.
+function contentDisposition(kind: 'inline' | 'attachment', name: string): string {
+  const clean = String(name || 'download').replace(/[\r\n]/g, ' ').trim() || 'download';
+  const ascii = clean.replace(/[^\w\s().,-]/g, '_');
+  return `${kind}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(clean)}`;
+}
+
+// Extensions end up in a filesystem path and in the MIME lookup, so they get to
+// be letters and digits and nothing else. `[^.]+` used to allow path separators.
+function safeExt(name: string, fallback = 'bin'): string {
+  const raw = (String(name || '').match(/\.([^.]+)$/)?.[1] || '').toLowerCase();
+  return /^[a-z0-9]{1,8}$/.test(raw) ? raw : fallback;
+}
+
+// ── Swallowed errors ─────────────────────────────────────────────────────────
+// Plenty of the empty catches in this file are correct — a COM property that may
+// not exist, a cookie file that may not be there. The problem was that they were
+// indistinguishable from the ones hiding a real failure, and nothing counted
+// them, so a sweep quietly returning half the mail left no trace anywhere.
+//
+// swallow() keeps the catch silent by default but makes it *countable*: the
+// tallies show up on /api/debug, and VECTOR_DEBUG=1 prints each one as it lands.
+// Being converted gradually — mail and SharePoint paths first.
+const _swallowed = new Map<string, { n: number; last: string }>();
+function swallow(where: string, e?: unknown) {
+  const msg = e instanceof Error ? e.message : e ? String(e) : '';
+  const prev = _swallowed.get(where);
+  _swallowed.set(where, { n: (prev?.n ?? 0) + 1, last: msg || prev?.last || '' });
+  if (process.env.VECTOR_DEBUG === '1') console.warn(`[swallow] ${where}: ${msg}`);
+}
+function swallowReport() {
+  return [..._swallowed.entries()]
+    .sort((a, b) => b[1].n - a[1].n)
+    .map(([where, v]) => ({ where, count: v.n, last: v.last }));
+}
+
 // ── Config ─────────────────────────────────────────────────────────────────
+// The only keys the app owns. POST /api/config used to spread the whole request
+// body into the saved file, so any caller could set keys Settings never shows —
+// sp_site and dq_store among them, which decide where quotes get uploaded.
+const CONFIG_KEYS = [
+  'base', 'initials', 'sp_site', 'sp_list', 'dq_store',
+  'gemini_key', 'ai_model', 'job_categories',
+] as const;
+
 function loadPyCfg(): Record<string, string> {
   const defaults: Record<string, string> = {
     base:     path.join(DATA_DIR, 'data'),
@@ -136,6 +216,8 @@ function loadDb() {
     answer TEXT,
     tags TEXT,
     extracted INTEGER DEFAULT 0,
+    skipped INTEGER DEFAULT 0,
+    folder TEXT,
     ts TEXT NOT NULL
   );`);
   db.run(`CREATE TABLE IF NOT EXISTS fenton_meta (
@@ -295,7 +377,37 @@ function loadDb() {
   migrateDb();
   migrateTodo();
   migrateCrm();
+  migrateFenton();
+  ensureIndexes();
   saveDb();
+}
+
+// ── Indexes ──────────────────────────────────────────────────────────────────
+// Until these existed the only indexes in the file were the automatic ones behind
+// primary keys, so every lookup was a table scan. The CRM sync felt it worst: it
+// checks `WHERE ownerId = ? AND spId = ?` once per incoming item against 1.3k
+// rows, which is quadratic in the number of quotes. Run after the migrations so
+// the columns being indexed are guaranteed to exist.
+function ensureIndexes() {
+  const idx: Array<[string, string]> = [
+    ['crm_quote_owner_sp',    'crm_quote(ownerId, spId)'],
+    ['crm_quote_owner_sfid',  'crm_quote(ownerId, sfId)'],
+    ['crm_quote_owner_acct',  'crm_quote(ownerId, account)'],
+    ['crm_company_owner',     'crm_company(ownerId)'],
+    ['crm_alias_company',     'crm_alias(companyId)'],
+    ['crm_alias_name',        'crm_alias(name)'],
+    ['crm_mail_quote_owner',  'crm_mail_quote(ownerId)'],
+    ['jobs_timestamp',        'jobs(timestamp DESC)'],
+    ['mail_job_last',         'mail_job(lastDate DESC)'],
+    ['todo_status',           'todo(status, bucket)'],
+    ['fenton_kb_received',    'fenton_kb(received DESC)'],
+    // The extraction pass scans `WHERE extracted = 0` over every card.
+    ['fenton_kb_extracted',   'fenton_kb(extracted)'],
+  ];
+  for (const [name, on] of idx) {
+    try { db.run(`CREATE INDEX IF NOT EXISTS ${name} ON ${on}`); }
+    catch (e: any) { console.warn(`[index] ${name} skipped:`, e.message); }
+  }
 }
 
 // ── One-shot migration: add new columns to existing jobs table ─────────────
@@ -344,6 +456,29 @@ function migrateTodo() {
     }
   } catch (e: any) {
     console.warn('[migrate] todo_meta skipped:', e.message);
+  }
+}
+
+// ── Fenton migration: `skipped` marks an email the extractor judged to carry no
+// reusable engineering knowledge (auto-replies, order confirmations, pure
+// logistics). Those rows stay in the table — so a refresh never re-fetches them
+// — but never become cards. `folder` records where the mail was found now that
+// the fetch spans both mailboxes. ───────────────────────────────────────────
+function migrateFenton() {
+  try {
+    const cols = queryAll(`PRAGMA table_info(fenton_kb)`).map(r => r.name as string);
+    const additions: Array<[string, string]> = [
+      ['skipped', 'INTEGER DEFAULT 0'],
+      ['folder',  'TEXT'],
+    ];
+    for (const [name, type] of additions) {
+      if (!cols.includes(name)) {
+        db.run(`ALTER TABLE fenton_kb ADD COLUMN ${name} ${type}`);
+        console.log(`[migrate] added fenton_kb.${name} (${type})`);
+      }
+    }
+  } catch (e: any) {
+    console.warn('[migrate] fenton_kb skipped:', e.message);
   }
 }
 
@@ -400,7 +535,53 @@ function migrateCrm() {
   }
 }
 
-function saveDb() { writeFileSync(DB_PATH, Buffer.from(db.export())); }
+// ── Persisting the sql.js database ───────────────────────────────────────────
+// sql.js keeps the whole database in memory, so persisting means exporting the
+// entire file — ~10 MB and growing. Two problems came with doing that inline on
+// every write:
+//
+//   1. Cost. Every single-row insert paid for the whole file. 60 call sites do it.
+//   2. Safety. writeFileSync over the live path truncates it first, so a crash
+//      mid-write left a broken database rather than the previous good one.
+//
+// So: write to a temp file and rename over the original (rename is atomic on
+// NTFS), and coalesce bursts behind a short timer instead of flushing per row.
+// A .prev copy is kept as the one-generation fallback.
+const DB_TMP  = DB_PATH + '.tmp';
+const DB_PREV = DB_PATH + '.prev';
+let _saveTimer: NodeJS.Timeout | null = null;
+
+function saveDbNow() {
+  if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+  const buf = Buffer.from(db.export());
+  writeFileSync(DB_TMP, buf);
+  try { if (existsSync(DB_PATH)) copyFileSync(DB_PATH, DB_PREV); } catch { /* fallback copy is best-effort */ }
+  renameSync(DB_TMP, DB_PATH);
+}
+
+// Callers that just changed a row use this. The flush lands a tick later, which
+// is invisible to the HTTP response but turns a bulk loop into one write.
+function saveDb() {
+  if (_saveTimer) return;
+  _saveTimer = setTimeout(() => {
+    _saveTimer = null;
+    try { saveDbNow(); } catch (e: any) { console.error('[db] flush failed:', e.message); }
+  }, 150);
+  // Node keeps running for a pending timer; this one must never hold the process open.
+  _saveTimer.unref?.();
+}
+
+// A debounced write must not be the reason a shutdown loses the last edit.
+let _flushed = false;
+function flushDbOnExit() {
+  if (_flushed) return;
+  _flushed = true;
+  try { saveDbNow(); } catch { /* nothing useful left to do while exiting */ }
+}
+process.on('exit', flushDbOnExit);
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(sig, () => { flushDbOnExit(); process.exit(0); });
+}
 function queryAll(sql: string, params: any[] = []): Record<string, any>[] {
   const stmt = db.prepare(sql);
   const out: Record<string, any>[] = [];
@@ -625,7 +806,7 @@ function spPost(url: string, cookies: string): Promise<{ ok: boolean; status: nu
       headers: { Cookie: cookies, Accept: 'application/json;odata=verbose', 'Content-Length': '0' },
       rejectUnauthorized: false,
     }, res => { resolve({ ok: res.statusCode === 200, status: res.statusCode ?? 0 }); res.resume(); });
-    req.on('error', () => resolve({ ok: false, status: 0 }));
+    req.on('error', e => { swallow('spPost', e); resolve({ ok: false, status: 0 }); });
     req.end();
   });
 }
@@ -642,7 +823,7 @@ function spGet(url: string, cookies: string): Promise<{ ok: boolean; status: num
       res.on('data', d => { body += d; });
       res.on('end', () => resolve({ ok: res.statusCode === 200, status: res.statusCode ?? 0, body }));
     });
-    req.on('error', () => resolve({ ok: false, status: 0, body: '' }));
+    req.on('error', e => { swallow('spGet', e); resolve({ ok: false, status: 0, body: '' }); });
     req.end();
   });
 }
@@ -723,6 +904,22 @@ function decSecret(blob: string): string | null {
     d.setAuthTag(raw.subarray(12, 28));
     return Buffer.concat([d.update(raw.subarray(28)), d.final()]).toString('utf8');
   } catch { return null; } // wrong key / tampered → unusable
+}
+
+// Same unwrap for config secrets, minus decSecret's warning — this one runs on
+// every AI request, and a config written before encryption is a normal state to
+// be in, not something to log about each time.
+function readSecret(blob: string): string {
+  const s = String(blob || '').trim();
+  if (!s) return '';
+  if (!s.startsWith('v1:')) return s;      // written before the key was encrypted
+  return (decSecret(s) ?? '').trim();
+}
+
+// The Gemini key as the SDK needs it: decrypted from config, or the env var.
+function geminiKey(): string {
+  const fromCfg = readSecret(String((loadPyCfg() as any).gemini_key || ''));
+  return fromCfg || String(process.env.GEMINI_API_KEY || '').trim();
 }
 
 // ── Session persistence (survives restart; cookies encrypted at rest) ────────
@@ -824,13 +1021,51 @@ function parseFilenameMeta(filename: string | null | undefined): { customer: str
 let _gemini: InstanceType<typeof GoogleGenAI> | null = null;
 let _geminiKey = '';
 function getGemini() {
-  const key = String((loadPyCfg() as any).gemini_key || process.env.GEMINI_API_KEY || '').trim();
+  const key = geminiKey();
   if (!key) return null;
   if (!_gemini || _geminiKey !== key) {
     _gemini = new GoogleGenAI({ apiKey: key });
     _geminiKey = key;
   }
   return _gemini;
+}
+
+// Google's front end returns 503 UNAVAILABLE / "Deadline expired before operation
+// could complete" when a big request (a 12k email body plus image parts) lands on a
+// busy region. It is transient and a plain re-send usually succeeds, so retry the
+// whole call with backoff instead of surfacing the raw error to the user.
+const AI_TRANSIENT = /\b(429|500|502|503|504)\b|UNAVAILABLE|Deadline expired|deadline exceeded|overloaded|RESOURCE_EXHAUSTED|INTERNAL|fetch failed|ECONNRESET|ETIMEDOUT/i;
+type GenReq = Parameters<InstanceType<typeof GoogleGenAI>['models']['generateContent']>[0];
+async function generateWithRetry(
+  ai: InstanceType<typeof GoogleGenAI>, req: GenReq, tries = 3,
+): Promise<Awaited<ReturnType<InstanceType<typeof GoogleGenAI>['models']['generateContent']>>> {
+  let last: any;
+  for (let attempt = 0; attempt < tries; attempt++) {
+    try {
+      return await ai.models.generateContent(req);
+    } catch (e: any) {
+      last = e;
+      const msg = `${e?.message || ''} ${e?.cause?.message || ''}`;
+      if (attempt === tries - 1 || !AI_TRANSIENT.test(msg)) throw e;
+      const wait = 1500 * 2 ** attempt;
+      appendLog(`[ai] ${req.model} transient failure (${msg.trim().slice(0, 120)}) — retry ${attempt + 1}/${tries - 1} in ${wait}ms`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw last;
+}
+
+// Turn a Gemini exception into something an engineer can act on, instead of
+// leaking a raw JSON envelope into the summary panel.
+function aiErrorText(e: any): string {
+  const msg = `${e?.message || ''} ${e?.cause?.message || ''}`;
+  if (/Deadline expired|deadline exceeded|\b503\b|UNAVAILABLE|overloaded/i.test(msg))
+    return 'Gemini is overloaded right now (timed out after 3 tries). Wait a moment and hit Summarize again — nothing was lost.';
+  if (/\b429\b|RESOURCE_EXHAUSTED|quota/i.test(msg))
+    return 'Gemini quota/rate limit hit. Wait a minute, or switch the model in Settings → AI model.';
+  if (/API key|\b401\b|\b403\b|PERMISSION_DENIED/i.test(msg))
+    return 'Gemini rejected the API key — check it in Settings.';
+  return 'Gemini error: ' + (e?.message || String(e)) + (e?.cause?.message ? ` (${e.cause.message})` : '');
 }
 
 // One brain, two engines. The SMART model (Ask Vector chat, email summaries, inbox
@@ -851,7 +1086,8 @@ function fentonKnowledgeBlock(limit = 30): string {
   try {
     const fen = queryAll(
       `SELECT received, topic, question, answer FROM fenton_kb
-        WHERE answer IS NOT NULL AND answer != '' ORDER BY received DESC LIMIT ?`, [limit]);
+        WHERE answer IS NOT NULL AND answer != '' AND COALESCE(skipped, 0) = 0
+        ORDER BY received DESC LIMIT ?`, [limit]);
     if (!fen.length) return '';
     return [
       "Mark Fenton EL knowledge base (his distilled guidance, newest first — cite the date when you use one):",
@@ -1004,7 +1240,7 @@ async function answerMeta(
       '1) "title": a short, specific, human title for what this answer/thread is ABOUT — used to name an exported file. Describe the SUBJECT, never the user\'s phrasing or the action. E.g. "Eaton V-CG-SLU 490 Alternatives", "PMO Raising Walkthrough", "FedAuth Reconnect Fix", "4kVA Quote Search". 3-7 words, Title Case, no dates, no file extension, no quotes, no "Ask Vector".\n' +
       '2) "actions": the 2-4 most useful NEXT ACTIONS the user may want next — creative, specific to THIS conversation, short imperative offers the assistant will carry out if clicked (e.g. put the options in a comparison table; draft an email to the customer; price the alternatives; pull a datasheet; list phase-out replacements; explain the differences). Each 3-7 words, imperative, no trailing punctuation, no numbering, no quotes. [] if none fit.\n\n' +
       `Conversation:\n${convo}\n\nReturn ONLY a JSON object: {"title": "...", "actions": ["...", "..."]}.`;
-    const r = await ai.models.generateContent({
+    const r = await generateWithRetry(ai, {
       model: AI_MODEL_FAST,
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config: { maxOutputTokens: 300, temperature: 0.6, thinkingConfig: { thinkingBudget: 0 } },
@@ -1125,7 +1361,7 @@ async function chatAnswer(
   turns.push({ role: 'user', parts: [{ text: query }] });
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(ai, {
       model: smartModel(),
       contents: turns,
       // Thinking models draw reasoning tokens from maxOutputTokens — keep it generous so
@@ -1498,7 +1734,10 @@ async function startServer() {
   // otherwise anyone can drive them with curl against the sidecar port.
   if (isSidecar) {
     const SHIP_BLOCKED = [
-      '/api/ai', '/api/search', '/api/schematics', '/api/pmo',
+      // /api/quote-ask is the one the Ask Vector tab actually sends on — blocking
+      // /api/ai alone left the whole brain reachable with one curl.
+      '/api/ai', '/api/ai-models', '/api/quote-ask',
+      '/api/search', '/api/schematics', '/api/pmo',
       '/api/docs', '/api/docs-xlsx',
       '/api/run/cbu', '/api/run/commission', '/api/run/pmo',
       '/api/outlook/summarize', '/api/outlook/draft-reply', '/api/outlook/chat',
@@ -1539,7 +1778,7 @@ async function startServer() {
   // client supplies its own); empty body clears them.
   app.post('/api/session/cookies', (req, res) => {
     const sid = currentSid();
-    if (!sid) { res.status(400).json({ error: 'no session' }); return; }
+    if (!sid) { res.status(400).json({ error: 'no active session — restart Vector' }); return; }
     const { fed, rt } = req.body || {};
     if (!fed || !rt) { dropSession(sid); const st = reqCtx.getStore(); if (st) { st.cookies = null; st.owner = undefined; } res.json({ ok: true, cleared: true }); return; }
     SESSIONS.set(sid, { fed, rt, ts: Date.now() });
@@ -2412,12 +2651,12 @@ async function startServer() {
   // it and hands the row back to the scanner's own verdict.
   app.post('/api/crm/mailbox/quote/side', (req, res) => {
     const { qkey, side } = req.body as { qkey?: string; side?: string };
-    if (!qkey) { res.status(400).json({ error: 'qkey is required' }); return; }
+    if (!qkey) { res.status(400).json({ error: 'the request had no quote key' }); return; }
     const want = side === 'mine' || side === 'team' ? side : null;
     db.run('UPDATE crm_mail_quote SET override = ? WHERE ownerId = ? AND qkey = ?', [want, ownerId(), qkey]);
     saveDb();
     const row = queryAll('SELECT * FROM crm_mail_quote WHERE ownerId = ? AND qkey = ?', [ownerId(), qkey])[0] as any;
-    if (!row) { res.status(404).json({ error: 'Unknown quote' }); return; }
+    if (!row) { res.status(404).json({ error: 'that quote is not in the CRM' }); return; }
     res.json({ ok: true, quote: mailQuoteOut(row), counts: mailScanPayload().counts });
   });
 
@@ -2476,7 +2715,7 @@ async function startServer() {
   app.get('/api/crm/company/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const company = queryAll('SELECT * FROM crm_company WHERE id = ?', [id])[0];
-    if (!company) { res.status(404).json({ error: 'Account not found' }); return; }
+    if (!company) { res.status(404).json({ error: 'that account no longer exists' }); return; }
     const contacts = queryAll('SELECT * FROM crm_contact WHERE companyId = ? ORDER BY id', [id]);
     const facts    = queryAll('SELECT * FROM crm_fact WHERE companyId = ? ORDER BY id DESC', [id]);
     let quotes     = quotesForCompany(id);
@@ -2526,7 +2765,7 @@ async function startServer() {
   // POST /api/crm/company — create (no id) or update (with id).
   app.post('/api/crm/company', (req, res) => {
     const { id, name, country, tags, notes } = req.body || {};
-    if (!name || !String(name).trim()) { res.status(400).json({ error: 'Name required' }); return; }
+    if (!name || !String(name).trim()) { res.status(400).json({ error: 'an account needs a name' }); return; }
     const now = new Date().toISOString();
     if (id) {
       runWrite('UPDATE crm_company SET name=?, country=?, tags=?, notes=?, updatedAt=? WHERE id=?',
@@ -2555,8 +2794,8 @@ async function startServer() {
     const { targetId, sourceIds } = req.body || {};
     const tid = parseInt(targetId, 10);
     const sids = (Array.isArray(sourceIds) ? sourceIds : []).map((x: any) => parseInt(x, 10)).filter(s => s && s !== tid);
-    if (!tid || !sids.length) { res.status(400).json({ error: 'targetId and sourceIds required' }); return; }
-    if (!queryAll('SELECT id FROM crm_company WHERE id = ?', [tid])[0]) { res.status(404).json({ error: 'Target not found' }); return; }
+    if (!tid || !sids.length) { res.status(400).json({ error: 'pick a target account and at least one account to merge' }); return; }
+    if (!queryAll('SELECT id FROM crm_company WHERE id = ?', [tid])[0]) { res.status(404).json({ error: 'the target account no longer exists' }); return; }
     for (const sid of sids) {
       runWrite('UPDATE crm_alias   SET companyId = ? WHERE companyId = ?', [tid, sid]);
       runWrite('UPDATE crm_contact SET companyId = ? WHERE companyId = ?', [tid, sid]);
@@ -2570,7 +2809,7 @@ async function startServer() {
   // POST /api/crm/contact — create or update a contact.
   app.post('/api/crm/contact', (req, res) => {
     const { id, companyId, name, role, email, phone, notes } = req.body || {};
-    if (!companyId || !name || !String(name).trim()) { res.status(400).json({ error: 'companyId and name required' }); return; }
+    if (!companyId || !name || !String(name).trim()) { res.status(400).json({ error: 'a contact needs a name' }); return; }
     if (id) {
       runWrite('UPDATE crm_contact SET name=?, role=?, email=?, phone=?, notes=? WHERE id=?',
         [name, role ?? null, email ?? null, phone ?? null, notes ?? null, id]);
@@ -2590,7 +2829,7 @@ async function startServer() {
   // POST /api/crm/fact — add an interesting fact (source 'manual' | 'ai').
   app.post('/api/crm/fact', (req, res) => {
     const { companyId, text, source } = req.body || {};
-    if (!companyId || !text || !String(text).trim()) { res.status(400).json({ error: 'companyId and text required' }); return; }
+    if (!companyId || !text || !String(text).trim()) { res.status(400).json({ error: 'a fact needs some text' }); return; }
     const newId = runWrite('INSERT INTO crm_fact (companyId, text, source, createdAt) VALUES (?,?,?,?)',
       [companyId, text, source === 'ai' ? 'ai' : 'manual', new Date().toISOString()]);
     res.json({ id: newId });
@@ -2607,7 +2846,7 @@ async function startServer() {
   app.post('/api/crm/quote-state', (req, res) => {
     const { key, sfId, state } = req.body || {};
     const k = String(key || sfId || '');
-    if (!k) { res.status(400).json({ error: 'key required' }); return; }
+    if (!k) { res.status(400).json({ error: 'the request had no quote key' }); return; }
     const oid = ownerId();
     if (state === 'won' || state === 'lost') {
       runWrite('INSERT INTO crm_quote_state (ownerId, sfId, state, updatedAt) VALUES (?,?,?,?) ON CONFLICT(ownerId, sfId) DO UPDATE SET state=excluded.state, updatedAt=excluded.updatedAt',
@@ -2664,7 +2903,7 @@ async function startServer() {
   // never processed locally — their PDF lives only in the D&Q Store).
   app.get('/api/crm/quote/:id/pdf', async (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (!id) { res.status(400).json({ error: 'bad id' }); return; }
+    if (!id) { res.status(400).json({ error: 'that account id is not valid' }); return; }
 
     const local = findQuotePdfFile(id);
     if (local) { res.json({ url: `/api/crm/quote/${id}/file`, source: 'local', name: path.basename(local) }); return; }
@@ -2726,7 +2965,7 @@ async function startServer() {
     const file = findQuotePdfFile(parseInt(req.params.id, 10));
     if (!file) { res.status(404).json({ error: 'PDF not found on this machine.' }); return; }
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${path.basename(file)}"`);
+    res.setHeader('Content-Disposition', contentDisposition('inline', path.basename(file)));
     res.sendFile(file);
   });
 
@@ -2736,7 +2975,7 @@ async function startServer() {
   app.get('/api/crm/company/:id/insights', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const company = queryAll('SELECT * FROM crm_company WHERE id = ?', [id])[0] as any;
-    if (!company) { res.status(404).json({ error: 'Account not found' }); return; }
+    if (!company) { res.status(404).json({ error: 'that account no longer exists' }); return; }
     const ai = getGemini();
     if (!ai) { res.json({ items: [], error: 'No Gemini API key — add gemini_key in Settings' }); return; }
 
@@ -2765,7 +3004,7 @@ async function startServer() {
     ].filter(Boolean).join('\n');
 
     try {
-      const r = await ai.models.generateContent({
+      const r = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text:
           `You are a sales-ops analyst for an Eaton quote engineer. Below is the run history for ONE account `
@@ -2798,7 +3037,7 @@ async function startServer() {
   app.get('/api/crm/company/:id/docs', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     const company = queryAll('SELECT * FROM crm_company WHERE id = ?', [id])[0] as any;
-    if (!company) { res.status(404).json({ error: 'Account not found' }); return; }
+    if (!company) { res.status(404).json({ error: 'that account no longer exists' }); return; }
     const cookies = getSpCookies();
     if (!cookies) { res.json({ results: [], error: 'Not connected — click "Connect to JOE" first.' }); return; }
     const cfg = loadPyCfg();
@@ -2830,7 +3069,7 @@ async function startServer() {
     const accountList = accounts.map(a => a.name).slice(0, 120).join(' | ');
     let parsed: any = null;
     try {
-      const r = await ai.models.generateContent({
+      const r = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text:
           `Convert the user's instruction into ONE CRM action for an Eaton account manager.\n`
@@ -2912,7 +3151,7 @@ async function startServer() {
 
   app.post('/api/crm/command', async (req, res) => {
     const { query } = req.body || {};
-    if (!query?.trim()) { res.status(400).json({ error: 'query required' }); return; }
+    if (!query?.trim()) { res.status(400).json({ error: 'type something to search for' }); return; }
     res.json(await runCrmCommand(query));
   });
 
@@ -3092,13 +3331,24 @@ async function startServer() {
   app.post('/api/config', (req, res) => {
     try {
       const current  = loadPyCfg() as any;
-      const incoming = req.body as any;
-      // Preserve existing gemini_key if client sends empty/absent value
-      if (!incoming.gemini_key) incoming.gemini_key = current.gemini_key || '';
-      const beforeKey = String(current.gemini_key || '');
+      const body     = (req.body || {}) as Record<string, unknown>;
+      // Take only the keys the app owns; anything else the caller sent is dropped
+      // rather than merged into the saved file.
+      const incoming: Record<string, unknown> = {};
+      for (const k of CONFIG_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(body, k)) incoming[k] = body[k];
+      }
+      // The key is stored encrypted (AES-256-GCM, the same envelope as the JOE
+      // cookies), so compare plaintext to plaintext — ciphertext carries a random
+      // IV and would look changed on every save.
+      const beforeKey = readSecret(String(current.gemini_key || ''));
+      const sentKey   = String(incoming.gemini_key || '').trim();
+      const nextKey   = sentKey || beforeKey;   // blank from the client = keep what's stored
+      incoming.gemini_key = nextKey ? encSecret(nextKey) : '';
+
       const nextCfg = { ...current, ...incoming };
-      writeFileSync(APP_CFG_PATH, JSON.stringify(nextCfg, null, 2));
-      if (String(nextCfg.gemini_key || '') !== beforeKey) {
+      writeFileAtomic(APP_CFG_PATH, JSON.stringify(nextCfg, null, 2));
+      if (nextKey !== beforeKey) {
         _gemini = null;
         _geminiKey = '';
       }
@@ -3111,7 +3361,7 @@ async function startServer() {
   // configured key and returns only chat-capable models (generateContent), so the
   // list is authoritative for THIS key — no guessing which gemini-3.x ids exist.
   app.get('/api/ai-models', async (_req, res) => {
-    const key = String((loadPyCfg() as any).gemini_key || process.env.GEMINI_API_KEY || '').trim();
+    const key = geminiKey();
     if (!key) { res.json({ models: [], current: smartModel(), fallback: AI_MODEL_FALLBACK, error: 'No Gemini API key — save your key above first.' }); return; }
     try {
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}&pageSize=1000`);
@@ -3177,7 +3427,10 @@ async function startServer() {
         }
       } catch (e: any) { spBody = e.message; }
     }
-    res.json({ hasCookies, fedLen: cookies?.fed?.length, rtLen: cookies?.rt?.length, spStatus, spBody, userName });
+    res.json({ hasCookies, fedLen: cookies?.fed?.length, rtLen: cookies?.rt?.length, spStatus, spBody, userName,
+               // Errors that were caught and hidden since startup. An empty list is
+               // the healthy case; a climbing count is where to look first.
+               swallowed: swallowReport() });
   });
 
   // ── Current user from SharePoint ──────────────────────────────────────────
@@ -3222,7 +3475,7 @@ async function startServer() {
   app.get('/api/debug/fields', async (_req, res) => {
     const cfg     = loadPyCfg();
     const cookies = getSpCookies();
-    if (!cookies) { res.json({ error: 'not connected' }); return; }
+    if (!cookies) { res.json({ error: 'not connected to JOE — click Connect to JOE first' }); return; }
     const cookieStr = `FedAuth=${cookies.fed}; rtFa=${cookies.rt}`;
     const r = await spGet(`${cfg.sp_list}/_api/web/lists/getbytitle('Quotations%20List')/items?$top=1`, cookieStr);
     if (r.ok) {
@@ -3267,7 +3520,7 @@ async function startServer() {
         res.on('data', d => { b += d; });
         res.on('end', () => resolve({ ok: (res.statusCode ?? 0) < 300, status: res.statusCode ?? 0, body: b }));
       });
-      req.on('error', () => resolve({ ok: false, status: 0, body: '' }));
+      req.on('error', e => { swallow('graphPost', e); resolve({ ok: false, status: 0, body: '' }); });
       req.write(body);
       req.end();
     });
@@ -3276,7 +3529,7 @@ async function startServer() {
   // ── Copilot / AI Search ────────────────────────────────────────────────────
   app.post('/api/copilot', async (req, res) => {
     const { query } = req.body as { query: string };
-    if (!query?.trim()) { res.json({ answer: null, error: 'No query' }); return; }
+    if (!query?.trim()) { res.json({ answer: null, error: 'no question was sent' }); return; }
 
     const token = getGraphToken();
     const q     = query.trim();
@@ -3428,7 +3681,7 @@ async function startServer() {
       query: string;
       history?: Array<{ role: string; text: string }>;
     };
-    if (!query?.trim()) { res.json({ answer: null, error: 'No query' }); return; }
+    if (!query?.trim()) { res.json({ answer: null, error: 'no question was sent' }); return; }
     res.json(await chatAnswer(query, history));
   });
 
@@ -3449,7 +3702,7 @@ async function startServer() {
   function runExporter(res: Response, scriptName: string, fmt: string,
                        job: Record<string, unknown>, filename: string, timeoutMs = 60_000) {
     const script = pyFile(scriptName);
-    if (!existsSync(script)) { res.status(500).json({ error: 'Exporter script missing' }); return; }
+    if (!existsSync(script)) { res.status(500).json({ error: 'export_doc.py is missing from this install' }); return; }
 
     const tmpDir  = path.join(os.tmpdir(), `export_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
     try { mkdirSync(tmpDir, { recursive: true }); } catch {}
@@ -3484,7 +3737,7 @@ async function startServer() {
         const buf  = readFileSync(outPath);
         const safe = String(filename || 'vector-export').replace(/[^\w.-]+/g, '_').slice(0, 80) || 'vector-export';
         res.setHeader('Content-Type', EXPORT_MIME[fmt]);
-        res.setHeader('Content-Disposition', `attachment; filename="${safe}.${fmt}"`);
+        res.setHeader('Content-Disposition', contentDisposition('attachment', `${safe}.${fmt}`));
         res.end(buf);
       } catch (e: any) {
         if (!res.headersSent) res.status(500).json({ error: e.message });
@@ -3498,7 +3751,7 @@ async function startServer() {
       format?: string; content?: string; title?: string; filename?: string;
     };
     const fmt = String(format || '').toLowerCase();
-    if (!EXPORT_MIME[fmt]) { res.status(400).json({ error: 'Unsupported server export format' }); return; }
+    if (!EXPORT_MIME[fmt]) { res.status(400).json({ error: 'that export format is not supported' }); return; }
     runExporter(res, 'export_doc.py', fmt,
       { title: title || '', content: content || '' }, String(filename || 'vector-export'), 30_000);
   });
@@ -3557,13 +3810,29 @@ async function startServer() {
   // `onProgress` receives each stderr line as it arrives — the long sweeps
   // (scan-jobs, scan-crm-quotes) report the folder they are on that way, which is
   // the only signal a caller has during a multi-minute walk of the mailbox.
-  async function runOutlookPy(args: string[], onProgress?: (line: string) => void): Promise<any> {
+  // `stdinPayload` is for anything that must NOT appear in the child's command
+  // line. On Windows any process running as this user can read another process's
+  // arguments, so a password passed as --body is readable machine-wide for as long
+  // as the child lives; sent this way it stays in the pipe.
+  async function runOutlookPy(
+    args: string[],
+    onProgress?: (line: string) => void,
+    stdinPayload?: string,
+  ): Promise<any> {
     return new Promise((resolve, reject) => {
       const script = pyFile('outlook_reader.py');
       if (!existsSync(script)) { reject(new Error('outlook_reader.py not found')); return; }
       const [cmd, base] = pyArgs(script);
       const proc = spawn(cmd, [...base, '--backend', outlookBackend, ...args],
-        { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+        { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
+                 // Lets any action re-read the mail index — used to re-find a
+                 // message whose indexed EntryID went stale after a move.
+                 MAGIC_MAIL_INDEX: path.join(DATA_DIR, 'mail_index.db') } });
+      // Always close stdin: a reader waiting on EOF would otherwise hang forever.
+      try {
+        if (stdinPayload) proc.stdin.write(stdinPayload);
+        proc.stdin.end();
+      } catch { /* child already gone; 'error'/'close' below reports it */ }
       let out = '', err = '', tail = '';
       proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
       proc.stderr.on('data', (d: Buffer) => {
@@ -3577,6 +3846,8 @@ async function startServer() {
       });
       proc.on('error', (e: Error) => reject(e));
       proc.on('close', () => {
+        // Surface the reader's own diagnostics (stale-EntryID recovery, etc.)
+        for (const l of err.split(/\r?\n/)) if (l.startsWith('[outlook]')) console.log(l);
         try { resolve(JSON.parse(out.trim())); }
         catch { reject(new Error(err.trim() || out.trim() || 'No output')); }
       });
@@ -3635,7 +3906,7 @@ async function startServer() {
     try {
       const entryId = String(req.query.entryId || '');
       const index   = parseInt(String(req.query.index || '0'), 10);
-      if (!entryId || !index) { res.status(400).json({ error: 'entryId and index required' }); return; }
+      if (!entryId || !index) { res.status(400).json({ error: 'the request did not say which attachment' }); return; }
       const tmpDir = path.join(os.tmpdir(), 'vector_overlay_att');
       const att = await runOutlookPy(['--action', 'get-attachment', '--id', entryId, '--index', String(index), '--dest', tmpDir]);
       if (att.error || !att.path || !existsSync(att.path)) {
@@ -3652,7 +3923,7 @@ async function startServer() {
         ext === '.bmp'  ? 'image/bmp'  :
                           'application/octet-stream';
       res.setHeader('Content-Type', mime);
-      res.setHeader('Content-Disposition', `inline; filename="${path.basename(att.path)}"`);
+      res.setHeader('Content-Disposition', contentDisposition('inline', path.basename(att.path)));
       const buf = readFileSync(att.path);
       res.send(buf);
       try { unlinkSync(att.path); } catch {}
@@ -3666,7 +3937,11 @@ async function startServer() {
     const { email, password } = req.body as { email: string; password: string };
     if (!email || !password) { res.json({ ok: false, error: 'Email and password required' }); return; }
     try {
-      const r = await runOutlookPy(['--action', 'imap-config', '--body', JSON.stringify({ email, password })]);
+      // Over stdin, never --body: command lines are readable by other processes.
+      const r = await runOutlookPy(
+        ['--action', 'imap-config', '--body-stdin', '1'], undefined,
+        JSON.stringify({ email, password }),
+      );
       if (r.ok) outlookBackend = 'imap';
       res.json(r);
     } catch (e: any) { res.json({ ok: false, error: e.message }); }
@@ -3675,7 +3950,7 @@ async function startServer() {
   // Graph auth: opens browser for interactive Microsoft 365 sign-in
   app.post('/api/outlook/graph-connect', (_req, res) => {
     const script = pyFile('outlook_reader.py');
-    if (!existsSync(script)) { res.json({ ok: false, error: 'outlook_reader.py not found' }); return; }
+    if (!existsSync(script)) { res.json({ ok: false, error: 'outlook_reader.py is missing from this install' }); return; }
     const [cmd, base] = pyArgs(script);
     const proc = spawn(cmd, [...base, '--backend', 'graph', '--action', 'graph-connect'],
       { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
@@ -3697,22 +3972,260 @@ async function startServer() {
     catch (e: any) { res.json({ mailboxes: [], error: e.message }); }
   });
 
+  // The Inbox pane silently refreshes every 30s. Outlook COM serialises, so when
+  // anything slow is running (an index sync, a search) those refreshes used to
+  // stack up as python processes all waiting on the same Outlook — 17 of them was
+  // an observed steady state. Identical in-flight fetches now share one process.
+  const emailsInFlight = new Map<string, Promise<any>>();
+
   app.get('/api/outlook/emails', async (req, res) => {
     const storeId = String(req.query.storeId || 'default');
     const limit   = String(Math.min(500, parseInt(String(req.query.limit || '30'), 10) || 30));
     const unread  = String(req.query.unread) === 'true' ? '1' : '0';
-    try { res.json(await runOutlookPy(['--action', 'emails', '--store', storeId, '--limit', limit, '--unread', unread])); }
+    const key     = `${storeId}:${limit}:${unread}`;
+    try {
+      let pending = emailsInFlight.get(key);
+      if (!pending) {
+        pending = runOutlookPy(['--action', 'emails', '--store', storeId, '--limit', limit, '--unread', unread])
+          .finally(() => emailsInFlight.delete(key));
+        emailsInFlight.set(key, pending);
+      }
+      res.json(await pending);
+    }
     catch (e: any) { res.json({ emails: [], error: e.message }); }
   });
 
+  // ── Mail search over the local index ──────────────────────────────────────
+  // Scope is a hard allowlist (UKQuoteFactoryEL → Inbox + "Completed by Laith",
+  // see SEARCH_SCOPE in outlook_reader.py), and those ~2.1k messages are mirrored
+  // into SQLite. Reading a message through Outlook COM costs ~64 ms, so a live
+  // search re-reads minutes' worth of mail every time; against the index the same
+  // query is a millisecond LIKE. `--source auto` uses the index when it exists and
+  // falls back to the live MAPI sweep while it is still being built.
+  const MAIL_INDEX = path.join(DATA_DIR, 'mail_index.db');
+  let indexSyncing: Promise<any> | null = null;
+
+  // Reading the index from node (node:sqlite, built in since 22.5) keeps a search
+  // at ~30 ms. Going through python instead costs ~1.6 s of interpreter startup
+  // per keystroke-triggered query, which is most of what "slow" felt like.
+  let SqliteDb: any = null;
+  try { SqliteDb = createRequire(import.meta.url)('node:sqlite').DatabaseSync; }
+  catch { /* older runtime — python does the reading instead */ }
+
+  // "quoted phrases" stay whole; every term must match. Mirrors search_tokens().
+  function searchTerms(q: string): string[] {
+    const out: string[] = [];
+    for (const m of q.matchAll(/"([^"]+)"|(\S+)/g)) {
+      const t = (m[1] || m[2] || '').trim();
+      if (t) out.push(t);
+    }
+    return out;
+  }
+  // % and _ are LIKE wildcards; a literal one in a search term must not widen it.
+  const likeParam = (t: string) =>
+    '%' + t.toLowerCase().replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_') + '%';
+
+  // How a term has to sit in the text. LIKE '%term%' is always a substring, so
+  // "gate" matches "delegate"; 'word' and 'start' narrow that. The boundary is
+  // deliberately not \b — Eaton joins words with underscores and \w counts `_`
+  // as a word character, so \bquote\b never fires inside EL_quote_2026_R2.
+  // Mirrors MATCH_MODES / term_pattern() in outlook_reader.py.
+  type MatchMode = 'part' | 'word' | 'start';
+  const MATCH_MODES: MatchMode[] = ['part', 'word', 'start'];
+  const WORD_CHAR = '[A-Za-z0-9]';
+  const rxEscape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  function termRegex(term: string, mode: MatchMode): RegExp {
+    const esc = rxEscape(term);
+    if (mode === 'word')  return new RegExp(`(?<!${WORD_CHAR})${esc}(?!${WORD_CHAR})`, 'i');
+    if (mode === 'start') return new RegExp(`(?<!${WORD_CHAR})${esc}`, 'i');
+    return new RegExp(esc, 'i');
+  }
+  const matchesMode = (text: string, rx: RegExp[]) => rx.every(r => r.test(text || ''));
+
+  // A narrowing mode cannot be counted in SQL, so it post-filters LIKE
+  // candidates; this caps what a query like "a" costs. Mirrors INDEX_SCAN_CAP.
+  const INDEX_SCAN_CAP = 4000;
+  const SNIPPET_PAD = 55;
+  const SNIPPET_MAX = 3;
+
+  // Where each term was actually found. A row only ever shows sender, subject and
+  // the first 300 body characters, so a hit in the recipients, an attachment name
+  // or 20 kB into the body used to arrive with nothing highlighted — the search
+  // looked broken while being right. Mirrors match_snippets().
+  function matchSnippets(fields: [string, string][], rx: RegExp[]) {
+    const out: { field: string; text: string }[] = [];
+    const seen = new Set<string>();
+    for (const [label, text] of fields) {
+      if (!text) continue;
+      for (const r of rx) {
+        const m = r.exec(text);
+        if (!m) continue;
+        const a = Math.max(0, m.index - SNIPPET_PAD);
+        const b = Math.min(text.length, m.index + m[0].length + SNIPPET_PAD);
+        let snip = text.slice(a, b).replace(/\s+/g, ' ').trim();
+        if (a > 0) snip = '…' + snip;
+        if (b < text.length) snip = snip + '…';
+        const key = label + '\u0000' + snip.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ field: label, text: snip });
+        if (out.length >= SNIPPET_MAX) return out;
+      }
+    }
+    return out;
+  }
+
+  function searchMailIndex(q: string, limit: number, fields: string, mode: MatchMode): any | null {
+    if (!SqliteDb || !existsSync(MAIL_INDEX)) return null;
+    const terms = searchTerms(q);
+    if (!terms.length) return null;
+    let db: any = null;
+    try {
+      db = new SqliteDb(MAIL_INDEX);
+      const indexTotal = db.prepare('SELECT COUNT(*) AS c FROM mail').get().c as number;
+      if (!indexTotal) return null;
+      const metaOnly = fields === 'meta';
+      const col    = metaOnly ? 'meta_blob' : 'blob';
+      const where  = terms.map(() => `${col} LIKE ? ESCAPE '\\'`).join(' AND ');
+      const params = terms.map(likeParam);
+      const rx     = terms.map(t => termRegex(t, mode));
+      // body_text arrived with the match-snippet work; an index written before it
+      // has no such column, and reading it would throw instead of degrading.
+      const hasBodyText = (db.prepare('PRAGMA table_info(mail)').all() as any[])
+        .some(c => c.name === 'body_text');
+      const sql = 'SELECT entry_id, store, store_id, folder, subject, sender, sender_email, received,' +
+        ' body_preview, atts, unread, has_pdf, recipients, meta_blob, blob' +
+        (hasBodyText ? ', body_text' : ', NULL AS body_text') +
+        ` FROM mail WHERE ${where} ORDER BY stamp DESC LIMIT ?`;
+      let total: number;
+      let rows: any[];
+      let truncated = false;
+      if (mode === 'part') {
+        // LIKE already IS the answer, so the count stays one cheap query.
+        total = db.prepare(`SELECT COUNT(*) AS c FROM mail WHERE ${where}`).get(...params).c as number;
+        rows  = db.prepare(sql).all(...params, limit) as any[];
+      } else {
+        const cand = db.prepare(sql).all(...params, INDEX_SCAN_CAP) as any[];
+        truncated  = cand.length >= INDEX_SCAN_CAP;
+        const kept = cand.filter(r => matchesMode(metaOnly ? r.meta_blob : r.blob, rx));
+        total = kept.length;
+        rows  = kept.slice(0, limit);
+      }
+      const last = db.prepare("SELECT v FROM meta WHERE k = 'last_sync'").get() as any;
+      return {
+        emails: rows.map(r => {
+          const atts = (() => { try { return JSON.parse(r.atts || '[]'); } catch { return []; } })();
+          // Attribute the hit to a real field rather than to the search blob, so
+          // the UI can say "found in Attachments" and quote the line it hit.
+          const snipFields: [string, string][] = [
+            ['Subject', r.subject || ''], ['From', r.sender || ''], ['Email', r.sender_email || ''],
+            ['To/CC', r.recipients || ''],
+            ['Attachments', atts.map((a: any) => a?.name || '').join(' ')],
+          ];
+          if (!metaOnly) {
+            // body_text is NULL on rows written before the column existed; the
+            // lowercase blob minus its meta prefix is the same text, flattened.
+            const body = r.body_text || String(r.blob || '').slice(String(r.meta_blob || '').length + 1);
+            snipFields.push(['Body', body]);
+          }
+          return {
+            entryId: r.entry_id, store: r.store, storeId: r.store_id, folder: r.folder,
+            subject: r.subject, sender: r.sender, senderEmail: r.sender_email, received: r.received,
+            bodyPreview: r.body_preview,
+            attachments: atts,
+            unread: !!r.unread, hasPdf: !!r.has_pdf,
+            matches: matchSnippets(snipFields, rx),
+          };
+        }),
+        total, source: 'index', indexTotal, lastSync: last?.v ?? null,
+        truncated, degraded: 0, query: q, mode,
+      };
+    } catch (e: any) {
+      swallow('mailIndex.read', e);
+      console.warn('[mail-index] read failed:', e.message);
+      return null;
+    } finally {
+      try { db?.close(); } catch (e) { swallow('mailIndex.close', e); }
+    }
+  }
+
+  function syncMailIndex(full = false): Promise<any> {
+    // One sync at a time — Outlook COM serialises anyway, and overlapping runs
+    // just pile up python processes waiting on it.
+    if (indexSyncing) return indexSyncing;
+    const args = ['--action', 'index', '--dest', MAIL_INDEX, '--timeout', '900', '--backend', 'win32'];
+    if (full) args.push('--full', '1');
+    indexSyncing = runOutlookPy(args)
+      .then(r => { if (r?.error) console.warn('[mail-index]', r.error); return r; })
+      .catch(e => { console.warn('[mail-index] sync failed:', e.message); return { ok: false, error: e.message }; })
+      .finally(() => { indexSyncing = null; });
+    return indexSyncing;
+  }
+
+  app.get('/api/outlook/search', async (req, res) => {
+    const q = String(req.query.q || '').trim();
+    if (!q) { res.json({ emails: [], error: 'type something to search for' }); return; }
+    const limit   = String(Math.min(500, parseInt(String(req.query.limit || '200'), 10) || 200));
+    const fields  = req.query.fields === 'meta' ? 'meta' : 'all';
+    const since   = String(req.query.since || '');
+    const source  = ['index', 'live', 'auto'].includes(String(req.query.source)) ? String(req.query.source) : 'auto';
+    const mode    = (MATCH_MODES as string[]).includes(String(req.query.mode))
+      ? String(req.query.mode) as MatchMode : 'part';
+    const timeout = String(Math.min(280, parseInt(String(req.query.timeout || '200'), 10) || 200));
+    if (source !== 'live') {
+      const hit = searchMailIndex(q, Number(limit), fields, mode);
+      if (hit) { res.json(hit); return; }
+      if (source === 'index') {
+        res.json({ emails: [], total: 0, source: 'index',
+                   error: 'The local mail index has not been built yet' });
+        if (!indexSyncing) void syncMailIndex();
+        return;
+      }
+    }
+    try {
+      const r = await runOutlookPy([
+        '--action', 'search', '--query', q, '--limit', limit, '--fields', fields,
+        '--since', since, '--source', source, '--dest', MAIL_INDEX, '--mode', mode,
+        '--attachments', '1', '--timeout', timeout, '--backend', 'win32',
+      ]);
+      // A live answer means the index was cold — start building it so the next
+      // search is instant.
+      if (r && r.source !== 'index' && !indexSyncing) void syncMailIndex();
+      res.json(r);
+    } catch (e: any) { res.json({ emails: [], error: e.message }); }
+  });
+
+  app.get('/api/outlook/index/status', async (_req, res) => {
+    try {
+      const r = await runOutlookPy(['--action', 'index-status', '--dest', MAIL_INDEX]);
+      res.json({ ...r, syncing: !!indexSyncing });
+    } catch (e: any) { res.json({ built: false, total: 0, folders: [], error: e.message }); }
+  });
+
+  app.post('/api/outlook/index/sync', async (req, res) => {
+    const full = !!(req.body || {}).full;
+    try { res.json(await syncMailIndex(full)); }
+    catch (e: any) { res.json({ ok: false, error: e.message }); }
+  });
+
+  // Keep the index warm: a first pass shortly after boot, then top-ups. An
+  // incremental run walks off the end of the new mail in seconds.
+  setTimeout(() => { void syncMailIndex(); }, 20_000);
+  setInterval(() => { void syncMailIndex(); }, 10 * 60_000);
+
   app.get('/api/outlook/email/:id', async (req, res) => {
-    try { res.json(await runOutlookPy(['--action', 'email', '--id', req.params.id])); }
+    // `store` comes from the search hit that was clicked. Without it Outlook
+    // resolves the EntryID against the DEFAULT store only, which fails for any
+    // message living in a shared mailbox.
+    const store = String(req.query.store || 'default');
+    console.log(`[outlook] open id=${req.params.id.slice(0, 40)}… store=${store.slice(0, 24)}…`);
+    try { res.json(await runOutlookPy(['--action', 'email', '--id', req.params.id, '--store', store])); }
     catch (e: any) { res.json({ error: e.message }); }
   });
 
   app.post('/api/outlook/save-attachment', async (req, res) => {
     const { entryId } = req.body as { entryId: string };
-    if (!entryId) { res.json({ error: 'entryId required' }); return; }
+    if (!entryId) { res.json({ error: 'the request did not say which email' }); return; }
     const dest = path.join(loadPyCfg().base, 'PDF Quotes');
     try { res.json(await runOutlookPy(['--action', 'save-attachment', '--id', entryId, '--dest', dest])); }
     catch (e: any) { res.json({ error: e.message, saved: [] }); }
@@ -3938,7 +4451,7 @@ async function startServer() {
       + 'Return ONLY a JSON array: [{"i":<number>,"category":"<exact category>","summary":"<short line>"}]';
 
     try {
-      const r = await ai.models.generateContent({
+      const r = await generateWithRetry(ai, {
         model: AI_MODEL_FAST,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { maxOutputTokens: 4000, temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
@@ -4390,7 +4903,7 @@ async function startServer() {
       + 'Return ONLY a JSON array: [{"i":<number>,"bucket":"<bucket>","title":"...","action":"...","blocker":"...","who":"...","urgency":"today|soon|later"}]';
 
     try {
-      const r = await ai.models.generateContent({
+      const r = await generateWithRetry(ai, {
         model: AI_MODEL_FAST,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { maxOutputTokens: 6000, temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
@@ -4583,7 +5096,7 @@ async function startServer() {
     try {
       if (b.id) {
         const prev = queryAll(`SELECT * FROM todo WHERE id = ?`, [b.id])[0];
-        if (!prev) { res.status(404).json({ error: 'No such to-do' }); return; }
+        if (!prev) { res.status(404).json({ error: 'that to-do no longer exists' }); return; }
         const pick = (k: string, fallback: any) => (b[k] === undefined ? fallback : b[k]);
         const status = String(pick('status', prev.status));
         db.run(
@@ -4650,7 +5163,7 @@ async function startServer() {
   // sends. Attachments are pulled live off the source email by index.
   app.post('/api/todo/:id/send', async (req, res) => {
     const row = queryAll(`SELECT * FROM todo WHERE id = ?`, [Number(req.params.id)])[0];
-    if (!row) { res.status(404).json({ error: 'No such to-do' }); return; }
+    if (!row) { res.status(404).json({ error: 'that to-do no longer exists' }); return; }
     const item  = todoRow(row);
     const draft = !!(req.body as any)?.draft;
 
@@ -4764,7 +5277,7 @@ async function startServer() {
   // POST /api/todo/draft { id } — write the delegation/chase message for an item.
   app.post('/api/todo/draft', async (req, res) => {
     const row = queryAll(`SELECT * FROM todo WHERE id = ?`, [Number((req.body as any)?.id)])[0];
-    if (!row) { res.status(404).json({ error: 'No such to-do' }); return; }
+    if (!row) { res.status(404).json({ error: 'that to-do no longer exists' }); return; }
     const item = todoRow(row);
     const ai   = getGemini();
     if (!ai) { res.json({ error: 'No Gemini API key — add it in Settings' }); return; }
@@ -4795,7 +5308,7 @@ async function startServer() {
     ].filter(Boolean).join('\n');
 
     try {
-      const r = await ai.models.generateContent({
+      const r = await generateWithRetry(ai, {
         model: smartModel(),
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         // The 2.5 models spend thinking tokens out of this same budget — a tight
@@ -4803,7 +5316,7 @@ async function startServer() {
         config: { maxOutputTokens: 4096, temperature: 0.3 },
       });
       const body = (r.text || '').trim();
-      if (!body) { res.json({ error: 'Empty draft returned' }); return; }
+      if (!body) { res.json({ error: 'the AI returned an empty draft' }); return; }
       const subject = item.draftSubject
         || (item.subject ? `FW: ${item.subject}` : item.title).slice(0, 200);
       const now = new Date().toISOString();
@@ -4856,7 +5369,7 @@ async function startServer() {
         '.tiff': 'image/tiff', '.tif': 'image/tiff',
       };
       res.setHeader('Content-Type', mime[ext] || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `inline; filename="${r.name.replace(/"/g, '')}"`);
+      res.setHeader('Content-Disposition', contentDisposition('inline', r.name));
       res.setHeader('Cache-Control', 'private, max-age=300');
       createReadStream(r.path).pipe(res);
     } catch (e: any) { res.status(500).send(e.message); }
@@ -4866,10 +5379,10 @@ async function startServer() {
   app.post('/api/outlook/attachment-price', async (req, res) => {
     try {
       const { entryId, index, isImage } = (req.body ?? {}) as { entryId: string; index: number; isImage?: boolean };
-      if (!entryId || !index) { res.json({ error: 'entryId and index required' }); return; }
+      if (!entryId || !index) { res.json({ error: 'the request did not say which attachment' }); return; }
       const tmpDir   = path.join(os.tmpdir(), 'vector_att');
       const pyScript = pyFile('schematic_reader.py');
-      if (!existsSync(pyScript)) { res.json({ error: 'schematic_reader.py not found' }); return; }
+      if (!existsSync(pyScript)) { res.json({ error: 'schematic_reader.py is missing from this install' }); return; }
 
       const att = await runOutlookPy(['--action', 'get-attachment', '--id', entryId, '--index', String(index), '--dest', tmpDir]);
       if (att.error || !att.path) { res.json({ error: att.error || 'Could not save attachment' }); return; }
@@ -4991,7 +5504,7 @@ async function startServer() {
 
     try {
       const imageParts = indices.length ? await attachmentParts(entryId, indices) : [];
-      const response = await ai.models.generateContent({
+      const response = await generateWithRetry(ai, {
         model: smartModel(),
         contents: [{ role: 'user', parts: [{ text: prompt }, ...imageParts] }],
         config: { systemInstruction: summarizeSystem, maxOutputTokens: 8192, temperature: 0.2 },
@@ -5005,8 +5518,8 @@ async function startServer() {
       }
       res.json({ summary, cached: false, imagesRead: indices.length });
     } catch (e: any) {
-      const detail = e.cause?.message ? ` (${e.cause.message})` : '';
-      res.json({ summary: null, error: 'Gemini error: ' + e.message + detail });
+      appendLog(`[summarize] ${e?.message || e}`);
+      res.json({ summary: null, error: aiErrorText(e) });
     }
   });
 
@@ -5053,7 +5566,7 @@ async function startServer() {
     ].join('\n');
 
     try {
-      const response = await ai.models.generateContent({
+      const response = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { maxOutputTokens: 600, temperature: 0.3 },
@@ -5067,7 +5580,7 @@ async function startServer() {
   // ── Send reply via Outlook COM ────────────────────────────────────────────
   app.post('/api/outlook/send-reply', async (req, res) => {
     const { entryId, body: replyBody } = req.body as { entryId: string; body: string };
-    if (!entryId || !replyBody) { res.json({ error: 'entryId and body required' }); return; }
+    if (!entryId || !replyBody) { res.json({ error: 'the reply had no text' }); return; }
     try { res.json(await runOutlookPy(['--action', 'send-reply', '--id', entryId, '--body', replyBody])); }
     catch (e: any) { res.json({ error: e.message }); }
   });
@@ -5078,7 +5591,7 @@ async function startServer() {
       entryId: string; subject?: string; senderEmail?: string; emailType?: string;
       draftReply?: string; finalReply?: string; feedbackType: string;
     };
-    if (!entryId || !feedbackType) { res.json({ error: 'entryId and feedbackType required' }); return; }
+    if (!entryId || !feedbackType) { res.json({ error: 'the request was missing the feedback type' }); return; }
     try {
       runWrite(
         `INSERT INTO email_feedback (timestamp, entryId, subject, senderEmail, emailType, draftReply, finalReply, feedbackType)
@@ -5123,7 +5636,7 @@ async function startServer() {
       `\nQuestion: ${question}`,
     ].filter(Boolean).join('\n');
     try {
-      const resp = await ai.models.generateContent({
+      const resp = await generateWithRetry(ai, {
         model: smartModel(),
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { tools: [{ googleSearch: {} }], maxOutputTokens: 4096, temperature: 0.3 },
@@ -5232,7 +5745,7 @@ async function startServer() {
         })),
         { role: 'user' as const, parts: [{ text: question }, ...imageParts] },
       ];
-      const response = await ai.models.generateContent({
+      const response = await generateWithRetry(ai, {
         model: smartModel(),
         contents,
         // 2.5-pro thinking tokens share the output budget in this SDK — keep headroom.
@@ -5316,7 +5829,7 @@ async function startServer() {
       elCorpus(rows),
     ].join('\n');
     try {
-      const response = await ai.models.generateContent({
+      const response = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { maxOutputTokens: 4096, temperature: 0.2 },
@@ -5350,7 +5863,7 @@ async function startServer() {
       { role: 'user' as const, parts: [{ text: question }] },
     ];
     try {
-      const response = await ai.models.generateContent({
+      const response = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents,
         config: { systemInstruction: systemCtx, maxOutputTokens: 1200, temperature: 0.3 },
@@ -5365,8 +5878,11 @@ async function startServer() {
   const FENTON_SENDER    = 'markafenton';
   const FENTON_RECIPIENTS = 'laithal-soub,ukquotefactoryel';
   const fenParseJson = (s: string, fb: any) => { try { return JSON.parse(s || ''); } catch { return fb; } };
+  // Cards for the tab and the chat corpus: admin traffic the extractor rejected
+  // stays in the table (so a refresh never re-fetches it) but never surfaces.
   const fenCards = () =>
-    queryAll('SELECT entryId, received, subject, senderEmail, body, attachments, topic, question, answer, tags, extracted FROM fenton_kb ORDER BY received DESC')
+    queryAll(`SELECT entryId, received, subject, senderEmail, body, attachments, topic, question, answer, tags, extracted, folder
+                FROM fenton_kb WHERE COALESCE(skipped, 0) = 0 ORDER BY received DESC`)
       .map(r => ({ ...r, attachments: fenParseJson(r.attachments, []), tags: fenParseJson(r.tags, []) }));
   const fenMeta = () => queryAll('SELECT lastRefreshAt FROM fenton_meta WHERE id = 1')[0] || {};
 
@@ -5389,7 +5905,13 @@ async function startServer() {
     return null;
   }
 
-  // AI-extract Q&A cards for rows that don't have one yet (one batched call).
+  // AI-extract Q&A cards for rows that don't have one yet.
+  //
+  // Chunked: the sweep now spans both mailboxes, so a first run has hundreds of
+  // emails — one prompt would blow past the output cap and lose every card in
+  // it. Each batch is written before the next runs, so a failure mid-way keeps
+  // what already succeeded and a later refresh picks up the rest.
+  const FENTON_BATCH = 20;
   async function fentonExtract(force: boolean): Promise<void> {
     const ai = getGemini();
     if (!ai) return;
@@ -5397,42 +5919,58 @@ async function startServer() {
       `SELECT entryId, received, subject, body FROM fenton_kb ${force ? '' : 'WHERE extracted = 0'} ORDER BY received DESC`
     );
     if (rows.length === 0) return;
-    const list = rows.map((r: any, i: number) =>
-      `#### idx ${i} · ${String(r.received).slice(0, 10)} · ${r.subject}\n${String(r.body || '').slice(0, 2500)}`
-    ).join('\n\n');
-    const prompt = [
-      `You are cataloguing the expertise of Mark Fenton (Senior Lighting Application Engineer, Eaton UK) from emails he sent to the EL quote team.`,
-      `For EACH email below output one JSON object with:`,
-      `- "idx": the email's idx number`,
-      `- "topic": a short title (max 8 words)`,
-      `- "question": what was asked or the situation/problem being addressed (infer from the quoted thread/subject if needed; max 30 words)`,
-      `- "answer": Mark's guidance/answer as reusable knowledge, 1-3 sentences. Capture the ACTIONABLE fact/rule, not pleasantries.`,
-      `- "tags": array of 2-4 lowercase keywords (e.g. "bidman", "loadstar", "dualguard", "pricing", "salesforce")`,
-      `If an email is an announcement rather than a Q&A, still capture topic+answer (question = the context).`,
-      `Output ONLY a JSON array of these objects, nothing else.`,
-      ``,
-      `--- EMAILS ---`,
-      list,
-    ].join('\n');
-    try {
-      const resp = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: { maxOutputTokens: 8192, temperature: 0.2, responseMimeType: 'application/json' },
-      });
-      const arr = firstJsonArray(resp.text || '');
-      if (!arr) return;
-      const now = new Date().toISOString();
-      for (const card of arr) {
-        const row = rows[card.idx];
-        if (!row) continue;
-        runWrite(
-          `UPDATE fenton_kb SET topic=?, question=?, answer=?, tags=?, extracted=1, ts=? WHERE entryId=?`,
-          [String(card.topic || ''), String(card.question || ''), String(card.answer || ''),
-           JSON.stringify(Array.isArray(card.tags) ? card.tags : []), now, row.entryId],
-        );
-      }
-    } catch { /* leave rows unextracted; a later refresh retries */ }
+
+    for (let start = 0; start < rows.length; start += FENTON_BATCH) {
+      const batch = rows.slice(start, start + FENTON_BATCH);
+      const list = batch.map((r: any, i: number) =>
+        `#### idx ${i} · ${String(r.received).slice(0, 10)} · ${r.subject}\n${String(r.body || '').slice(0, 2500)}`
+      ).join('\n\n');
+      const prompt = [
+        `You are cataloguing the ENGINEERING EXPERTISE of Mark Fenton (Senior Lighting Application Engineer, Eaton UK) from emails he sent to the EL quote team.`,
+        `The knowledge base must contain only what a colleague could REUSE later: technical judgement, product/application rules, pricing and quoting conventions, process rules.`,
+        ``,
+        `For EACH email below output one JSON object with:`,
+        `- "idx": the email's idx number`,
+        `- "keep": true only if the email carries reusable technical or expertise content; false otherwise`,
+        `- "topic": a short title (max 8 words)`,
+        `- "question": what was asked or the situation/problem being addressed (infer from the quoted thread/subject if needed; max 30 words)`,
+        `- "answer": Mark's guidance/answer as reusable knowledge, 1-3 sentences. Capture the ACTIONABLE fact/rule, not pleasantries.`,
+        `- "tags": array of 2-4 lowercase keywords (e.g. "bidman", "loadstar", "dualguard", "pricing", "salesforce")`,
+        ``,
+        `Set "keep": false (and leave the other fields empty) for pure ADMIN traffic with no expertise in it:`,
+        `out-of-office and automatic replies, holiday/cover notices, order confirmations and despatch notes,`,
+        `"thanks"/"noted"/"see attached" with no explanation, meeting invites and logistics, chasing for an update,`,
+        `and plain forwards that add no comment of Mark's own.`,
+        `A technical answer buried in an otherwise routine email still counts as keep: true.`,
+        `Output ONLY a JSON array of these objects, nothing else.`,
+        ``,
+        `--- EMAILS ---`,
+        list,
+      ].join('\n');
+      try {
+        const resp = await generateWithRetry(ai, {
+          model: 'gemini-2.5-flash',
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: { maxOutputTokens: 8192, temperature: 0.2, responseMimeType: 'application/json' },
+        });
+        const arr = firstJsonArray(resp.text || '');
+        if (!arr) continue;
+        const now = new Date().toISOString();
+        for (const card of arr) {
+          const row = batch[card.idx];
+          if (!row) continue;
+          // An email the model kept but left without an answer carries nothing
+          // to recall, so it is admin in practice — drop it too.
+          const answer = String(card.answer || '').trim();
+          const keep = card.keep !== false && !!answer;
+          runWrite(
+            `UPDATE fenton_kb SET topic=?, question=?, answer=?, tags=?, extracted=1, skipped=?, ts=? WHERE entryId=?`,
+            [String(card.topic || ''), String(card.question || ''), answer,
+             JSON.stringify(Array.isArray(card.tags) ? card.tags : []), keep ? 0 : 1, now, row.entryId],
+          );
+        }
+      } catch { /* leave this batch unextracted; a later refresh retries it */ }
+    }
   }
 
   app.get('/api/fenton/list', (_req, res) => {
@@ -5442,29 +5980,32 @@ async function startServer() {
   // Fetch Mark Fenton's recent emails → upsert → AI-extract Q&A. Shared by the
   // (now headless) refresh endpoint and the background timer below, so the Fenton
   // knowledge base stays fresh for Ask Vector even though the tab is gone.
-  async function refreshFentonKB(force: boolean): Promise<{ added: number; total: number; lastRefreshAt: string; error?: string }> {
+  async function refreshFentonKB(force: boolean): Promise<{ added: number; total: number; skipped: number; lastRefreshAt: string; error?: string }> {
     const since = (() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1);
       return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`; })();
-    const r = await runOutlookPy(['--action', 'emails-from', '--sender', FENTON_SENDER, '--recipient', FENTON_RECIPIENTS, '--since', since]);
+    const r = await runOutlookPy(['--action', 'emails-from', '--sender', FENTON_SENDER,
+      '--recipient', FENTON_RECIPIENTS, '--since', since, '--skip-auto']);
     const fetched = (r.emails || []) as any[];
     const existing = new Set(queryAll('SELECT entryId FROM fenton_kb').map((x: any) => x.entryId));
     const now = new Date().toISOString();
     let added = 0;
     for (const e of fetched) {
       if (existing.has(e.entryId)) {
-        runWrite(`UPDATE fenton_kb SET received=?, subject=?, senderEmail=?, body=?, attachments=? WHERE entryId=?`,
-          [e.received || '', e.subject || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), e.entryId]);
+        runWrite(`UPDATE fenton_kb SET received=?, subject=?, senderEmail=?, body=?, attachments=?, folder=? WHERE entryId=?`,
+          [e.received || '', e.subject || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), e.folder || '', e.entryId]);
       } else {
         runWrite(
-          `INSERT INTO fenton_kb (entryId, received, subject, senderEmail, body, attachments, topic, question, answer, tags, extracted, ts)
-           VALUES (?,?,?,?,?,?,'','','','[]',0,?)`,
-          [e.entryId, e.received || '', e.subject || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), now]);
+          `INSERT INTO fenton_kb (entryId, received, subject, senderEmail, body, attachments, folder, topic, question, answer, tags, extracted, skipped, ts)
+           VALUES (?,?,?,?,?,?,?,'','','','[]',0,0,?)`,
+          [e.entryId, e.received || '', e.subject || '', e.senderEmail || '', e.body || '',
+           JSON.stringify(e.attachments || []), e.folder || '', now]);
         added++;
       }
     }
     await fentonExtract(force);
     runWrite('INSERT OR REPLACE INTO fenton_meta (id, lastRefreshAt) VALUES (1, ?)', [now]);
-    return { added, total: fetched.length, lastRefreshAt: now, error: r.error };
+    const skipped = Number(queryAll('SELECT COUNT(*) c FROM fenton_kb WHERE skipped = 1')[0]?.c || 0);
+    return { added, total: fetched.length, skipped, lastRefreshAt: now, error: r.error };
   }
 
   app.post('/api/fenton/refresh', async (req, res) => {
@@ -5481,8 +6022,11 @@ async function startServer() {
   let _fentonRefreshing = false;
   async function maybeRefreshFenton() {
     if (_fentonRefreshing || !getSpCookies()) return;
+    // Gate matched to the 6h interval, so each tick actually refreshes and the
+    // base is never more than a working half-day behind. Incremental runs are
+    // cheap: only genuinely new emails reach the extractor.
     const last = fenMeta().lastRefreshAt as string | undefined;
-    if (last && Date.now() - new Date(last).getTime() < 12 * 3600 * 1000) return;
+    if (last && Date.now() - new Date(last).getTime() < 6 * 3600 * 1000 - 60_000) return;
     _fentonRefreshing = true;
     try { await refreshFentonKB(false); appendLog('[fenton] background KB refresh done'); }
     catch (e: any) { appendLog('[fenton] background refresh failed: ' + e.message); }
@@ -5513,7 +6057,7 @@ async function startServer() {
       { role: 'user' as const, parts: [{ text: question }] },
     ];
     try {
-      const response = await ai.models.generateContent({
+      const response = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash', contents,
         config: { systemInstruction: systemCtx, maxOutputTokens: 1200, temperature: 0.3 },
       });
@@ -5526,7 +6070,7 @@ async function startServer() {
   // ── Flag / unflag email ───────────────────────────────────────────────────
   app.post('/api/outlook/flag', async (req, res) => {
     const { entryId, flagged } = req.body as { entryId: string; flagged: boolean };
-    if (!entryId) { res.json({ error: 'entryId required' }); return; }
+    if (!entryId) { res.json({ error: 'the request did not say which email' }); return; }
     try { res.json(await runOutlookPy(['--action', 'flag', '--id', entryId, '--flagged', flagged ? '1' : '0'])); }
     catch (e: any) { res.json({ error: e.message }); }
   });
@@ -5534,7 +6078,7 @@ async function startServer() {
   // ── Mark email as unread ──────────────────────────────────────────────────
   app.post('/api/outlook/mark-unread', async (req, res) => {
     const { entryId } = req.body as { entryId: string };
-    if (!entryId) { res.json({ error: 'entryId required' }); return; }
+    if (!entryId) { res.json({ error: 'the request did not say which email' }); return; }
     try { res.json(await runOutlookPy(['--action', 'mark-unread', '--id', entryId])); }
     catch (e: any) { res.json({ error: e.message }); }
   });
@@ -5548,7 +6092,7 @@ async function startServer() {
   // ── Forward email ─────────────────────────────────────────────────────────
   app.post('/api/outlook/forward', async (req, res) => {
     const { entryId, to, body: fwdBody } = req.body as { entryId: string; to: string; body?: string };
-    if (!entryId || !to) { res.json({ error: 'entryId and to required' }); return; }
+    if (!entryId || !to) { res.json({ error: 'no forward address was given' }); return; }
     try { res.json(await runOutlookPy(['--action', 'forward', '--id', entryId, '--to', to, '--body', fwdBody || ''])); }
     catch (e: any) { res.json({ error: e.message }); }
   });
@@ -5556,7 +6100,7 @@ async function startServer() {
   // ── Open in Outlook ───────────────────────────────────────────────────────
   app.post('/api/outlook/open-in-outlook', async (req, res) => {
     const { entryId } = req.body as { entryId: string };
-    if (!entryId) { res.json({ error: 'entryId required' }); return; }
+    if (!entryId) { res.json({ error: 'the request did not say which email' }); return; }
     try { res.json(await runOutlookPy(['--action', 'open-in-outlook', '--id', entryId])); }
     catch (e: any) { res.json({ error: e.message }); }
   });
@@ -5564,7 +6108,7 @@ async function startServer() {
   // ── Categorize email ──────────────────────────────────────────────────────
   app.post('/api/outlook/categorize', async (req, res) => {
     const { entryId, category } = req.body as { entryId: string; category: string };
-    if (!entryId) { res.json({ error: 'entryId required' }); return; }
+    if (!entryId) { res.json({ error: 'the request did not say which email' }); return; }
     try { res.json(await runOutlookPy(['--action', 'categorize', '--id', entryId, '--category', category || ''])); }
     catch (e: any) { res.json({ error: e.message }); }
   });
@@ -5582,7 +6126,7 @@ async function startServer() {
     const { entryId, body: replyBody, attSources } = req.body as {
       entryId: string; body: string; attSources: Array<{ entryId: string; index: number }>;
     };
-    if (!entryId || !replyBody) { res.json({ error: 'entryId and body required' }); return; }
+    if (!entryId || !replyBody) { res.json({ error: 'the reply had no text' }); return; }
     try {
       res.json(await runOutlookPy([
         '--action', 'reply-with-attachments',
@@ -5598,7 +6142,7 @@ async function startServer() {
     const { to, subject, body: emailBody, attSources } = req.body as {
       to: string; subject: string; body?: string; attSources?: Array<{ entryId: string; index: number }>;
     };
-    if (!to || !subject) { res.json({ error: 'to and subject required' }); return; }
+    if (!to || !subject) { res.json({ error: 'fill in both To and Subject' }); return; }
     try {
       res.json(await runOutlookPy([
         '--action', 'send-new',
@@ -5618,7 +6162,7 @@ async function startServer() {
       message?: string; category?: string; page?: string; userName?: string; userEmail?: string;
     };
     const msg = String(message || '').trim();
-    if (!msg) { res.status(400).json({ error: 'message required' }); return; }
+    if (!msg) { res.status(400).json({ error: 'type your feedback first' }); return; }
 
     const ts = new Date().toISOString();
     let emailed = 0;
@@ -5701,7 +6245,7 @@ async function startServer() {
       query: string;
       history?: Array<{ role: string; text: string }>;
     };
-    if (!query?.trim()) { res.json({ answer: null, error: 'No query' }); return; }
+    if (!query?.trim()) { res.json({ answer: null, error: 'no question was sent' }); return; }
 
     const ai = getGemini();
     if (!ai) { res.json({ answer: null, error: 'No Gemini API key — add gemini_key in Settings' }); return; }
@@ -5718,7 +6262,7 @@ async function startServer() {
       .map(h => `${h.role === 'user' ? 'User' : 'Assistant'}: ${String(h.text).replace(/\s+/g, ' ').slice(0, 200)}`)
       .join('\n');
     try {
-      const cls = await ai.models.generateContent({
+      const cls = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text:
           `You route messages for an Eaton quote-automation app. The user can search their quotes `
@@ -5836,7 +6380,7 @@ async function startServer() {
         + 'The result cards are shown to the user separately, so summarise — do not list every row. '
         + 'Only if BOTH sources returned 0 matches, say nothing was found and suggest dropping a keyword or widening scope to all quotes.';
 
-      const resp = await ai.models.generateContent({
+      const resp = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text: ctx }] }],
         config: { systemInstruction: sys, maxOutputTokens: 1024, temperature: 0.3 },
@@ -5856,7 +6400,7 @@ async function startServer() {
   app.get('/api/run/connect', (req, res) => {
     const script = pyFile('refresh_cookies.py');
     if (!existsSync(script)) {
-      res.json({ ok: false, error: 'refresh_cookies.py not found' }); return;
+      res.json({ ok: false, error: 'refresh_cookies.py is missing from this install' }); return;
     }
     const [cmd, args] = pyArgs(script);
     const py = spawn(cmd, args, {
@@ -5929,6 +6473,9 @@ async function startServer() {
     const pyEnv = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
                     MAGIC_PDF_FOLDER: pdfFolder,
                     MAGIC_CSV_FOLDER: csvFolder,
+                    // REQUESTED FROM is not in any quotation PDF — the extractor
+                    // reads it off the originating mail thread in the index.
+                    MAGIC_MAIL_INDEX: MAIL_INDEX,
                     ...(salesman ? { MAGIC_INSIDE_SALES: salesman } : {}),
                     ...(division ? { MAGIC_DIVISION: division } : {}),
                     ...(lines    ? { MAGIC_DIVISION_MAP: lines } : {}),
@@ -6091,10 +6638,8 @@ async function startServer() {
     if (!entry) { res.status(404).send('File not found or expired'); return; }
     const { filePath, filename } = entry;
     if (!existsSync(filePath)) { res.status(404).send(`File missing on disk: ${filePath}`); return; }
-    const safeName = filename.replace(/[^\w\s().,-]/g, '_');
-    const encoded  = encodeURIComponent(filename);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encoded}`);
+    res.setHeader('Content-Disposition', contentDisposition('attachment', filename));
     res.setHeader('Cache-Control', 'no-store');
     // Deliberately NOT deleted here: the user may download first and only then
     // decide to file it into the PMO folder (or the other way round). The
@@ -6162,21 +6707,21 @@ async function startServer() {
     // Don't shadow the user-doc routes registered below (/api/docs/user...).
     if (req.params.id === 'user') return next();
     const doc = DOCS[req.params.id];
-    if (!doc) { res.status(404).json({ error: 'Not found' }); return; }
+    if (!doc) { res.status(404).json({ error: 'that document is not in the library' }); return; }
     const filePath = path.join(PY_DIR, 'docs', doc.file);
-    if (!existsSync(filePath)) { res.status(404).json({ error: 'File missing' }); return; }
+    if (!existsSync(filePath)) { res.status(404).json({ error: 'the file is no longer on disk' }); return; }
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${doc.name}"`);
+    res.setHeader('Content-Disposition', contentDisposition('inline', doc.name));
     createReadStream(filePath).pipe(res);
   });
 
   app.get('/api/docs-xlsx/:id', (req, res) => {
     const doc = DOCS_XLSX[req.params.id];
-    if (!doc) { res.status(404).json({ error: 'Not found' }); return; }
+    if (!doc) { res.status(404).json({ error: 'that document is not in the library' }); return; }
     const filePath = path.join(PY_DIR, 'docs', doc.file);
-    if (!existsSync(filePath)) { res.status(404).json({ error: 'File missing' }); return; }
+    if (!existsSync(filePath)) { res.status(404).json({ error: 'the file is no longer on disk' }); return; }
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${doc.name}"`);
+    res.setHeader('Content-Disposition', contentDisposition('attachment', doc.name));
     createReadStream(filePath).pipe(res);
   });
 
@@ -6208,10 +6753,10 @@ async function startServer() {
       const origName = decodeURIComponent((req.headers['x-filename'] as string) || 'document');
       const title    = decodeURIComponent((req.headers['x-title']    as string) || origName.replace(/\.[^.]+$/, ''));
       const category = decodeURIComponent((req.headers['x-category'] as string) || 'Custom');
-      const ext = (origName.match(/\.([^.]+)$/)?.[1] || 'bin').toLowerCase();
+      const ext = safeExt(origName);
       const id  = `u_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
       const body = req.body as Buffer;
-      if (!body || !body.length) { res.status(400).json({ ok: false, error: 'Empty upload' }); return; }
+      if (!body || !body.length) { res.status(400).json({ ok: false, error: 'the uploaded file was empty' }); return; }
       mkdirSync(userDocsDir, { recursive: true });
       const file = `${id}.${ext}`;
       writeFileSync(path.join(userDocsDir, file), body);
@@ -6223,12 +6768,12 @@ async function startServer() {
 
   app.get('/api/docs/user/:id', (req, res) => {
     const doc = loadUserDocs().find(d => d.id === req.params.id);
-    if (!doc) { res.status(404).json({ error: 'Not found' }); return; }
+    if (!doc) { res.status(404).json({ error: 'that document is not in the library' }); return; }
     const filePath = path.join(userDocsDir, doc.file);
-    if (!existsSync(filePath)) { res.status(404).json({ error: 'File missing' }); return; }
+    if (!existsSync(filePath)) { res.status(404).json({ error: 'the file is no longer on disk' }); return; }
     const viewable = doc.ext === 'pdf' || ['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(doc.ext);
     res.setHeader('Content-Type', DOC_MIME[doc.ext] || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `${viewable ? 'inline' : 'attachment'}; filename="${doc.origName}"`);
+    res.setHeader('Content-Disposition', contentDisposition(viewable ? 'inline' : 'attachment', doc.origName));
     createReadStream(filePath).pipe(res);
   });
 
@@ -6248,7 +6793,7 @@ async function startServer() {
   app.get('/api/download/cbu/:id', (req, res) => {
     const entry = cbuDownloads.get(req.params.id);
     if (!entry || !existsSync(entry.filePath)) {
-      res.status(404).json({ error: 'Not found or expired' }); return;
+      res.status(404).json({ error: 'that download has expired — generate it again' }); return;
     }
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', 'attachment; filename="CBU_Tech_Brief.pdf"');
@@ -6267,7 +6812,7 @@ async function startServer() {
     // Accept either systems[] array or legacy system string
     const systems: string[] = Array.isArray(systemsRaw) ? systemsRaw : (system ? [system] : []);
     if (!systems.length || !project || !quote || !engineer || !email || !phone) {
-      res.status(400).json({ error: 'Missing fields' }); return;
+      res.status(400).json({ error: 'pick a system and fill in the project, quote and engineer details' }); return;
     }
     const tmpDir = path.join(os.tmpdir(), `cbu_${Date.now()}`);
     const script = pyFile('cbu_export.py');
@@ -6328,7 +6873,7 @@ async function startServer() {
   app.get('/api/download/commission/:id', (req, res) => {
     const entry = commDownloads.get(req.params.id);
     if (!entry || !existsSync(entry.filePath)) {
-      res.status(404).json({ error: 'Not found or expired' }); return;
+      res.status(404).json({ error: 'that download has expired — generate it again' }); return;
     }
     res.setHeader('Content-Type', 'application/octet-stream');
     res.setHeader('Content-Disposition', 'attachment; filename="Commission_Calculation.pdf"');
@@ -6343,9 +6888,9 @@ async function startServer() {
 
   app.post('/api/run/commission', express.json(), (req, res) => {
     res.setHeader('Content-Type', 'application/json');
-    const { type, panels, lumis, cards = 0, software, centralLondon } = req.body || {};
+    const { type, panels, lumis, cards = 0, software, centralLondon, ref = '' } = req.body || {};
     if (!type || panels == null || !software || !centralLondon) {
-      res.status(400).json({ error: 'Missing fields' }); return;
+      res.status(400).json({ error: 'the calculator sent an incomplete request — reload Vector and try again' }); return;
     }
     const tmpDir = path.join(os.tmpdir(), `comm_${Date.now()}`);
     const script = pyFile('commission_export.py');
@@ -6358,6 +6903,7 @@ async function startServer() {
       '--cards',          String(cards),
       '--software',       software,
       '--central-london', centralLondon,
+      '--ref',            String(ref).slice(0, 64),
       '--outdir',         tmpDir,
     ], { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
 
@@ -6365,8 +6911,8 @@ async function startServer() {
     const finish = (send: () => void) => { if (settled) return; settled = true; clearTimeout(hardTimer); send(); };
     const hardTimer = setTimeout(() => {
       try { child.kill(); } catch {}
-      finish(() => { if (!res.headersSent) res.status(504).json({ error: 'Export timed out — LibreOffice may have hung, please try again.' }); });
-    }, 120_000);
+      finish(() => { if (!res.headersSent) res.status(504).json({ error: 'Export timed out, please try again.' }); });
+    }, 60_000);
 
     child.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
     child.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
@@ -6395,10 +6941,10 @@ async function startServer() {
 
   app.get('/api/download/quote/:id', (req, res) => {
     const entry = quoteDownloads.get(req.params.id);
-    if (!entry || !existsSync(entry.filePath)) { res.status(404).json({ error: 'Not found or expired' }); return; }
+    if (!entry || !existsSync(entry.filePath)) { res.status(404).json({ error: 'that download has expired — generate it again' }); return; }
     res.setHeader('Content-Type', 'application/pdf');
     const safe = (entry.filename || 'Quote').replace(/[^\w\s.\-()&]/g, '_').trim() || 'Quote';
-    res.setHeader('Content-Disposition', `attachment; filename="${safe}.pdf"`);
+    res.setHeader('Content-Disposition', contentDisposition('attachment', `${safe}.pdf`));
     const stream = createReadStream(entry.filePath);
     stream.on('end', () => { quoteDownloads.delete(req.params.id); try { unlinkSync(entry.filePath); } catch {} });
     stream.pipe(res);
@@ -6418,7 +6964,7 @@ async function startServer() {
       (body || '').slice(0, 6000),
     ].join('\n');
     try {
-      const r = await ai.models.generateContent({
+      const r = await generateWithRetry(ai, {
         model: 'gemini-2.5-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { maxOutputTokens: 40, temperature: 0, thinkingConfig: { thinkingBudget: 0 } },
@@ -6433,7 +6979,7 @@ async function startServer() {
   app.post('/api/quote/luminaires', express.json(), (req, res) => {
     const { body } = req.body as { body: string };
     const script = pyFile('schematic_reader.py');
-    if (!existsSync(script)) { res.json({ items: [], error: 'schematic_reader.py not found' }); return; }
+    if (!existsSync(script)) { res.json({ items: [], error: 'schematic_reader.py is missing from this install' }); return; }
     const tmpDir = path.join(os.tmpdir(), `qlum_${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
     const inp = path.join(tmpDir, 'body.txt');
@@ -6445,7 +6991,7 @@ async function startServer() {
     proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
     proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
     const cleanup = () => { try { unlinkSync(inp); } catch {} try { rmdirSync(tmpDir); } catch {} };
-    proc.on('error', () => { clearTimeout(killer); cleanup(); if (!res.headersSent) res.json({ items: [], error: 'spawn failed' }); });
+    proc.on('error', () => { clearTimeout(killer); cleanup(); if (!res.headersSent) res.json({ items: [], error: 'Python did not start — check the Python install' }); });
     proc.on('close', () => {
       clearTimeout(killer); cleanup();
       try {
@@ -6463,7 +7009,7 @@ async function startServer() {
     const { header, lines, appendComm, appendTC } = req.body as { header: any; lines: any[]; appendComm?: boolean; appendTC?: boolean };
     if (!Array.isArray(lines) || lines.length === 0) { res.status(400).json({ error: 'No line items to quote' }); return; }
     const script = pyFile('quote_export.py');
-    if (!existsSync(script)) { res.status(500).json({ error: 'quote_export.py not found' }); return; }
+    if (!existsSync(script)) { res.status(500).json({ error: 'quote_export.py is missing from this install' }); return; }
     const tmpDir = path.join(os.tmpdir(), `quote_${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
     const inp = path.join(tmpDir, 'in.json');
@@ -6627,7 +7173,7 @@ async function startServer() {
   app.post('/api/schematics/price', express.raw({ type: () => true, limit: '50mb' }), async (req: any, res) => {
     const ct       = req.headers['content-type'] || '';
     const pyScript = pyFile('schematic_reader.py');
-    if (!existsSync(pyScript)) { res.json({ error: 'schematic_reader.py not found' }); return; }
+    if (!existsSync(pyScript)) { res.json({ error: 'schematic_reader.py is missing from this install' }); return; }
 
     const tmpPaths: string[] = [];   // for cleanup
     let   args: string[] = [];
@@ -6640,7 +7186,7 @@ async function startServer() {
 
     if (ct.includes('multipart/form-data')) {
       const boundary = ct.split('boundary=')[1]?.trim();
-      if (!boundary) { res.json({ error: 'No boundary in multipart' }); return; }
+      if (!boundary) { res.json({ error: 'the upload was malformed' }); return; }
       const buf: Buffer = req.body;
       const marker = Buffer.from('--' + boundary);
 
@@ -6801,7 +7347,7 @@ async function startServer() {
       try {
         res.json(JSON.parse(out.trim()));
       } catch {
-        res.json({ error: 'Error: ' + (err || out).slice(0, 400) });
+        res.json({ error: 'the pricer returned nothing usable — ' + (err || out).trim().slice(0, 300) });
       }
     });
   });
@@ -6834,7 +7380,7 @@ async function startServer() {
   app.post('/api/retry/now', async (req, res) => {
     const q = loadRetryQueue().filter(x => x.attempts < x.maxAttempts);
     if (!q.length) { res.json({ ok: true, ran: 0 }); return; }
-    if (!getSpCookies()) { res.json({ ok: false, error: 'Not connected' }); return; }
+    if (!getSpCookies()) { res.json({ ok: false, error: 'not connected to JOE — click Connect to JOE first' }); return; }
     let ran = 0;
     for (const item of q) {
       const script = item.script === 'step2' ? pyFile('dq_store_upload.py') : '';

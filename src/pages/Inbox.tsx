@@ -8,7 +8,7 @@ import {
   Play, ArrowLeft, Zap, Eye, X, Image as ImageIcon, ChevronLeft,
   Pin, PinOff, Search, FolderOpen, MoreHorizontal, Star, ExternalLink,
   Forward, MessageSquare, PenLine, Plus, GripVertical, Battery, Lock, Check, FileSpreadsheet, FileDown,
-  Flag, Archive,
+  Flag, Archive, Globe,
 } from 'lucide-react';
 import { runTask, isCancel } from '../lib/tasks';
 import { QuickQuotePanel } from './QuickQuote';
@@ -24,6 +24,28 @@ const CACHE_TTL = 15 * 60 * 1000;
 interface CacheEntry { emails: EmailSummary[]; ts: number; }
 const emailCache = new Map<string, CacheEntry>();
 
+// These caches deliberately outlive the component so switching tabs does not
+// re-read the mailbox — but nothing ever removed an entry, so a day of browsing
+// kept every summary and every store mapping in memory until the app was closed.
+// Caps chosen to cover normal use (a few mailbox/filter combinations, a working
+// set of messages) while putting a ceiling on a long session.
+const MAX_EMAIL_CACHE = 12;      // one entry per storeId + filter combination
+const MAX_SUMMARIES   = 200;     // AI summaries; the durable copy is in SQLite
+const MAX_STORE_OF    = 5000;    // entryId -> storeId, one small string each
+
+// Map preserves insertion order, so the first key is the oldest.
+function capMap<K, V>(m: Map<K, V>, max: number) {
+  while (m.size > max) {
+    const oldest = m.keys().next();
+    if (oldest.done) return;
+    m.delete(oldest.value);
+  }
+}
+function capRecord(r: Record<string, unknown>, max: number) {
+  const keys = Object.keys(r);
+  for (let i = 0; i < keys.length - max; i++) delete r[keys[i]];
+}
+
 // These are initialised once and kept alive while the app is open
 let _available: boolean | null = null;
 let _availError = '';
@@ -32,10 +54,23 @@ let _graphAuth  = false;
 let _mailboxes: Mailbox[] = [];
 // Session cache of generated summaries (the durable copy lives in SQLite).
 let _summaryCache: Record<string, string> = {};
+// Which mailbox each EntryID came from. An id minted in a shared mailbox does
+// not resolve against the default store, so opening a search hit from another
+// mailbox fails unless we send the store back with the request.
+const _storeOf: Record<string, string> = {};
+function rememberStores(list: { entryId: string; storeId?: string }[], fallback = '') {
+  for (const e of list) {
+    const sid = e.storeId || fallback;
+    if (e.entryId && sid) _storeOf[e.entryId] = sid;
+  }
+  capRecord(_storeOf, MAX_STORE_OF);
+}
 let _selectedId = '';
 let _detail: EmailDetail | null = null;
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
+import type { MatchMode, SearchMatch } from '../lib/api';
+import { failed, plural } from '../lib/errors';
 import { fmtGBP } from '../lib/ui';
 import type { TodoBucket } from '../types';
 import type { ToastFn } from '../App';
@@ -68,6 +103,12 @@ interface EmailSummary {
   unread:      boolean;
   attachments: AttachmentInfo[];
   hasPdf:      boolean;
+  // Set only on full-mailbox search hits — where the message actually lives.
+  folder?:     string;
+  // Set only on search hits: which field each term landed in, with context.
+  matches?:    SearchMatch[];
+  store?:      string;
+  storeId?:    string;
 }
 
 interface EmailDetail extends EmailSummary {
@@ -219,7 +260,7 @@ function ImageLightbox({ src, name, onClose }: { src: string; name: string; onCl
         />
         <div className="absolute top-2 right-2 flex items-center gap-2">
           <span className="text-white/80 text-[11px] bg-black/50 px-2 py-0.5 rounded-md truncate max-w-[260px]">{name}</span>
-          <button
+          <button aria-label="Close image"
             onClick={onClose}
             className="w-7 h-7 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center transition-colors">
             <X className="w-4 h-4" />
@@ -273,16 +314,152 @@ function resolveCidImages(html: string, entryId: string, attachments: Attachment
   });
 }
 
+// Links in an email body carry every shape Outlook has ever produced. Normalise
+// what can be opened; return '' for what must be ignored (cid: refs, javascript:,
+// in-page anchors).
+function bodyLinkUrl(href: string): string {
+  const h = (href || '').trim();
+  if (!h || h.startsWith('#')) return '';
+  if (/^(https?|mailto|tel|callto|sip):/i.test(h)) return h;
+  if (/^www\./i.test(h)) return 'https://' + h;      // bare domain, no scheme
+  return '';                                          // cid:, file:, javascript:, …
+}
+
+// Mirrors SEARCH_SCOPE in outlook_reader.py — the only folders search reads.
+const SEARCH_SCOPE_LABEL = 'UKQuoteFactoryEL · Inbox + Completed by Laith';
+
+// ─── Match modes ─────────────────────────────────────────────────────────────
+// What it takes for a term to count as a hit. The server runs the same three
+// rules (MATCH_MODES in server.ts / outlook_reader.py); highlighting reuses them
+// so the marks on screen are exactly what the search matched on.
+const MATCH_MODE_OPTIONS: { id: MatchMode; short: string; label: string; hint: string }[] = [
+  { id: 'part',  short: 'Part',  label: 'part of a word',
+    hint: 'Part of a word — “gate” also finds “delegate”. The widest rule, and the one search always used.' },
+  { id: 'word',  short: 'Word',  label: 'whole word',
+    hint: 'Whole word — “gate” will not find “delegate”. Underscores still count as a break, so “quote” finds EL_quote_2026.' },
+  { id: 'start', short: 'Start', label: 'start of a word',
+    hint: 'Start of a word — “quo” finds “quote” but not “misquoted”.' },
+];
+
+// Deliberately not \b: Eaton joins words with underscores in filenames and
+// references, and \w counts `_` as a word character, so \bquote\b never fires
+// inside EL_quote_2026_R2.
+const WORD_CHAR = '[A-Za-z0-9]';
+const rxEscape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function termPattern(term: string, mode: MatchMode): string {
+  const esc = rxEscape(term);
+  if (mode === 'word')  return `(?<!${WORD_CHAR})${esc}(?!${WORD_CHAR})`;
+  if (mode === 'start') return `(?<!${WORD_CHAR})${esc}`;
+  return esc;
+}
+
+// ─── Match highlighting ──────────────────────────────────────────────────────
+// The terms actually searched: "quoted phrases" stay whole, same split the
+// Python side uses, so what is highlighted is what matched.
+function highlightTerms(q: string, min = 2): string[] {
+  const out: string[] = [];
+  for (const m of (q || '').matchAll(/"([^"]+)"|(\S+)/g)) {
+    const t = (m[1] || m[2] || '').trim();
+    if (t.length >= min) out.push(t);
+  }
+  return out;
+}
+
+function Highlight({ text, terms, mode = 'part' }: { text: string; terms: string[]; mode?: MatchMode }) {
+  if (!terms.length || !text) return <>{text}</>;
+  const re = new RegExp('(' + terms.map(t => termPattern(t, mode)).join('|') + ')', 'ig');
+  const parts = text.split(re);
+  return (
+    <>
+      {parts.map((p, i) => (i % 2 === 1
+        ? <mark key={i} className="bg-amber-200/70 dark:bg-amber-400/30 text-inherit rounded-[2px] px-[1px]">{p}</mark>
+        : <React.Fragment key={i}>{p}</React.Fragment>))}
+    </>
+  );
+}
+
+// The hit evidence under a row: the field a term landed in and the text around
+// it. Without this, a hit deep in the body or in a recipient list arrived with
+// nothing highlighted anywhere on the row and read as a false positive.
+function MatchTrail({ matches, terms, mode }: { matches?: SearchMatch[]; terms: string[]; mode: MatchMode }) {
+  if (!matches?.length) return null;
+  return (
+    <div className="flex flex-col gap-0.5 mt-0.5">
+      {matches.map((m, i) => (
+        <div key={i} className="flex items-start gap-1 text-[9.5px] leading-[1.35] min-w-0">
+          <span className="shrink-0 px-1 rounded-[3px] bg-[var(--s3)] text-[var(--t4)] font-medium uppercase tracking-wide">{m.field}</span>
+          <span className="flex-1 min-w-0 truncate text-[var(--t3)]" title={m.text}>
+            <Highlight text={m.text} terms={terms} mode={mode} />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Plain-text emails have no anchors at all, so their URLs used to be dead text.
+// Linkify them through the same OS-browser route as the HTML body.
+function PlainBody({ text }: { text: string }) {
+  const parts = (text || '(no body)').split(/(https?:\/\/[^\s<>()]+|www\.[^\s<>()]+|[\w.+-]+@[\w-]+\.[\w.]+)/g);
+  return (
+    <pre className="px-5 py-4 text-[12.5px] text-[var(--t2)] leading-relaxed whitespace-pre-wrap font-sans">
+      {parts.map((p, i) => {
+        if (i % 2 === 0) return p;
+        const url = p.includes('@') && !/^https?:/i.test(p) ? 'mailto:' + p : bodyLinkUrl(p);
+        if (!url) return p;
+        return (
+          <a key={i} href={url}
+            onClick={e => { e.preventDefault(); void openExternal(url); }}
+            className="text-[var(--accent-text)] hover:underline break-all">{p}</a>
+        );
+      })}
+    </pre>
+  );
+}
+
 function EmailBodyFrame({ html, entryId, attachments }: { html: string; entryId: string; attachments: AttachmentInfo[] }) {
   const ref = useRef<HTMLIFrameElement>(null);
+  // Remount counter: if the frame ever leaves its srcdoc document anyway (a
+  // redirect, a meta refresh, a link shape the handler below didn't catch), the
+  // email is gone from the pane. Rebuild it instead of leaving a blank body.
+  const [reloadTick, setReloadTick] = useState(0);
+  const rebuilds = useRef(0);
+
   function onLoad() {
-    const doc = ref.current?.contentDocument;
-    if (!doc) return;
+    const frame = ref.current;
+    if (!frame) return;
+    let doc: Document | null = null;
+    try { doc = frame.contentDocument; } catch { doc = null; }   // cross-origin = navigated away
+    if (!doc || !/^about:/i.test(doc.URL || '')) {
+      if (rebuilds.current < 3) { rebuilds.current += 1; setReloadTick(t => t + 1); }
+      return;
+    }
     const h = Math.max(200, doc.documentElement.scrollHeight || doc.body?.scrollHeight || 200);
     if (ref.current) ref.current.style.height = (h + 20) + 'px';
+
+    // A click on a link inside this frame must never navigate the frame. The
+    // body is a sandboxed srcdoc document, so navigating it throws away the
+    // rendered email and lands on a blank/blocked page — the "link does nothing
+    // but corrupts the body" symptom. Catch every click here (capture phase,
+    // the frame has no scripts of its own) and hand the URL to the OS browser,
+    // which is also the only thing that works inside Tauri's single webview.
+    const openFromEvent = (e: Event) => {
+      const target = e.target as Element | null;
+      const a = target?.closest?.('a[href]') as HTMLAnchorElement | null;
+      if (!a) return;
+      const raw = a.getAttribute('href') || '';
+      if (raw.startsWith('#')) return;                // in-page anchor: harmless
+      e.preventDefault();
+      e.stopPropagation();
+      const url = bodyLinkUrl(raw);
+      if (url) void openExternal(url);
+    };
+    doc.addEventListener('click', openFromEvent, true);
+    doc.addEventListener('auxclick', openFromEvent, true);   // middle-click
   }
   return (
     <iframe
+      key={reloadTick}
       ref={ref}
       srcDoc={wrapEmailHtml(resolveCidImages(html, entryId, attachments))}
       sandbox="allow-same-origin"
@@ -444,8 +621,8 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Server error');
       setDlId(json.id);
-      toast('ok', `CBU Tech Sheet ready (${systems.length} system${systems.length > 1 ? 's' : ''})`);
-    } catch (e: any) { toast('err', e.message); }
+      toast('ok', `CBU tech sheet ready — ${plural(systems.length, 'system')}`);
+    } catch (e: any) { toast('err', failed('build the CBU tech sheet', e)); }
     setLoading(false);
   }
 
@@ -484,7 +661,7 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
             <span className="text-[10px] text-[var(--t3)] w-4 text-right shrink-0">{i + 1}</span>
             <CBUSystemSelect value={sys} onChange={v => updateSystem(i, v)} />
             {systems.length > 1 && (
-              <button onClick={() => removeSystem(i)}
+              <button aria-label="Remove this system" onClick={() => removeSystem(i)}
                 className="w-5 h-5 rounded flex items-center justify-center text-[var(--t4)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0">
                 <X className="w-3 h-3" />
               </button>
@@ -561,15 +738,15 @@ function InlineELPricer({
       fd.append('text', listText);
       const resp = await fetch('/api/schematics/price', { method: 'POST', body: fd });
       const data = await resp.json();
-      if (data.error) { toast('err', data.error); }
+      if (data.error) { toast('err', failed('price that list', data.error)); }
       else setResult(data);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('price that list', e)); }
     setLoading(false);
   }
 
   function pickCandidate(c: MiniCandidate) {
     if (!c.matched || c.ntp == null) {
-      toast('warn', `${c.cat_no} is not in the price list`);
+      toast('warn', `${c.cat_no} is not in the price list — no price to add`);
       return;
     }
     const qty = c.suggested_qty && c.suggested_qty > 0 ? c.suggested_qty : 1;
@@ -594,7 +771,7 @@ function InlineELPricer({
         total_ntp: items.filter(i => i.matched).reduce((s, i) => s + i.line_ntp, 0),
       };
     });
-    toast('ok', `Added ${c.cat_no} × ${qty}`);
+    toast('ok', `Added ${c.cat_no} × ${qty} to the schedule`);
   }
 
   async function priceFromAttachment(attIndex: number, attName: string, isImage = false) {
@@ -608,9 +785,9 @@ function InlineELPricer({
         body: JSON.stringify({ entryId, index: attIndex, isImage }),
       });
       const data = await resp.json();
-      if (data.error) { toast('err', data.error); setPdfSource(null); }
+      if (data.error) { toast('err', failed(`price ${attName}`, data.error)); setPdfSource(null); }
       else setResult(data);
-    } catch (e: any) { toast('err', e.message); setPdfSource(null); }
+    } catch (e: any) { toast('err', failed(`price ${attName}`, e)); setPdfSource(null); }
     setLoading(false);
   }
 
@@ -644,7 +821,7 @@ function InlineELPricer({
     const updated = [..._pricerSchedule.filter(e => e.source !== entry.source), entry];
     _pricerSchedule = updated;
     setSchedule(updated);
-    toast('ok', `Added ${matched.length} item${matched.length !== 1 ? 's' : ''} to schedule`);
+    toast('ok', `Added ${plural(matched.length, 'item')} to the schedule`);
   }
 
   function clearSchedule() {
@@ -677,7 +854,7 @@ function InlineELPricer({
     navigator.clipboard.writeText(lines.join('\n'));
     setSchedCopied(true);
     setTimeout(() => setSchedCopied(false), 2000);
-    toast('ok', 'Full schedule copied');
+    toast('ok', `Full schedule copied to the clipboard — ${plural(allItems.length, 'item')}`);
   }
 
   function copySchedule() {
@@ -700,7 +877,7 @@ function InlineELPricer({
     navigator.clipboard.writeText(lines.join('\n'));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-    toast('ok', 'Material schedule copied');
+    toast('ok', `Material schedule copied to the clipboard — ${plural(matched.length, 'item')}`);
   }
 
   const matched   = result?.items.filter(i => i.matched) || [];
@@ -736,7 +913,7 @@ function InlineELPricer({
             const img = isImageFile(a.name);
             const xls = isExcelFile(a.name);
             return (
-              <button
+              <button aria-label={`Price ${a.name} with AI`}
                 key={a.index}
                 onClick={() => priceFromAttachment(a.index, a.name, img)}
                 disabled={loading}
@@ -1009,7 +1186,7 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
   const [sending, setSending] = useState(false);
 
   async function searchAtts() {
-    if (!subject.trim()) { toast('warn', 'Enter a subject first'); return; }
+    if (!subject.trim()) { toast('warn', 'Type a subject first — it is what the attachment search uses'); return; }
     const q = subject;
     setLoadingSugg(true);
     setSearchedQ(q);
@@ -1021,13 +1198,13 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
   }
 
   async function send() {
-    if (!to.trim() || !subject.trim()) { toast('warn', 'To and Subject are required'); return; }
+    if (!to.trim() || !subject.trim()) { toast('warn', 'Fill in both To and Subject before sending'); return; }
     setSending(true);
     try {
       const r = await api.outlookSendNew(to.trim(), subject.trim(), body, atts.map(a => ({ entryId: a.sourceEntryId, index: a.attachmentIndex })));
-      if (r.error) { toast('err', 'Send failed: ' + r.error); }
-      else { toast('ok', 'Email sent'); onClose(); }
-    } catch (e: any) { toast('err', e.message); }
+      if (r.error) { toast('err', failed('send the email', r.error)); }
+      else { toast('ok', `Email sent to ${to.trim()}`); onClose(); }
+    } catch (e: any) { toast('err', failed('send the email', e)); }
     setSending(false);
   }
 
@@ -1038,7 +1215,7 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
         <div className="flex items-center gap-3 px-5 py-3.5 border-b border-[var(--line-2)]">
           <PenLine className="w-4 h-4 text-[var(--t3)] shrink-0" />
           <p className="text-[13px] font-semibold flex-1">New Email</p>
-          <button onClick={onClose} className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] transition-colors"><X className="w-4 h-4" /></button>
+          <button aria-label="Close" onClick={onClose} className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] transition-colors"><X className="w-4 h-4" /></button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
           <div>
@@ -1072,7 +1249,7 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
                   <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
                     <FileText className="w-3 h-3 shrink-0" />
                     <span className="max-w-[160px] truncate">{a.attachmentName}</span>
-                    <button onClick={() => setAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
+                    <button aria-label="Remove attachment" onClick={() => setAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
                   </span>
                 ))}
               </div>
@@ -1248,8 +1425,8 @@ function EmailDetailPanel({
     setLoadingDetail(true);
     bodyRef.current?.scrollTo({ top: 0 });
     try {
-      const r = await api.outlookEmail(id) as EmailDetail & { error?: string };
-      if (r.error) { toast('warn', r.error); setLoadingDetail(false); return; }
+      const r = await api.outlookEmail(id, _storeOf[id]) as EmailDetail & { error?: string };
+      if (r.error) { toast('warn', failed('open that email', r.error)); setLoadingDetail(false); return; }
       setDetail(r);
       // Pre-check the inline photos we'll auto-read, so the panel reflects reality
       // and the user can uncheck logos or add attachments before summarizing/chatting.
@@ -1260,10 +1437,10 @@ function EmailDetailPanel({
       if (!_summaryCache[id]) {
         try {
           const s = await api.outlookGetSummary(id);
-          if (s.summary) { _summaryCache[id] = s.summary; setAnalysis(s.summary); }
+          if (s.summary) { _summaryCache[id] = s.summary; capRecord(_summaryCache, MAX_SUMMARIES); setAnalysis(s.summary); }
         } catch { /* no persisted summary — fine */ }
       }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('open that email', e)); }
     setLoadingDetail(false);
   }
 
@@ -1300,7 +1477,8 @@ function EmailDetailPanel({
       const text = r.summary || r.error || 'No summary returned.';
       setAnalysis(text);
       _summaryCache[emailData.entryId] = text;
-      if (r.imagesRead) toast('info', `Read ${r.imagesRead} image${r.imagesRead !== 1 ? 's' : ''} from the email`);
+      capRecord(_summaryCache, MAX_SUMMARIES);
+      if (r.imagesRead) toast('info', `Read ${plural(r.imagesRead, 'image')} from the email`);
     } catch (e: any) { if (!isCancel(e)) setAnalysis(`Error: ${e.message}`); }
     setAnalyzing(false);
   }
@@ -1314,9 +1492,9 @@ function EmailDetailPanel({
         senderEmail: emailData.senderEmail, received: emailData.received,
         body: emailData.body, analysis,
       }, s));
-      if (r.error) { toast('warn', r.error); }
+      if (r.error) { toast('warn', failed('draft a reply', r.error)); }
       else { setDraft(r.draft || ''); setReplyText(r.draft || ''); }
-    } catch (e: any) { if (!isCancel(e)) toast('err', e.message); }
+    } catch (e: any) { if (!isCancel(e)) toast('err', failed('draft a reply', e)); }
     setDraftingReply(false);
   }
 
@@ -1325,7 +1503,7 @@ function EmailDetailPanel({
     setSendingReply(true);
     try {
       const r = await api.outlookSendReply(detail.entryId, replyText.trim());
-      if (r.error) { toast('err', 'Send failed: ' + r.error); }
+      if (r.error) { toast('err', failed(`send the reply to ${detail.senderEmail}`, r.error)); }
       else {
         setReplySent(true);
         try { localStorage.removeItem(`inbox_draft_${initialEntryId}`); } catch {}
@@ -1337,7 +1515,7 @@ function EmailDetailPanel({
           finalReply: replyText.trim(), feedbackType: edited ? 'edited_sent' : 'sent',
         });
       }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed(`send the reply to ${detail.senderEmail}`, e)); }
     setSendingReply(false);
   }
 
@@ -1350,14 +1528,14 @@ function EmailDetailPanel({
         replyAttachText.trim(),
         selectedAtts.map(a => ({ entryId: a.sourceEntryId, index: a.attachmentIndex }))
       );
-      if (r.error) { toast('err', 'Send failed: ' + r.error); }
+      if (r.error) { toast('err', failed('send the reply with attachments', r.error)); }
       else {
-        toast('ok', `Reply sent with ${selectedAtts.length} attachment${selectedAtts.length !== 1 ? 's' : ''}`);
+        toast('ok', `Reply sent to ${detail.senderEmail} with ${plural(selectedAtts.length, 'attachment')}`);
         setActivePanel(null);
         setSelectedAtts([]);
         setReplyAttachText('');
       }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('send the reply with attachments', e)); }
     setSendingWithAtts(false);
   }
 
@@ -1392,10 +1570,10 @@ function EmailDetailPanel({
       });
       if (r.item) {
         setTodoBucket(bucket);
-        toast('ok', 'Added to your To-Do list');
+        toast('ok', `Added to the To-Do board — due ${due.toISOString().slice(0, 10)}`);
       }
     } catch (e: any) {
-      toast('err', e.message);
+      toast('err', failed('add this email to the To-Do board', e));
     } finally {
       setAddingTodo(false);
     }
@@ -1451,10 +1629,10 @@ function EmailDetailPanel({
     setSavingPdf(true);
     try {
       const r = await api.outlookSaveAttachment(detail.entryId);
-      if (r.error) { toast('err', r.error); }
-      else if (r.count === 0) { toast('warn', 'No PDF attachments found'); }
-      else { toast('ok', `Queued: ${r.saved.map((s: any) => s.name).join(', ')}`); }
-    } catch (e: any) { toast('err', e.message); }
+      if (r.error) { toast('err', failed('queue the PDF attachments', r.error)); }
+      else if (r.count === 0) { toast('warn', 'This email has no PDF attachments to queue'); }
+      else { toast('ok', `Queued ${plural(r.count, 'PDF')} — ${r.saved.map((s: any) => s.name).join(', ')}`); }
+    } catch (e: any) { toast('err', failed('queue the PDF attachments', e)); }
     setSavingPdf(false);
   }
 
@@ -1477,7 +1655,7 @@ function EmailDetailPanel({
     const active = activePanel === panel;
     if (locked) {
       return (
-        <button onClick={() => toast('info', `${label} — coming soon`)} title="Coming soon"
+        <button aria-label="Coming soon" onClick={() => toast('info', `${label} is coming soon`)} title="Coming soon"
           className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors text-[var(--t3)] ring-[var(--line)] hover:bg-[var(--s3)] cursor-default">
           <Icon className="w-3 h-3 shrink-0 opacity-60" />
           {label}
@@ -1515,11 +1693,11 @@ function EmailDetailPanel({
           <div className="shrink-0 px-5 pt-4 pb-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
             {/* Nav + counter */}
             <div className="flex items-center gap-1 mb-2">
-              <button onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} title={prevEmail?.subject}
+              <button aria-label={prevEmail?.subject} onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} title={prevEmail?.subject}
                 className="w-6 h-6 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-25 transition-colors">
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
-              <button onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} title={nextEmail?.subject}
+              <button aria-label={nextEmail?.subject} onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} title={nextEmail?.subject}
                 className="w-6 h-6 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-25 transition-colors">
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
@@ -1552,21 +1730,21 @@ function EmailDetailPanel({
                   style={{ maxHeight: attStripHeight }}>
                   {detail.attachments.map(att => (
                     att.isPdf ? (
-                      <button key={att.index} onClick={() => openAttachmentPdf(detail.entryId, att.index)}
+                      <button aria-label="View · Drag to EL Pricer" key={att.index} onClick={() => openAttachmentPdf(detail.entryId, att.index)}
                         draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
                         title="View · Drag to EL Pricer"
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)] transition-colors">
                         <FileText className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">{fmtSize(att.size)}</span>
                       </button>
                     ) : isImageFile(att.name) ? (
-                      <button key={att.index} onClick={() => setLightbox({ src: attViewUrl(detail.entryId, att.index), name: att.name })}
+                      <button aria-label="View · Drag to EL Pricer" key={att.index} onClick={() => setLightbox({ src: attViewUrl(detail.entryId, att.index), name: att.name })}
                         draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name, isImage: true })); e.dataTransfer.effectAllowed = 'copy'; }}
                         title="View · Drag to EL Pricer"
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-600 hover:bg-emerald-100 transition-colors">
                         <ImageIcon className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
                       </button>
                     ) : isExcelFile(att.name) ? (
-                      <button key={att.index} onClick={() => setActivePanel('pricer')}
+                      <button aria-label="Open EL Pricer · Drag to EL Pricer" key={att.index} onClick={() => setActivePanel('pricer')}
                         draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
                         title="Open EL Pricer · Drag to EL Pricer"
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-600 hover:bg-green-100 dark:hover:bg-green-900/40 transition-colors">
@@ -1607,7 +1785,7 @@ function EmailDetailPanel({
           <div ref={bodyRef} className="flex-1 overflow-y-auto bg-[var(--s1)]">
             {detail.htmlBody
               ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} entryId={detail.entryId} attachments={detail.attachments} />
-              : <pre className="px-5 py-4 text-[12.5px] text-[var(--t2)] leading-relaxed whitespace-pre-wrap font-sans">{detail.body || '(no body)'}</pre>
+              : <PlainBody text={detail.body} />
             }
           </div>
 
@@ -1635,7 +1813,7 @@ function EmailDetailPanel({
                     <div className="w-8 h-0.5 rounded-full bg-[var(--line-3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
                   </div>
                   <div className="flex items-center gap-0.5 pr-1.5">
-                    <button
+                    <button aria-label={panelMaximized ? 'Restore' : 'Maximise'}
                       onClick={() => setPanelMaximized(p => !p)}
                       title={panelMaximized ? 'Restore' : 'Maximise'}
                       className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
@@ -1643,13 +1821,13 @@ function EmailDetailPanel({
                         ? <ChevronRight className="w-3 h-3 rotate-90" />
                         : <ChevronLeft className="w-3 h-3 -rotate-90" />}
                     </button>
-                    <button
+                    <button aria-label="Open EL Pricer in new window"
                       onClick={() => openExternal('/schematics', { popup: true, width: 1000, height: 760 })}
                       title="Open EL Pricer in new window"
                       className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
                       <ExternalLink className="w-3 h-3" />
                     </button>
-                    <button
+                    <button aria-label="Close"
                       onClick={() => setActivePanel(null)}
                       title="Close"
                       className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
@@ -1677,11 +1855,11 @@ function EmailDetailPanel({
                       {analyzing && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
                       {!analyzing && analysis && (
                         <div className="flex items-center gap-1">
-                          <button onClick={() => submitAnalysisFeedback('up')} disabled={!!analysisLiked}
+                          <button aria-label="Mark this summary helpful" onClick={() => submitAnalysisFeedback('up')} disabled={!!analysisLiked}
                             className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'up' ? 'text-emerald-500' : 'text-[var(--t4)] hover:text-emerald-500 disabled:opacity-40')}>
                             <ThumbsUp className="w-2.5 h-2.5" />
                           </button>
-                          <button onClick={() => submitAnalysisFeedback('down')} disabled={!!analysisLiked}
+                          <button aria-label="Mark this summary unhelpful" onClick={() => submitAnalysisFeedback('down')} disabled={!!analysisLiked}
                             className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'down' ? 'text-red-500' : 'text-[var(--t4)] hover:text-red-500 disabled:opacity-40')}>
                             <ThumbsDown className="w-2.5 h-2.5" />
                           </button>
@@ -1704,7 +1882,7 @@ function EmailDetailPanel({
                             const on  = included.has(a.index);
                             const img = a.isImage || isImageFile(a.name);
                             return (
-                              <button key={a.index}
+                              <button aria-label={on ? `${a.name} — the AI reads this, click to exclude` : `Include ${a.name} — the AI will read it`} key={a.index}
                                 onClick={() => setIncluded(prev => { const n = new Set(prev); n.has(a.index) ? n.delete(a.index) : n.add(a.index); return n; })}
                                 title={on ? `${a.name} — the AI reads this, click to exclude` : `Include ${a.name} — the AI will read it`}
                                 className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors',
@@ -1716,7 +1894,7 @@ function EmailDetailPanel({
                             );
                           })}
                           {analysis && !analyzing && (
-                            <button onClick={() => runSummarize(detail, true)}
+                            <button aria-label="Re-summarize with the current image selection" onClick={() => runSummarize(detail, true)}
                               title="Re-summarize with the current image selection"
                               className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
                               Apply
@@ -1807,7 +1985,7 @@ function EmailDetailPanel({
                             onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
                             placeholder="Ask about this email or its images…"
                             className="flex-1 h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 placeholder:text-[var(--t3)] text-[var(--t1)]" />
-                          <button onClick={sendChatMessage} disabled={!chatInput.trim() || chatLoading}
+                          <button aria-label="Send message" onClick={sendChatMessage} disabled={!chatInput.trim() || chatLoading}
                             className="w-7 h-7 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
                             <Send className="w-3 h-3" />
                           </button>
@@ -1876,7 +2054,7 @@ function EmailDetailPanel({
                             <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
                               <FileText className="w-3 h-3 shrink-0" />
                               <span className="max-w-[140px] truncate">{a.attachmentName}</span>
-                              <button onClick={() => setSelectedAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
+                              <button aria-label="Remove attachment" onClick={() => setSelectedAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
                             </span>
                           ))}
                         </div>
@@ -2207,7 +2385,108 @@ export function InboxPage({
   const tabBarRef = useRef<HTMLDivElement>(null);
 
   // ── Email list search ─────────────────────────────────────────────────────
+  // Two layers: typing filters the emails already loaded (instant), Enter runs a
+  // real search across the quote folders — UKQuoteFactoryEL's Inbox and
+  // "Completed by Laith" — through a local SQLite mirror of those messages.
+  // Classic Outlook's own search box leans on a Windows index that misses mail
+  // here, and reading messages back through COM costs ~64 ms each, so the mirror
+  // is what makes this both correct and instant.
   const [emailSearch, setEmailSearch] = useState('');
+  // How strict a term has to be. Persisted: it is a working preference, not a
+  // per-query one, and silently resetting it makes the same search change answer.
+  const [matchMode,   setMatchMode]   = useState<MatchMode>(
+    () => (MATCH_MODE_OPTIONS.some(o => o.id === localStorage.getItem('inboxMatchMode'))
+      ? localStorage.getItem('inboxMatchMode') as MatchMode : 'part'));
+  const [deepResults, setDeepResults] = useState<EmailSummary[] | null>(null);
+  const [deepQuery,   setDeepQuery]   = useState('');
+  // The mode the showing results were fetched with — the marks have to follow
+  // what the server matched, not what the picker was moved to afterwards.
+  const [deepMode,    setDeepMode]    = useState<MatchMode>('part');
+  const [deepLoading, setDeepLoading] = useState(false);
+  const [deepMeta,    setDeepMeta]    = useState<{ total: number; truncated: boolean; source?: string } | null>(null);
+  const [indexInfo,   setIndexInfo]   = useState<{ built: boolean; total: number; lastSync?: string | null; syncing?: boolean } | null>(null);
+  const [indexBusy,   setIndexBusy]   = useState(false);
+  const deepAbort = useRef<AbortController | null>(null);
+
+  const loadIndexStatus = useCallback(async () => {
+    try { setIndexInfo(await api.outlookIndexStatus()); } catch { /* status is cosmetic */ }
+  }, []);
+
+  async function reindex() {
+    setIndexBusy(true);
+    try {
+      const r = await api.outlookIndexSync(true);
+      if (r.error) toast('err', failed('rebuild the search index', r.error));
+      else toast('ok', `Search index rebuilt — ${plural(r.total ?? 0, 'email')} in ${r.seconds ?? '?'}s`);
+      await loadIndexStatus();
+      if (deepQuery) await runDeepSearch(deepQuery);
+    } catch (e: any) { toast('err', failed('rebuild the search index', e)); }
+    setIndexBusy(false);
+  }
+
+  function clearDeepSearch() {
+    deepAbort.current?.abort();
+    deepAbort.current = null;
+    setDeepResults(null);
+    setDeepQuery('');
+    setDeepMeta(null);
+    setDeepLoading(false);
+  }
+
+  const runDeepSearch = useCallback(async (raw: string) => {
+    const q = raw.trim();
+    if (q.length < 2) { toast('warn', 'Type at least 2 characters before searching'); return; }
+    deepAbort.current?.abort();
+    const ctl = new AbortController();
+    deepAbort.current = ctl;
+    setDeepLoading(true);
+    setDeepQuery(q);
+    setDeepResults(null);
+    setDeepMeta(null);
+    const mode = modeRef.current;
+    try {
+      const r = await api.outlookSearch(q, { mode }, ctl.signal);
+      if (ctl.signal.aborted) return;
+      if (r.error) toast('warn', failed(`search for "${q}"`, r.error));
+      const list: EmailSummary[] = r.emails || [];
+      rememberStores(list);
+      setDeepResults(list);
+      setDeepMode(r.mode || mode);
+      setDeepMeta({ total: r.total ?? list.length, truncated: !!r.truncated, source: r.source });
+      if (r.truncated) toast('warn', `Search hit its time limit — showing the first ${plural(list.length, 'match', 'matches')}`);
+      // A live answer means the index was cold; the server starts building it,
+      // so refresh the badge shortly.
+      if (r.source !== 'index') setTimeout(() => { void loadIndexStatus(); }, 3_000);
+    } catch (e: any) {
+      if (ctl.signal.aborted || isCancel(e)) return;
+      toast('err', failed(`search for "${q}"`, e));
+      setDeepQuery('');
+    } finally {
+      if (deepAbort.current === ctl) setDeepLoading(false);
+    }
+  }, [toast, loadIndexStatus]);
+
+  // runDeepSearch reads the mode through a ref so its identity stays stable.
+  const modeRef = useRef<MatchMode>(matchMode);
+  useEffect(() => { modeRef.current = matchMode; }, [matchMode]);
+
+  // Changing the rule re-asks the server: 'word' can only be enforced there, and
+  // leaving the old hit list up under a stricter rule would show non-matches.
+  const firstModeRender = useRef(true);
+  useEffect(() => {
+    localStorage.setItem('inboxMatchMode', matchMode);
+    if (firstModeRender.current) { firstModeRender.current = false; return; }
+    if (deepQuery) void runDeepSearch(deepQuery);
+  }, [matchMode]);
+
+  // Index badge: load once when the pane comes up.
+  useEffect(() => { if (available) void loadIndexStatus(); }, [available, loadIndexStatus]);
+
+  // Emptying the box drops back to the plain (loaded-emails) view.
+  useEffect(() => { if (!emailSearch.trim()) clearDeepSearch(); }, [emailSearch]);
+
+  // Abort an in-flight search when the pane goes away.
+  useEffect(() => () => deepAbort.current?.abort(), []);
 
   function scrollTabBar(dir: 'left' | 'right') {
     tabBarRef.current?.scrollBy({ left: dir === 'left' ? -160 : 160, behavior: 'smooth' });
@@ -2246,9 +2525,9 @@ export function InboxPage({
 
   function openAllPdf() {
     const pdfEmails = displayEmails.filter(e => e.hasPdf);
-    if (pdfEmails.length === 0) { toast('warn', 'No emails with PDFs visible'); return; }
+    if (pdfEmails.length === 0) { toast('warn', 'None of the emails in this list carry a PDF'); return; }
     pdfEmails.forEach(e => openEmail(e.entryId));
-    toast('ok', `Opened ${pdfEmails.length} PDF email${pdfEmails.length > 1 ? 's' : ''}`);
+    toast('ok', `Opened ${plural(pdfEmails.length, 'email')} with a PDF`);
   }
 
   // ── Check Outlook availability on mount (skip if already known) ─────────
@@ -2289,6 +2568,7 @@ export function InboxPage({
     const key = `${sid}:${uread}:${limit}`;
     const cached = emailCache.get(key);
     if (!force && cached && Date.now() - cached.ts < CACHE_TTL) {
+      rememberStores(cached.emails, sid);
       setEmails(cached.emails);
       const ageMin = Math.floor((Date.now() - cached.ts) / 60000);
       setCacheAge(ageMin === 0 ? 'just now' : `${ageMin}m ago`);
@@ -2299,15 +2579,17 @@ export function InboxPage({
       const r = silent
         ? await api.outlookEmails(sid, limit, uread)
         : await runTask(`Fetching ${limit} emails…`, s => api.outlookEmails(sid, limit, uread, s));
-      if (r.error && !silent) toast('warn', r.error);
+      if (r.error && !silent) toast('warn', failed('load the email list', r.error));
       const list = r.emails || [];
       emailCache.set(key, { emails: list, ts: Date.now() });
+      capMap(emailCache, MAX_EMAIL_CACHE);
+      rememberStores(list, sid);
       setEmails(list);
       // Fewer returned than asked → no more to fetch
       setHasMoreEmails(list.length >= limit);
       if (!silent) setCacheAge('just now');
     } catch (e: any) {
-      if (!silent && !isCancel(e)) toast('err', e.message);
+      if (!silent && !isCancel(e)) toast('err', failed('load the email list', e));
     }
     if (!silent) setLoadingEmails(false);
   }, [storeId, unreadOnly, toast, emailLimit]);
@@ -2342,7 +2624,8 @@ export function InboxPage({
   function openEmail(entryId: string) {
     const existing = openTabs.find(t => t.id === entryId);
     if (existing) { setActiveTabId(entryId); setSelectedId(entryId); return; }
-    const meta   = emails.find(e => e.entryId === entryId);
+    const meta   = emails.find(e => e.entryId === entryId)
+                || deepResults?.find(e => e.entryId === entryId);
     const label  = meta?.subject || '…';
     const unread = meta?.unread ?? false;
     setOpenTabs(prev => {
@@ -2391,7 +2674,8 @@ export function InboxPage({
     if (isStarred) next.delete(entryId); else next.add(entryId);
     setStarredEmails(next);
     setEmailMenu(null);
-    try { await api.outlookFlag(entryId, !isStarred); } catch (e: any) { toast('err', e.message); }
+    try { await api.outlookFlag(entryId, !isStarred); }
+    catch (e: any) { toast('err', failed(isStarred ? 'remove the flag in Outlook' : 'flag the email in Outlook', e)); }
   }
 
   async function handleMarkUnread(entryId: string) {
@@ -2403,7 +2687,7 @@ export function InboxPage({
       return updated;
     });
     setEmailMenu(null);
-    try { await api.outlookMarkUnread(entryId); } catch (e: any) { toast('err', e.message); }
+    try { await api.outlookMarkUnread(entryId); } catch (e: any) { toast('err', failed('mark the email unread', e)); }
   }
 
   async function handleDelete(entryId: string) {
@@ -2418,8 +2702,8 @@ export function InboxPage({
     closeTab(entryId);
     try {
       await api.outlookDelete(entryId);
-      toast('ok', 'Email deleted');
-    } catch (e: any) { toast('err', e.message); }
+      toast('ok', 'Email moved to Deleted Items in Outlook');
+    } catch (e: any) { toast('err', failed('delete the email', e)); }
   }
 
   async function handleForward(entryId: string) {
@@ -2428,13 +2712,14 @@ export function InboxPage({
     if (!to?.trim()) return;
     try {
       const r = await api.outlookForward(entryId, to.trim());
-      if (r.error) toast('err', r.error); else toast('ok', 'Forwarded');
-    } catch (e: any) { toast('err', e.message); }
+      if (r.error) toast('err', failed(`forward the email to ${to.trim()}`, r.error));
+      else toast('ok', `Email forwarded to ${to.trim()}`);
+    } catch (e: any) { toast('err', failed(`forward the email to ${to.trim()}`, e)); }
   }
 
   async function handleOpenInOutlook(entryId: string) {
     setEmailMenu(null);
-    try { await api.outlookOpenInOutlook(entryId); } catch (e: any) { toast('err', e.message); }
+    try { await api.outlookOpenInOutlook(entryId); } catch (e: any) { toast('err', failed('open the email in Outlook', e)); }
   }
 
   async function handleCategorize(entryId: string, category: string) {
@@ -2443,8 +2728,9 @@ export function InboxPage({
     setEmailCategories(prev => ({ ...prev, [entryId]: category }));
     try {
       const r = await api.outlookCategorize(entryId, category);
-      if (r.error) toast('err', r.error); else toast('ok', `Categorized: ${category}`);
-    } catch (e: any) { toast('err', e.message); }
+      if (r.error) toast('err', failed(`categorise the email as ${category}`, r.error));
+      else toast('ok', `Email categorised as ${category}`);
+    } catch (e: any) { toast('err', failed(`categorise the email as ${category}`, e)); }
   }
 
   // ── Move an email to a rail folder (drag-drop or context menu) ─────────────
@@ -2462,20 +2748,20 @@ export function InboxPage({
             const next = new Set(starredEmails); next.add(entryId); setStarredEmails(next);
             await api.outlookFlag(entryId, true);
           }
-          toast('ok', 'Moved to Flagged'); break;
+          toast('ok', 'Email flagged — it now shows under Flagged'); break;
         case 'processed':
           handleMarkRead(entryId);
-          toast('ok', 'Moved to Processed'); break;
+          toast('ok', 'Email marked read — it now shows under Processed'); break;
         case 'archive':
           setEmailCategories(prev => ({ ...prev, [entryId]: 'Archived' }));
           await api.outlookCategorize(entryId, 'Archived');
-          toast('ok', 'Archived'); break;
+          toast('ok', 'Email categorised Archived'); break;
         case 'inbox':
           setEmailCategories(prev => { const n = { ...prev }; delete n[entryId]; return n; });
           await api.outlookCategorize(entryId, '');
-          toast('ok', 'Moved to Inbox'); break;
+          toast('ok', 'Archived category cleared — email is back in Inbox'); break;
       }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed(`move the email to ${target}`, e)); }
   }
 
   // ─── Unavailable state ─────────────────────────────────────────────────────
@@ -2557,14 +2843,29 @@ export function InboxPage({
   ];
 
   const sq = emailSearch.trim().toLowerCase();
-  const displayEmails = (sq
-    ? emails.filter(e =>
-        e.subject.toLowerCase().includes(sq) ||
-        e.sender.toLowerCase().includes(sq) ||
-        e.senderEmail.toLowerCase().includes(sq) ||
-        e.bodyPreview.toLowerCase().includes(sq)
-      )
-    : emails).filter(inFolder);
+  // The typed-filter path gets the same rule as the server search, so switching
+  // to "Whole word" narrows the loaded list too instead of only the deep hits.
+  const sqTerms = highlightTerms(emailSearch, 1);
+  const sqRegexes = sqTerms.map(t => new RegExp(termPattern(t, matchMode), 'i'));
+  // A full-mailbox search replaces the list outright: its hits come from folders
+  // and mailboxes the rail knows nothing about, so the rail/archive filters
+  // would only hide them.
+  const deepActive    = deepLoading || deepResults !== null;
+  const textMatch = (e: EmailSummary, _q: string) => {
+    const hay = [e.subject, e.sender, e.senderEmail, e.bodyPreview,
+                 ...(e.matches || []).map(m => m.text)].join(' \u0000 ');
+    return sqRegexes.every(r => r.test(hay));
+  };
+  const localFiltered = (sq ? emails.filter(e => textMatch(e, sq)) : emails).filter(inFolder);
+  // Editing the box after a search narrows the hits already on screen; Enter
+  // runs the new text against Outlook again.
+  const deepFiltered = (deepResults || []).filter(
+    e => !sq || sq === deepQuery.toLowerCase() || textMatch(e, sq));
+  const displayEmails = deepActive ? deepFiltered : localFiltered;
+  // What to mark up in the rows: the terms the server matched on while search
+  // results are showing, otherwise whatever is being typed.
+  const hlTerms = highlightTerms(deepActive ? deepQuery : emailSearch);
+  const hlMode  = deepActive ? deepMode : matchMode;
 
   return (
     <div className="flex flex-col h-full">
@@ -2584,7 +2885,7 @@ export function InboxPage({
               <p className="flex-1 text-[12.5px] font-semibold text-[var(--t2)] truncate">
                 {emails.find(e => e.entryId === popoutId)?.subject || '…'}
               </p>
-              <button onClick={() => setPopoutId(null)}
+              <button aria-label="Close" onClick={() => setPopoutId(null)}
                 className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
                 <X className="w-4 h-4" />
               </button>
@@ -2593,7 +2894,7 @@ export function InboxPage({
             <div className="flex-1 min-h-0">
               <EmailDetailPanel
                 initialEntryId={popoutId}
-                emailList={emails}
+                emailList={displayEmails}
                 toast={toast}
                 setAppTab={setTab}
                 onMarkRead={handleMarkRead}
@@ -2737,7 +3038,7 @@ export function InboxPage({
         </button>
 
         {/* Refresh */}
-        <button
+        <button aria-label="Refresh emails"
           onClick={() => loadEmails(storeId, unreadOnly, true)}
           disabled={loadingEmails}
           className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-40 transition-colors">
@@ -2755,7 +3056,7 @@ export function InboxPage({
             const dropTarget = f.id !== 'attachments';   // 'attachments' is a derived view, not movable-to
             const over = railDragOver === f.id;
             return (
-              <button key={f.id} onClick={() => selectFolder(f.id)}
+              <button aria-label={dropTarget ? `Drag an email here to move it to ${f.label}` : undefined} key={f.id} onClick={() => selectFolder(f.id)}
                 onDragOver={dropTarget ? (e => { if (e.dataTransfer.types.includes('vector/email-row')) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; setRailDragOver(f.id); } }) : undefined}
                 onDragLeave={dropTarget ? (() => setRailDragOver(cur => cur === f.id ? null : cur)) : undefined}
                 onDrop={dropTarget ? (e => {
@@ -2792,16 +3093,43 @@ export function InboxPage({
                 type="text"
                 value={emailSearch}
                 onChange={e => setEmailSearch(e.target.value)}
-                placeholder="Search…"
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); runDeepSearch(emailSearch); }
+                  if (e.key === 'Escape' && deepActive) { e.preventDefault(); clearDeepSearch(); }
+                }}
+                placeholder="Search… (Enter = quote folders)"
+                title="Type to filter the loaded list — press Enter to search the quote folders (Inbox + Completed by Laith)"
                 className="flex-1 bg-transparent text-[11.5px] text-[var(--t2)] placeholder:text-[var(--t3)] outline-none min-w-0"
               />
               {emailSearch && (
-                <button onClick={() => setEmailSearch('')} className="text-[var(--t3)] hover:text-[var(--t1)]">
+                <button aria-label="Clear search" onClick={() => setEmailSearch('')} className="text-[var(--t3)] hover:text-[var(--t1)]">
                   <X className="w-3 h-3" />
                 </button>
               )}
             </div>
-            <button
+            {/* What counts as a hit. Sits next to the box because it changes the
+                answer to the query typed in it, not some unrelated setting. */}
+            <select
+              value={matchMode}
+              onChange={e => setMatchMode(e.target.value as MatchMode)}
+              title={MATCH_MODE_OPTIONS.find(o => o.id === matchMode)?.hint}
+              className="shrink-0 h-7 px-1.5 rounded-md bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] text-[10.5px] text-[var(--t2)] outline-none focus:ring-violet-400/60 cursor-pointer">
+              {MATCH_MODE_OPTIONS.map(o => (
+                <option key={o.id} value={o.id} title={o.hint}>{o.short}</option>
+              ))}
+            </select>
+            <button aria-label={deepLoading ? 'Stop the search' : 'Search UKQuoteFactoryEL — Inbox + Completed by Laith (subject, sender, body, attachment names)'}
+              onClick={() => (deepLoading ? clearDeepSearch() : runDeepSearch(emailSearch))}
+              disabled={!deepLoading && emailSearch.trim().length < 2}
+              title={deepLoading ? 'Stop the search' : 'Search UKQuoteFactoryEL — Inbox + Completed by Laith (subject, sender, body, attachment names)'}
+              className={cn(
+                'shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-colors',
+                deepLoading ? 'text-amber-500 hover:bg-amber-100/60 dark:hover:bg-amber-900/30'
+                  : 'text-[var(--accent-text)] hover:bg-[var(--accent-soft)] disabled:opacity-35 disabled:hover:bg-transparent',
+              )}>
+              {deepLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Globe className="w-3.5 h-3.5" />}
+            </button>
+            <button aria-label="Open all emails with PDFs as tabs"
               onClick={openAllPdf}
               title="Open all emails with PDFs as tabs"
               className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--accent-text)] hover:bg-[var(--accent-soft)] transition-colors">
@@ -2809,16 +3137,78 @@ export function InboxPage({
             </button>
           </div>
 
-          {loadingEmails ? (
-            <div className="flex-1 flex items-center justify-center">
+          {/* Search status bar — scope is fixed (see SEARCH_SCOPE in
+              outlook_reader.py), so it is stated, not chosen. */}
+          {(deepActive || (!!sq && !deepLoading)) && (
+            <div className="shrink-0 px-2.5 py-1.5 border-b border-[var(--line)] bg-[var(--s2)] flex items-center gap-2 text-[10.5px]">
+              {deepActive ? (
+                <>
+                  <Globe className="w-3 h-3 shrink-0 text-[var(--accent-text)]" />
+                  <span className="flex-1 min-w-0 truncate text-[var(--t3)]">
+                    {deepLoading
+                      ? <>Searching {SEARCH_SCOPE_LABEL} for “{deepQuery}”…</>
+                      : <>
+                          <span className="font-semibold text-[var(--t2)]">{deepMeta?.total ?? displayEmails.length}</span>
+                          {' '}hit{(deepMeta?.total ?? 0) === 1 ? '' : 's'} for “{deepQuery}”
+                          {' · '}{MATCH_MODE_OPTIONS.find(o => o.id === deepMode)?.label}
+                          {deepMeta?.source === 'index' ? ' · local index' : ' · live Outlook'}
+                          {deepMeta?.truncated ? ' · partial' : ''}
+                          {deepMeta && deepMeta.total > displayEmails.length ? ` · showing ${displayEmails.length}` : ''}
+                        </>}
+                  </span>
+                  <button onClick={clearDeepSearch} className="shrink-0 text-[var(--t3)] hover:text-[var(--t1)] font-medium">
+                    {deepLoading ? 'Stop' : 'Back to list'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="flex-1 min-w-0 truncate text-[var(--t3)]">
+                    {localFiltered.length} of {emails.length} loaded emails
+                  </span>
+                  <button onClick={() => runDeepSearch(emailSearch)}
+                    className="shrink-0 font-medium text-[var(--accent-text)] hover:underline">
+                    Search quote folders ↵
+                  </button>
+                </>
+              )}
+              <span
+                title={`Search covers ${SEARCH_SCOPE_LABEL} — subject, sender, recipients, body and attachment names.`
+                     + (indexInfo?.lastSync ? `\nIndex last synced ${indexInfo.lastSync}` : '')}
+                className="shrink-0 text-[var(--t4)] tabular-nums">
+                {indexInfo?.built ? `${indexInfo.total.toLocaleString()} indexed` : 'index cold'}
+              </span>
+              <button aria-label="Re-read the quote folders from Outlook and rebuild the local index" onClick={reindex} disabled={indexBusy}
+                title="Re-read the quote folders from Outlook and rebuild the local index"
+                className="shrink-0 text-[var(--t3)] hover:text-[var(--t1)] disabled:opacity-40">
+                {indexBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+              </button>
+            </div>
+          )}
+
+          {(deepLoading || (loadingEmails && !deepActive)) ? (
+            <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
               <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" />
+              {deepLoading && (
+                <p className="text-[11px] text-[var(--t3)] leading-relaxed">
+                  Searching {SEARCH_SCOPE_LABEL} — subject, sender, body and attachment names.
+                  Instant off the local index; the first run reads the folders from Outlook and takes a couple of minutes.
+                </p>
+              )}
             </div>
           ) : displayEmails.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
               <Mail className="w-8 h-8 text-[var(--t4)]" />
               <p className="text-[12px] text-[var(--t3)]">
-                {emailSearch ? 'No emails match your search' : unreadOnly ? 'No unread emails' : 'No emails found'}
+                {deepActive ? `Nothing in the quote folders matches “${deepQuery}”`
+                  : emailSearch ? 'No emails match your search'
+                  : unreadOnly ? 'No unread emails' : 'No emails found'}
               </p>
+              {!deepActive && emailSearch.trim().length >= 2 && (
+                <button onClick={() => runDeepSearch(emailSearch)}
+                  className="text-[11.5px] font-medium text-[var(--accent-text)] hover:underline">
+                  Search the quote folders instead
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex-1 overflow-y-auto py-1">
@@ -2839,7 +3229,7 @@ export function InboxPage({
                       : 'hover:bg-[var(--s3)]',
                   )}>
                   {/* Three-dot menu */}
-                  <button
+                  <button aria-label="Email actions"
                     onClick={e => { e.stopPropagation(); setEmailMenu({ id: email.entryId, x: e.clientX, y: e.clientY }); }}
                     className="absolute right-2 top-2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 text-[var(--t3)] hover:bg-[var(--s-hover)] transition-all z-10">
                     <MoreHorizontal className="w-3 h-3" />
@@ -2861,13 +3251,22 @@ export function InboxPage({
                         'text-[12px] truncate flex-1',
                         email.unread ? 'font-semibold text-[var(--t1)]' : 'font-medium text-[var(--t2)]',
                       )}>
-                        {email.sender}
+                        <Highlight text={email.sender} terms={hlTerms} mode={hlMode} />
                       </p>
                       <span className="text-[10px] text-[var(--t3)] shrink-0 tabular-nums">{fmtDate(email.received)}</span>
                     </div>
-                    <p className={cn('text-[11.5px] truncate', email.unread ? 'font-medium text-[var(--t2)]' : 'text-[var(--t3)]')}>{email.subject}</p>
+                    <p className={cn('text-[11.5px] truncate', email.unread ? 'font-medium text-[var(--t2)]' : 'text-[var(--t3)]')}>
+                      <Highlight text={email.subject} terms={hlTerms} mode={hlMode} />
+                    </p>
+                    {/* Search hits can come from anywhere — say where. */}
+                    {email.folder && (
+                      <span className="inline-flex items-center gap-1 text-[9.5px] text-[var(--t4)] truncate" title={email.folder}>
+                        <FolderOpen className="w-2.5 h-2.5 shrink-0" />
+                        <span className="truncate">{email.folder}</span>
+                      </span>
+                    )}
                     <div className="flex items-center gap-2">
-                      <span className="text-[10.5px] text-[var(--t3)] truncate flex-1">{email.bodyPreview || ' '}</span>
+                      <span className="text-[10.5px] text-[var(--t3)] truncate flex-1"><Highlight text={email.bodyPreview || ' '} terms={hlTerms} mode={hlMode} /></span>
                       {emailCategories[email.entryId] && (
                         <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 truncate max-w-[64px]">
                           {emailCategories[email.entryId]}
@@ -2884,6 +3283,9 @@ export function InboxPage({
                         </span>
                       )}
                     </div>
+                    {/* Proof of the hit: sender/subject/preview cover a fraction of
+                        what search reads, so anything matched elsewhere is quoted here. */}
+                    <MatchTrail matches={email.matches} terms={hlTerms} mode={hlMode} />
                   </div>
                 </div>
               ))}
@@ -2946,7 +3348,7 @@ export function InboxPage({
           {openTabs.length > 0 && (
             <div className="shrink-0 flex items-center border-b border-[var(--line-2)] bg-[var(--s1)]">
               {/* Scroll-left arrow */}
-              <button
+              <button aria-label="Scroll tabs left"
                 onClick={() => scrollTabBar('left')}
                 className="shrink-0 w-6 h-full flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors border-r border-[var(--line)]">
                 <ChevronLeft className="w-3.5 h-3.5" />
@@ -3020,7 +3422,7 @@ export function InboxPage({
                     <span className="text-[11px] font-medium truncate flex-1">{t.label}</span>
                     {/* Close button — hidden for pinned tabs */}
                     {!t.pinned && (
-                      <button
+                      <button aria-label="Close tab"
                         onClick={e => { e.stopPropagation(); closeTab(t.id); }}
                         title="Close tab"
                         className="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-[var(--s-hover)] transition-all shrink-0 ml-0.5">
@@ -3032,7 +3434,7 @@ export function InboxPage({
               </div>
 
               {/* Scroll-right arrow */}
-              <button
+              <button aria-label="Scroll tabs right"
                 onClick={() => scrollTabBar('right')}
                 className="shrink-0 w-6 h-full flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors border-l border-[var(--line)]">
                 <ChevronRight className="w-3.5 h-3.5" />
@@ -3082,7 +3484,7 @@ export function InboxPage({
               style={t.id !== activeTabId ? { display: 'none' } : undefined}>
               <EmailDetailPanel
                 initialEntryId={t.id}
-                emailList={emails}
+                emailList={displayEmails}
                 toast={toast}
                 setAppTab={setTab}
                 onMarkRead={handleMarkRead}

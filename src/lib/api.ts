@@ -11,6 +11,13 @@ import type {
   TodoItem, TodoScanStatus, TodoRecipientOption,
 } from '../types';
 
+// How a search term has to sit in the text it matched. Mirrors MATCH_MODES in
+// server.ts and outlook_reader.py.
+export type MatchMode = 'part' | 'word' | 'start';
+
+// Where one term was found: the field it landed in, plus the text around it.
+export interface SearchMatch { field: string; text: string; }
+
 export interface UserDoc {
   id: string; title: string; category: string;
   file: string; origName: string; ext: string; size: number; date: string;
@@ -66,16 +73,24 @@ export const api = {
 
   // Search & Copilot
   search:        (q: string) => axios.get<{ results: SearchResult[]; error?: string }>('/api/search', { params: { q } }).then(r => r.data),
+  // 240s, not 60s: the main brain now decides for itself whether to ground an answer
+  // on the web, and a grounded multi-part question (search + fetch + cite, plus the
+  // server's two backoff retries on a Gemini 503) runs well past a minute. At 60s the
+  // client gave up mid-answer and reported "timeout of 60000ms exceeded" for a request
+  // that was still working. The route itself has no deadline — see /api/ai in server.ts.
   ai:            (query: string, history?: Array<{role:string;text:string}>) =>
                    axios.post<{ answer: string | null; error?: string; source?: string; suggestions?: string[]; title?: string }>(
-                     '/api/ai', { query, history }, { timeout: 60_000 }).then(r => r.data),
+                     '/api/ai', { query, history }, { timeout: 240_000 }).then(r => r.data),
   aiStatus:      () => axios.get<{ available: boolean }>('/api/ai/status').then(r => r.data),
   aiModels:      () => axios.get<{ models: Array<{ id: string; label: string }>; current: string; fallback: string; error?: string }>('/api/ai-models').then(r => r.data),
   // Smart in-chat quote search: classifies the message, searches the D&Q Store +
   // Quotations List when it's a search, and returns a prose answer + result cards.
+  // 240s for the same reason as `ai` above, and this is the one the Ask Vector tab
+  // actually sends on: a search-classified message hits SharePoint (D&Q Store + the
+  // Quotations List) before Gemini writes a word, so it is the slower of the two.
   quoteAsk:      (query: string, history?: Array<{role:string;text:string}>) =>
                    axios.post<{ answer: string | null; results?: DqDoc[]; meta?: { count: number; scope: string; term: string }; error?: string; suggestions?: string[]; title?: string }>(
-                     '/api/quote-ask', { query, history }, { timeout: 60_000 }).then(r => r.data),
+                     '/api/quote-ask', { query, history }, { timeout: 240_000 }).then(r => r.data),
 
   // Analytics
   analytics: (days: number) => axios.get<AnalyticsResponse>('/api/analytics', { params: { days } }).then(r => r.data),
@@ -87,16 +102,40 @@ export const api = {
   outlookMailboxes:   () => axios.get<{ mailboxes: any[]; error?: string }>('/api/outlook/mailboxes', { timeout: 20_000 }).then(r => r.data),
   outlookEmails:      (storeId: string, limit = 30, unread = false, signal?: AbortSignal) =>
                         axios.get<{ emails: any[]; error?: string }>('/api/outlook/emails', { params: { storeId, limit, unread }, timeout: 60_000, signal }).then(r => r.data),
-  outlookEmail:       (id: string, signal?: AbortSignal) => axios.get<any>(`/api/outlook/email/${encodeURIComponent(id)}`, { timeout: 15_000, signal }).then(r => r.data),
-  outlookSummarize:      (payload: any, signal?: AbortSignal) => axios.post<{ summary: string | null; cached?: boolean; imagesRead?: number; error?: string }>('/api/outlook/summarize', payload, { timeout: 90_000, signal }).then(r => r.data),
+  // `storeId` is the mailbox the hit came from; a shared-mailbox EntryID does
+  // not resolve against the default store, so opening fails without it.
+  outlookEmail:       (id: string, storeId?: string, signal?: AbortSignal) =>
+                        axios.get<any>(`/api/outlook/email/${encodeURIComponent(id)}`, { params: { store: storeId || 'default' }, timeout: 30_000, signal }).then(r => r.data),
+  // Searches the scoped mail index (UKQuoteFactoryEL → Inbox + Completed by
+  // Laith): subject, sender, recipients, body and attachment names. Falls back to
+  // a live Outlook sweep while the index is still cold.
+  // `mode` decides what counts as a hit for each term: 'part' (substring, the
+  // default), 'word' (the term on its own) or 'start' (the term starting a word).
+  // Every hit comes back with `matches` — the field it landed in and the text
+  // around it, so a body/recipient/attachment hit can be shown, not just claimed.
+  outlookSearch:      (q: string, opts: { limit?: number; fields?: 'all' | 'meta'; since?: string; source?: 'auto' | 'index' | 'live'; mode?: MatchMode } = {}, signal?: AbortSignal) =>
+                        axios.get<{ emails: any[]; total?: number; source?: string; indexTotal?: number; lastSync?: string | null; folders?: number; truncated?: boolean; degraded?: number; mode?: MatchMode; error?: string }>(
+                          '/api/outlook/search',
+                          { params: { q, limit: opts.limit ?? 200, fields: opts.fields || 'all', since: opts.since || '', source: opts.source || 'auto', mode: opts.mode || 'part' },
+                            timeout: 300_000, signal }).then(r => r.data),
+  outlookIndexStatus: (signal?: AbortSignal) =>
+                        axios.get<{ built: boolean; total: number; lastSync?: string | null; syncing?: boolean; folders: { folder: string; items: number; lastSync: string }[]; error?: string }>(
+                          '/api/outlook/index/status', { timeout: 20_000, signal }).then(r => r.data),
+  outlookIndexSync:   (full = false) =>
+                        axios.post<{ ok?: boolean; added?: number; removed?: number; total?: number; seconds?: number; error?: string }>(
+                          '/api/outlook/index/sync', { full }, { timeout: 900_000 }).then(r => r.data),
+  // 240s, not 90s: a multimodal summarize can run ~60s on its own and the server now retries
+  // a Gemini 503 twice with backoff — a short client timeout would abort mid-retry and show
+  // "timeout exceeded" instead of letting the retry succeed.
+  outlookSummarize:      (payload: any, signal?: AbortSignal) => axios.post<{ summary: string | null; cached?: boolean; imagesRead?: number; error?: string }>('/api/outlook/summarize', payload, { timeout: 240_000, signal }).then(r => r.data),
   outlookGetSummary:     (entryId: string, signal?: AbortSignal) => axios.get<{ summary: string | null; includedIndices?: number[]; ts?: string }>(`/api/outlook/summary/${encodeURIComponent(entryId)}`, { timeout: 15_000, signal }).then(r => r.data),
   outlookSaveAttachment: (entryId: string) => axios.post<{ saved: any[]; count: number; error?: string }>('/api/outlook/save-attachment', { entryId }, { timeout: 30_000 }).then(r => r.data),
-  outlookDraftReply:     (payload: any, signal?: AbortSignal) => axios.post<{ draft: string | null; error?: string }>('/api/outlook/draft-reply', payload, { timeout: 60_000, signal }).then(r => r.data),
+  outlookDraftReply:     (payload: any, signal?: AbortSignal) => axios.post<{ draft: string | null; error?: string }>('/api/outlook/draft-reply', payload, { timeout: 150_000, signal }).then(r => r.data),
   outlookSendReply:      (entryId: string, body: string) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/send-reply', { entryId, body }, { timeout: 30_000 }).then(r => r.data),
   outlookFeedback:       (payload: any) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/feedback', payload, { timeout: 10_000 }).then(r => r.data),
   feedback:              (payload: { message: string; category?: string; page?: string; userName?: string | null; userEmail?: string | null }) =>
                            axios.post<{ ok?: boolean; stored?: boolean; emailed?: boolean; error?: string }>('/api/feedback', payload, { timeout: 30_000 }).then(r => r.data),
-  outlookChat:           (payload: any, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/outlook/chat', payload, { timeout: 60_000, signal }).then(r => r.data),
+  outlookChat:           (payload: any, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/outlook/chat', payload, { timeout: 150_000, signal }).then(r => r.data),
   // EL Internal Info tab
   elInternalList:        (signal?: AbortSignal) => axios.get<{ emails: any[]; digest: string | null; digestAt: string | null; lastRefreshAt: string | null }>('/api/el-internal/list', { timeout: 15_000, signal }).then(r => r.data),
   elInternalRefresh:     (signal?: AbortSignal) => axios.post<{ added: number; total: number; emails: any[]; lastRefreshAt: string; error?: string }>('/api/el-internal/refresh', {}, { timeout: 120_000, signal }).then(r => r.data),
@@ -104,7 +143,7 @@ export const api = {
   elInternalChat:        (payload: { history: any[]; question: string }, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/el-internal/chat', payload, { timeout: 60_000, signal }).then(r => r.data),
   // Fenton KB tab
   fentonList:            (signal?: AbortSignal) => axios.get<{ cards: any[]; lastRefreshAt: string | null }>('/api/fenton/list', { timeout: 15_000, signal }).then(r => r.data),
-  fentonRefresh:         (force = false, signal?: AbortSignal) => axios.post<{ added: number; total: number; cards: any[]; lastRefreshAt: string; error?: string }>('/api/fenton/refresh', { force }, { timeout: 180_000, signal }).then(r => r.data),
+  fentonRefresh:         (force = false, signal?: AbortSignal) => axios.post<{ added: number; total: number; skipped: number; cards: any[]; lastRefreshAt: string; error?: string }>('/api/fenton/refresh', { force }, { timeout: 600_000, signal }).then(r => r.data),
   fentonChat:            (payload: { history: any[]; question: string }, signal?: AbortSignal) => axios.post<{ answer: string | null; error?: string }>('/api/fenton/chat', payload, { timeout: 60_000, signal }).then(r => r.data),
   // Quick Quote (Inbox proposal generator)
   quoteDetectCbu:        (body: string, systems: string[], signal?: AbortSignal) => axios.post<{ system: string }>('/api/quote/detect-cbu', { body, systems }, { timeout: 30_000, signal }).then(r => r.data),
@@ -242,12 +281,22 @@ export interface CrmSyncStatus {
   csvExists:     boolean;
 }
 
-// ─── Conflict item returned when a duplicate is found in SharePoint ──────────
+// ─── One row of the batch that needs a decision before upload ────────────────
+// 'duplicate'  — already in SharePoint (or twice in this batch)
+// 'blank'      — extraction found no id, no code and no name
+// 'incomplete' — uploadable, but missing SALESFORCE ID / REQUESTED FROM
 export interface ConflictItem {
+  key:              string;   // CSV row index — the decision key
+  kind:             'duplicate' | 'blank' | 'incomplete';
+  matchedOn:        string;   // which field matched the existing item
   sfid:             string;
+  rowLabel:         string;
+  missing:          string[];
   existingId:       number;
   existingTitle:    string;
   existingCustomer: string;
+  existingCreated:  string;
+  defaultAction:    'replace' | 'add' | 'skip';
 }
 
 // ─── SSE runner for /api/run/step1, /api/run/step2 ──────────────────────────

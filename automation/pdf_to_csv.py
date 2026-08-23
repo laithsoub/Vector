@@ -188,6 +188,242 @@ def extract_quotation_name(page1_text, salesforce_id):
     return ""
 
 
+# Short-form Salesforce ids as they appear in BidManager exports and in file
+# names (CR00…/SR00…/EU00…), alongside the full 18-char 006QO… form.
+# Underscore is a word character, so \b never fires on Eaton's
+# underscore-joined file names — use explicit alphanumeric lookarounds instead.
+_SFID_RE = re.compile(
+    r"(?<![A-Za-z0-9])(006[A-Za-z0-9]{15}|(?:CR|SR|EU|QR)00[A-Za-z0-9]{6,12})(?![A-Za-z0-9])"
+)
+
+# Quotation codes: BidManager negotiation codes (EE3E0721X6K1-0000) and the
+# older BidManager series (QB28262A, QW28073A4R, QV27682A).
+_CODE_RE = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z]{2}[A-Z0-9]{2}\d{4}X\d[A-Z]\d(?:-\d{4})?|Q[BWV]\d{5}[A-Z]\d?R?)(?![A-Za-z0-9])"
+)
+
+
+# Bare Salesforce tails as they appear inside project references and quotation
+# names: '00yduKjYAI' and '00zc0jpYAA' are the records '006QO00000yduKjYAI' and
+# '006QO00000zc0jpYAA'. The last 3 chars are Salesforce's checksum, drawn from
+# [A-Z0-5] — do NOT assume it always reads 'YAx', it only looks that way in the
+# ids seen so far. `_is_sfid_tail` does the rest of the filtering.
+_SFID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9])00([A-Za-z0-9]{5}[A-Z0-5]{3})(?![A-Za-z0-9])")
+
+
+def _is_sfid_tail(tail):
+    """Reject the numeric strings the loose tail pattern would otherwise catch.
+
+    Salesforce ids are mixed case ('zc0jpYAA', 'tlWsnYAE'), so requiring both a
+    lowercase and an uppercase letter throws out dates and order numbers such as
+    '0012345012' without having to hard-code the checksum's shape.
+    """
+    return any(c.islower() for c in tail) and any(c.isupper() for c in tail)
+
+
+def canonical_sfid(value):
+    """Return the full 18-char id for any spelling we recognise, else ''.
+
+    The label patterns below take whatever token follows 'Project Reference:',
+    which is how customer names ('Eversheds', 'RAF', 'Wanlip') ended up in the
+    SALESFORCE ID column — SharePoint then dropped them for being under 18
+    chars and the row uploaded with no id at all. Validate here instead.
+    """
+    v = (value or "").strip().rstrip("-")
+    if not v:
+        return ""
+    m = _SFID_RE.fullmatch(v)
+    if m:
+        s = m.group(1)
+        return s if s.startswith("006") else "006QO00000" + s[4:]
+    m = _SFID_TAIL_RE.fullmatch(v)
+    if m and _is_sfid_tail(m.group(1)):
+        return "006QO00000" + m.group(1)
+    return ""
+
+
+def find_sfid(text):
+    """First Salesforce id of any spelling in a blob of text, canonicalised."""
+    m = _SFID_RE.search(text or "")
+    if m:
+        return canonical_sfid(m.group(1))
+    for m in _SFID_TAIL_RE.finditer(text or ""):
+        if _is_sfid_tail(m.group(1)):
+            return "006QO00000" + m.group(1)
+    return ""
+
+
+# Shared/no-reply Eaton accounts — a thread they touch was still requested by
+# a person further down it, so they must never win the REQUESTED FROM lookup.
+_SHARED_MAILBOXES = {
+    "ukquotefactoryel@eaton.com",
+    "ukcommorders@eaton.com",
+    "uklsd-service@eaton.com",
+    "ukcustomerservice@eaton.com",
+}
+
+
+def _mail_index_path():
+    """The local mirror of the quote mailbox, written by outlook_reader.py."""
+    env = os.environ.get("MAGIC_MAIL_INDEX", "").strip()
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(os.path.dirname(here), "mail_index.db"),
+                 os.path.join(here, "mail_index.db")):
+        if os.path.exists(cand):
+            return cand
+    return ""
+
+
+def find_requester(salesforce_id="", quotation_code="", quotation_name=""):
+    """Who at Eaton asked for this quote — 'Lastname, Firstname' or ''.
+
+    A UK quotation PDF names the inside-sales contact and the shared mailbox,
+    never the requester, so REQUESTED FROM simply cannot be read off the
+    document. The request arrived as an email, and `mail_index.db` still holds
+    that thread — take the earliest named Eaton sender on it.
+    """
+    db = _mail_index_path()
+    if not db:
+        return ""
+
+    terms = []
+    sfid = (salesforce_id or "").strip()
+    if sfid:
+        # The id tail is the one part shared by every spelling of it
+        # (006QO00000xxHR3YAM / CR00xxHR3YAM / 00xxHR3YAM).
+        terms.append(sfid[10:] if sfid.startswith("006QO00000") else sfid)
+    if quotation_code:
+        terms.append(quotation_code.strip())
+    if quotation_name and len(quotation_name.strip()) >= 8:
+        terms.append(quotation_name.strip())
+
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    except Exception as e:
+        print(f"    [WARN] Could not read the mail index: {e}")
+        return ""
+
+    try:
+        for term in terms:
+            if len(term) < 5:
+                continue
+            rows = con.execute(
+                "SELECT sender, sender_email FROM mail "
+                "WHERE blob LIKE ? AND sender_email LIKE '%@eaton.com' "
+                "ORDER BY received ASC LIMIT 40",
+                (f"%{term.lower()}%",),
+            ).fetchall()
+            for sender, email in rows:
+                if (email or "").strip().lower() in _SHARED_MAILBOXES:
+                    continue
+                sender = (sender or "").strip()
+                # The index stores the directory's 'Lastname, Firstname' form,
+                # which is exactly what the people-picker resolves against.
+                if sender and "," in sender:
+                    return sender
+    except Exception as e:
+        print(f"    [WARN] Requester lookup failed: {e}")
+    finally:
+        con.close()
+    return ""
+
+
+def parse_bidmanager_bom(page1_text):
+    """Parse the BidManager 'Detail Bill of Material' export.
+
+    None of the standard UK quotation labels ('QUOTATION REF:', 'Quotation No:',
+    'Project Reference:') exist in this layout, so before this every BidManager
+    file was uploaded with a blank SALESFORCE ID, quotation code and name.
+    Page 1 reads:
+
+        Detail Bill of Material                                    Page 1 of 1
+        Project Name: CR00x2HCUYA2 A - Red Tree Labs  Negotiation No: EE3E0721X6K1
+        Glasgow
+        General Order No:                             Alternate No: 0000
+        Bid Date 8/11/2026                            Est. Purchase Date: 9/11/2026
+
+    The project name is split across lines by the two-column layout, so the
+    continuation line ('Glasgow') is folded back in.
+    """
+    out = {"sfid": "", "code": "", "name": "", "issue_date": ""}
+    if "Negotiation No" not in page1_text and "Detail Bill of Material" not in page1_text:
+        return out
+
+    lines = page1_text.split("\n")
+
+    # ── Project Name line: SF ID + quotation name ──────────────────────────
+    for idx, line in enumerate(lines):
+        if not re.search(r"Project Name\s*:", line, re.IGNORECASE):
+            continue
+        m_sf = _SFID_RE.search(line)
+        if m_sf:
+            out["sfid"] = m_sf.group(1)
+        # Name = text between the '-' separator and the next column's label.
+        tail = line[m_sf.end():] if m_sf else line.split(":", 1)[-1]
+        tail = re.split(r"Negotiation No|General Order No|Alternate No", tail,
+                        maxsplit=1, flags=re.IGNORECASE)[0]
+        # Drop the revision letter that sits between the id and the dash ('A - ')
+        name = re.sub(r"^\s*[A-Z]?\d*\s*[-–]\s*", "", tail).strip()
+        # Fold in wrapped continuation lines (no label, not a table header).
+        for cont in lines[idx + 1: idx + 3]:
+            cont = cont.strip()
+            if not cont or ":" in cont:
+                break
+            if re.match(r"(Item No\.|Bid Date|Total|Catalog|Qty|Designation)", cont, re.IGNORECASE):
+                break
+            name = f"{name} {cont}".strip()
+        out["name"] = re.sub(r"\s{2,}", " ", name).strip(" -–")
+        break
+
+    # ── Quotation code = Negotiation No + Alternate No ─────────────────────
+    neg = extract_field(page1_text, r"Negotiation No\s*:?\s*([A-Za-z0-9\-]+)")
+    alt = extract_field(page1_text, r"Alternate No\s*:?\s*(\d+)")
+    if neg:
+        out["code"] = f"{neg}-{alt}" if alt else neg
+
+    # ── Bid Date. BidManager is a US system and writes M/D/YYYY; only trust
+    #    it when the two components disambiguate themselves. ───────────────
+    m_bd = re.search(r"Bid Date\s*:?\s*(\d{1,2})/(\d{1,2})/(\d{4})", page1_text, re.IGNORECASE)
+    if m_bd:
+        a, b, y = int(m_bd.group(1)), int(m_bd.group(2)), m_bd.group(3)
+        month, day = (a, b) if a <= 12 else (b, a)
+        if month <= 12 and day <= 31:
+            out["issue_date"] = f"{day:02d}/{month:02d}/{y}"
+
+    return out
+
+
+def parse_quote_filename(pdf_path):
+    """Recover the ids Eaton bakes into quote file names, e.g.
+    'EE3E0721X6K1-0000_CR00x2HCUYA2_A_-_Red_Tree_Labs_Glasgow_202_1.PDF.pdf'.
+
+    Used only as a fallback when the document body yields nothing.
+    """
+    out = {"sfid": "", "code": "", "name": ""}
+    stem = os.path.basename(pdf_path)
+    # Strip repeated extensions ('….PDF.pdf' is common from the mail export).
+    for _ in range(2):
+        stem = re.sub(r"\.(pdf|docx?|dotm|dotx|xlsx?|xlsm|xlsb|odt|ods)$", "", stem,
+                      flags=re.IGNORECASE)
+
+    m_sf = _SFID_RE.search(stem)
+    if m_sf:
+        out["sfid"] = m_sf.group(1)
+    m_code = _CODE_RE.search(stem.upper())
+    if m_code:
+        out["code"] = m_code.group(1)
+
+    m_name = re.search(r"_-_(.+)$", stem)
+    if m_name:
+        name = m_name.group(1).replace("_", " ")
+        name = re.sub(r"\s+\d+(\s+\d+)*$", "", name).strip()   # trailing '202 1' counters
+        out["name"] = name
+    return out
+
+
 def process_pdf(pdf_path, arrived_date="", division="", today=""):
     """Extract all required fields from a single PDF."""
     print(f"  Processing: {os.path.basename(pdf_path)}")
@@ -268,6 +504,28 @@ def process_pdf(pdf_path, arrived_date="", division="", today=""):
         m_sc = re.search(r"Eaton Sales Contact:\s*([^\n]+)", page1_text, re.IGNORECASE)
         if m_sc:
             salesman = m_sc.group(1).strip()
+
+    # ── BidManager layout + file-name fallbacks ─────────────────────────────
+    # A BidManager "Detail Bill of Material" matches none of the labels above,
+    # and the file name carries the ids even when the body does not.
+    bid = parse_bidmanager_bom(page1_text)
+    fn  = parse_quote_filename(pdf_path)
+
+    # Keep the id only if it really is one, then hunt for the real one in the
+    # document, the quotation name and finally the file name.
+    salesforce_id = canonical_sfid(salesforce_id) or canonical_sfid(bid["sfid"])
+    if not salesforce_id:
+        for blob in (page1_text, quotation_name, os.path.basename(pdf_path)):
+            salesforce_id = find_sfid(blob)
+            if salesforce_id:
+                break
+
+    if not quotation_code:
+        quotation_code = bid["code"] or fn["code"]
+    if not quotation_name:
+        quotation_name = bid["name"] or fn["name"]
+    if not issue_date and bid["issue_date"]:
+        issue_date = bid["issue_date"]
 
     # ── BOM extractions (all pages after page 1, also try all_text_uk for W26) ─────
     price = extract_total_price(bom_text) or extract_total_price(all_text_uk)
@@ -1606,6 +1864,19 @@ if __name__ == "__main__":
                         print(f"    Division    : {auto_div} (auto-detected)")
                 except Exception:
                     pass
+
+            # ── REQUESTED FROM: recover from the originating mail thread ──────
+            # No quotation format carries the requester, so this is the only
+            # source there is. Applies to every language, not just UK.
+            if not (row.get("REQUESTED FROM EATON (INTERNAL)") or "").strip():
+                who = find_requester(row.get("SALESFORCE ID"),
+                                     row.get("QUOTATION CODE"),
+                                     row.get("QUOTATION NAME"))
+                if who:
+                    row["REQUESTED FROM EATON (INTERNAL)"] = who
+                    print(f"    Requested by: {who} (from the mail thread)")
+                else:
+                    print(f"    [!] No requester found — REQUESTED FROM will be empty")
 
             rows.append(row)
             print(f"    [OK]\n")

@@ -11,6 +11,7 @@ import {
   Sun, Moon,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
+import { failed, plural } from '../lib/errors';
 import type { ToastFn } from '../App';
 
 // ── Backend response types ──────────────────────────────────────────────────
@@ -186,7 +187,7 @@ function ExpandedPanel({
         setResult(null);
       }
     } catch (e: any) {
-      toast('err', e.message || 'Failed to read Outlook');
+      toast('err', failed('read the selected email from Outlook', e));
       setCurrent({ selected: false, error: e.message });
     }
     setPulling(false);
@@ -203,7 +204,7 @@ function ExpandedPanel({
   // ── Price the current email ─────────────────────────────────────────────
   async function priceEmail() {
     if (!current?.selected) {
-      toast('warn', 'No email selected in Outlook — pull again first');
+      toast('warn', 'No email is selected in Outlook — click one, then pull again');
       return;
     }
     setBusy(true);
@@ -226,7 +227,7 @@ function ExpandedPanel({
       const resp = await fetch('/api/schematics/price', { method: 'POST', body: fd });
       const data: PriceResult = await resp.json();
       if (data.error) {
-        toast('err', data.error);
+        toast('err', failed('price this email', data.error));
         setResult(data);
       } else {
         setResult(data);
@@ -234,15 +235,15 @@ function ExpandedPanel({
         const groups  = data.queries?.length || 0;
         const cands   = data.candidates?.length || 0;
         if (groups > 0) {
-          toast('ok', `${groups} item${groups === 1 ? '' : 's'} detected · ${cands} extra suggestions`);
+          toast('ok', `Detected ${plural(groups, 'item')} · ${plural(cands, 'extra suggestion')}`);
         } else if (matched > 0 || cands > 0) {
-          toast('ok', `Priced: ${matched} match${matched === 1 ? '' : 'es'}${cands ? ` · ${cands} suggestions` : ''}`);
+          toast('ok', `Priced ${plural(matched, 'match', 'matches')}${cands ? ` · ${plural(cands, 'suggestion')} to review` : ''}`);
         } else {
-          toast('warn', 'No matches or candidates');
+          toast('warn', 'Nothing in this email matched the price list');
         }
       }
     } catch (e: any) {
-      toast('err', e.message);
+      toast('err', failed('price this email', e));
     }
     setBusy(false);
   }
@@ -250,7 +251,7 @@ function ExpandedPanel({
   // ── Add candidate to the running schedule text ───────────────────────────
   function addToSchedule(c: OverlayCandidate, contextLabel?: string) {
     if (c.ntp == null) {
-      toast('warn', `${c.cat_no} has no price`);
+      toast('warn', `${c.cat_no} has no price in the list — nothing to add`);
       return;
     }
     const qty  = c.suggested_qty && c.suggested_qty > 0 ? c.suggested_qty : 1;
@@ -267,7 +268,7 @@ function ExpandedPanel({
       );
       return header + '\n' + row;
     });
-    toast('ok', `Added ${c.cat_no} × ${qty}`);
+    toast('ok', `Added ${c.cat_no} × ${qty} to the schedule`);
   }
 
   function clearSchedule() {
@@ -277,7 +278,7 @@ function ExpandedPanel({
   function copySchedule() {
     if (!schedule.trim()) return;
     navigator.clipboard.writeText(schedule);
-    toast('ok', 'Schedule copied');
+    toast('ok', 'Schedule copied to the clipboard');
   }
 
   const atts = current?.attachments || [];
@@ -292,19 +293,19 @@ function ExpandedPanel({
         className="flex items-center gap-2 px-3 h-9 border-b border-[var(--line)] bg-gradient-to-r from-amber-500 to-amber-600 text-white shrink-0 cursor-grab active:cursor-grabbing">
         <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center font-bold text-[12px]">V</span>
         <p className="font-semibold text-[12px] flex-1 truncate">EL Pricer</p>
-        <button
+        <button aria-label={dark ? 'Light mode' : 'Dark mode'}
           onClick={() => setDark(!dark)}
           title={dark ? 'Light mode' : 'Dark mode'}
           className="p-1 rounded hover:bg-white/20 transition-colors">
           {dark ? <Sun className="w-3 h-3" /> : <Moon className="w-3 h-3" />}
         </button>
-        <button
+        <button aria-label={pinned ? 'Pinned on top' : 'Not on top'}
           onClick={togglePin}
           title={pinned ? 'Pinned on top' : 'Not on top'}
           className="p-1 rounded hover:bg-white/20 transition-colors">
           {pinned ? <Pin className="w-3 h-3" /> : <PinOff className="w-3 h-3" />}
         </button>
-        <button
+        <button aria-label="Collapse to V button"
           onClick={onCollapse}
           title="Collapse to V button"
           className="p-1 rounded hover:bg-white/20 transition-colors">
@@ -350,7 +351,7 @@ function ExpandedPanel({
                     </p>
                   )}
                 </div>
-                <button
+                <button aria-label="Re-read current Outlook selection"
                   onClick={pullFromOutlook}
                   disabled={pulling}
                   title="Re-read current Outlook selection"

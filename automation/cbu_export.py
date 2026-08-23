@@ -131,12 +131,12 @@ def main():
     docs_dir = os.path.join(here, "docs")
 
     if not os.path.exists(template):
-        print(f"__ERROR__:cbu_calculator.xlsm not found at {template}")
+        print(f"__ERROR__:cbu_calculator.xlsm is missing from this install ({template})")
         sys.exit(1)
 
     lo = find_libreoffice()
     if not lo:
-        print("__ERROR__:LibreOffice not found")
+        print("__ERROR__:LibreOffice is not installed — it is what converts the sheet to PDF")
         sys.exit(1)
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -183,7 +183,7 @@ def main():
             sys.stderr.write(f"[warn] PDF merge skipped: {err}\n")
             final_pdf = brief_pdfs[0]
     elif final_pdf is None:
-        print("__ERROR__:No PDFs generated")
+        print("__ERROR__:no PDFs came out of the converter")
         sys.exit(1)
 
     print(f"__PDF__:{final_pdf}")

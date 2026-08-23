@@ -4,6 +4,7 @@ import { BookOpen, FileText, Download, Plus, X, Loader2, Trash2 } from 'lucide-r
 import { cn } from '../lib/cn';
 import { Card, Pill, Button } from '../lib/ui';
 import { api, type UserDoc } from '../lib/api';
+import { failed } from '../lib/errors';
 import type { ToastFn } from '../App';
 
 // ── Built-in document packs (served from server docs/) ────────────────────────
@@ -68,9 +69,9 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
                        : ['xlsx', 'xls'].includes(ext) ? 'Spreadsheet'
                        : ['doc', 'docx'].includes(ext) ? 'Document' : 'Custom';
         const r = await api.docsUserUpload(f, f.name.replace(/\.[^.]+$/, ''), category);
-        if (!r.ok) toast('err', `${f.name}: ${r.error || 'upload failed'}`);
-        else toast('ok', `${f.name} added`);
-      } catch (e: any) { toast('err', `${f.name}: ${e.message}`); }
+        if (!r.ok) toast('err', failed(`upload ${f.name}`, r.error));
+        else toast('ok', `${f.name} added to your documents`);
+      } catch (e: any) { toast('err', failed(`upload ${f.name}`, e)); }
     }
     setUploading(false);
     load();
@@ -79,8 +80,8 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
   async function del(d: UserDoc) {
     if (!confirm(`Remove "${d.title}"?`)) return;
     if (viewing === `user:${d.id}`) setViewing(null);
-    try { await api.docsUserDelete(d.id); toast('info', `${d.title} removed`); load(); }
-    catch (e: any) { toast('err', e.message); }
+    try { await api.docsUserDelete(d.id); toast('info', `"${d.title}" removed from your documents`); load(); }
+    catch (e: any) { toast('err', failed(`remove "${d.title}"`, e)); }
   }
 
   return (
@@ -148,7 +149,7 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
                 <BookOpen className="w-4 h-4 text-white shrink-0" />
                 <span className="text-white text-[12px] font-semibold flex-1 leading-tight truncate" title={d.title}>{d.title}</span>
                 <Pill tone="neutral" className="!bg-white/15 !text-white !ring-white/20">{d.ext.toUpperCase()}</Pill>
-                <button onClick={() => del(d)} title="Remove"
+                <button aria-label="Remove" onClick={() => del(d)} title="Remove"
                   className="text-white/70 hover:text-white transition-colors shrink-0">
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>

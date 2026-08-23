@@ -130,7 +130,7 @@ export default function CBUCalculator() {
   };
 
   const CopyBtn = ({ val, id }: { val: string; id: string }) => (
-    <button onClick={() => copy(val, id)} title="Copy"
+    <button aria-label="Copy" onClick={() => copy(val, id)} title="Copy"
       className="ml-1.5 p-0.5 rounded text-zinc-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors shrink-0">
       {copied === id
         ? <Check className="w-3 h-3 text-emerald-500"/>

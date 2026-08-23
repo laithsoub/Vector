@@ -103,7 +103,7 @@ function RetryQueue() {
               <p className="text-[10.5px] text-[var(--t2)] truncate mt-0.5">{item.lastError}</p>
               <p className="text-[10px] text-[var(--t3)] mt-0.5">{new Date(item.timestamp).toLocaleString()}</p>
             </div>
-            <button onClick={() => dismiss(item.id)} className="text-[var(--t3)] hover:text-[var(--warn)] mt-0.5">
+            <button aria-label="Dismiss" onClick={() => dismiss(item.id)} className="text-[var(--t3)] hover:text-[var(--warn)] mt-0.5">
               <Trash2 className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -452,9 +452,14 @@ export function SettingsPage({
           />
         </div>
 
-        {/* Language */}
+        {/* Language. Scope is stated because it is real: the translations cover the
+            navigation, the header and this screen. Page content is English only,
+            and a picker that implies otherwise reads as a broken feature. */}
         <div className="mt-5 pt-4 border-t border-[var(--line)]">
-          <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)] mb-2">{t.language}</label>
+          <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)] mb-1">{t.language}</label>
+          <p className="text-[11.5px] text-[var(--t3)] mb-2">
+            {t.language_scope}
+          </p>
           <div className="flex gap-2">
             {(Object.keys(LANG_LABELS) as Lang[]).map(l => (
               <button key={l} onClick={() => setLang(l)}

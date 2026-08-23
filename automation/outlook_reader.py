@@ -1,12 +1,13 @@
 """
 outlook_reader.py — Read/write emails via Outlook desktop (win32com) or Microsoft Graph API.
 
-Actions: status, mailboxes, emails, email, save-attachment, send-reply, get-attachment,
-         flag, mark-unread, delete, forward, open-in-outlook, categorize,
-         suggest-attachments, reply-with-attachments, send-new, graph-connect
+Actions: status, mailboxes, emails, email, search, save-attachment, send-reply,
+         get-attachment, flag, mark-unread, delete, forward, open-in-outlook,
+         categorize, suggest-attachments, reply-with-attachments, send-new,
+         graph-connect
 Output: JSON to stdout
 """
-import sys, json, os, re, argparse, tempfile, base64, datetime
+import sys, json, os, re, argparse, tempfile, base64, datetime, time, sqlite3
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -56,6 +57,28 @@ _IMG_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff')
 # MAPI property tags: content-id (inline reference) + hidden-attachment flag.
 _PR_ATTACH_CONTENT_ID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
 _PR_ATTACHMENT_HIDDEN = "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"
+
+
+def att_info_light(att):
+    """Attachment facts that are cheap to read.
+
+    Skips the Content-ID probe: that is a PropertyAccessor round trip per
+    attachment (and it raises more often than it succeeds), which on a folder of
+    2 000 quote mails carrying ~5 attachments each dominates indexing time. cid:
+    resolution only matters when an email is actually opened, and that path
+    fetches the message live anyway.
+    """
+    name  = att.FileName or ''
+    lower = name.lower()
+    return {
+        'index':     att.Index,
+        'name':      name,
+        'size':      att.Size,
+        'isPdf':     lower.endswith('.pdf'),
+        'isImage':   lower.endswith(_IMG_EXTS),
+        'isInline':  False,
+        'contentId': '',
+    }
 
 
 def att_info(att):
@@ -125,6 +148,350 @@ def resolve_smtp(item):
         return addr
     except Exception:
         return getattr(item, 'SenderEmailAddress', '') or ''
+
+
+def _diag(msg):
+    """Diagnostics for the id-recovery path — stderr, so JSON on stdout stays clean."""
+    if os.environ.get('MAGIC_OUTLOOK_DIAG', '1') == '0':
+        return
+    try:
+        sys.stderr.write('[outlook] %s\n' % msg)
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def _safe_name(f):
+    try:
+        return f.Name or '?'
+    except Exception:
+        return '?'
+
+
+def _index_row_for(entry_id):
+    """(store_id, folder, subject, received) the search index last saw for an id."""
+    path = os.environ.get('MAGIC_MAIL_INDEX', '').strip() or default_index_path()
+    if not os.path.exists(path):
+        return None
+    try:
+        con = sqlite3.connect('file:%s?mode=ro' % path.replace('?', '%3f'), uri=True)
+        row = con.execute('SELECT store_id, folder, subject, received FROM mail'
+                          ' WHERE entry_id = ?', (entry_id,)).fetchone()
+        con.close()
+        return row
+    except Exception:
+        return None
+
+
+def _alias_for(entry_id):
+    """The id a moved message was last re-found under, if we already chased it.
+
+    The UI keeps holding the id the search returned, so every follow-up call
+    (attachments, summarize, reply) arrives with the DEAD id. Remembering the
+    swap keeps those working without a second mailbox sweep.
+    """
+    path = os.environ.get('MAGIC_MAIL_INDEX', '').strip() or default_index_path()
+    if not os.path.exists(path):
+        return ''
+    try:
+        con = sqlite3.connect('file:%s?mode=ro' % path.replace('?', '%3f'), uri=True)
+        row = con.execute('SELECT new_id FROM mail_alias WHERE old_id = ?', (entry_id,)).fetchone()
+        con.close()
+        return row[0] if row else ''
+    except Exception:
+        return ''
+
+
+def _remember_alias(old_id, new_id):
+    try:
+        path = os.environ.get('MAGIC_MAIL_INDEX', '').strip() or default_index_path()
+        con  = sqlite3.connect(path)
+        con.execute('CREATE TABLE IF NOT EXISTS mail_alias ('
+                    ' old_id TEXT PRIMARY KEY, new_id TEXT, updated TEXT)')
+        con.execute('INSERT OR REPLACE INTO mail_alias (old_id, new_id, updated)'
+                    ' VALUES (?, ?, ?)',
+                    (old_id, new_id, datetime.datetime.now().isoformat(timespec='seconds')))
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+def _folder_by_path(ns, fpath, store_id=''):
+    """The live folder behind a 'Mailbox\\Inbox\\Sub' path, or None."""
+    parts = [p for p in (fpath or '').split('\\') if p]
+    if not parts:
+        return None
+    roots = []
+    try:
+        for i in range(1, ns.Stores.Count + 1):
+            try:
+                st = ns.Stores.Item(i)
+                if store_id and st.StoreID != store_id:
+                    continue
+                roots.append(st.GetRootFolder())
+            except Exception:
+                continue
+    except Exception:
+        pass
+    if not roots:
+        # The stored StoreID went stale (mailbox re-added / profile rebuilt).
+        return _folder_by_path(ns, fpath, '') if store_id else None
+    for root in roots:
+        try:
+            if (root.Name or '').lower() != parts[0].lower():
+                continue
+        except Exception:
+            continue
+        cur = root
+        for name in parts[1:]:
+            nxt = None
+            try:
+                for j in range(1, cur.Folders.Count + 1):
+                    f = cur.Folders.Item(j)
+                    if (f.Name or '').lower() == name.lower():
+                        nxt = f
+                        break
+            except Exception:
+                pass
+            cur = nxt
+            if cur is None:
+                break
+        if cur is not None:
+            return cur
+    return None
+
+
+# Folders that structurally cannot hold a mail item — skipped when hunting for
+# a message whose EntryID went stale.
+NON_MAIL_FOLDER_NAMES = {
+    'calendar', 'contacts', 'externalcontacts', 'tasks', 'notes', 'journal',
+    'files', 'yammer root', 'conversation action settings', 'quick step settings',
+    'rss feeds', 'sync issues', 'the5 folders', 'suggested contacts',
+}
+
+
+def _search_scope_for(ns, folder, store_id):
+    """Yield folders a moved message could be in, cheapest-first.
+
+    A generator on purpose: walking a shared mailbox's whole tree costs ~10s
+    over the wire, which is the entire recovery budget spent before a single
+    message is looked at. So this yields the indexed folder, then its siblings,
+    then top-level folders - and the caller stops as soon as it has a hit or
+    runs out of clock.
+    """
+    seen = set()
+
+    def key(f):
+        try:
+            return (f.Name or '?').lower()
+        except Exception:
+            return '?'
+
+    def fresh(f):
+        k = key(f)
+        if k in seen:
+            return False
+        seen.add(k)
+        return True
+
+    if folder is not None and fresh(folder):
+        yield folder
+
+    parents = []
+    if folder is not None:
+        try:
+            parents.append(folder.Parent)
+        except Exception:
+            pass
+    root = None
+    try:
+        for i in range(1, ns.Stores.Count + 1):
+            st = ns.Stores.Item(i)
+            try:
+                if store_id and st.StoreID != store_id:
+                    continue
+            except Exception:
+                continue
+            root = st.GetRootFolder()
+            break
+    except Exception:
+        root = None
+    if root is not None:
+        parents.append(root)
+
+    # One level only, and no DefaultItemType probe per folder - both are
+    # per-folder round trips on a shared mailbox. Order matters more than
+    # breadth: mail moves to a "Completed by ..." / archive folder, and the
+    # budget usually runs out before an alphabetical sweep reaches one.
+    def rank(name):
+        n = (name or '').lower()
+        if 'completed' in n or 'done' in n:
+            return 0
+        if n in INBOX_NAMES:
+            return 1
+        if 'archive' in n or 'quote' in n or 'order' in n:
+            return 2
+        if n in SENT_NAMES:
+            return 3
+        if n in NON_MAIL_FOLDER_NAMES:
+            return 9                      # Contacts/Tasks/Yammer: never holds mail
+        return 4
+
+    for parent in parents:
+        try:
+            count = parent.Folders.Count
+        except Exception:
+            continue
+        batch = []
+        for j in range(1, min(count, 30) + 1):
+            try:
+                f = parent.Folders.Item(j)
+                batch.append(((rank(f.Name), (f.Name or '').lower()), f))
+            except Exception:
+                continue
+        batch.sort(key=lambda t: t[0])
+        for (r, _), f in batch:
+            if r >= 9:
+                continue
+            if fresh(f):
+                yield f
+
+
+def _recover_moved_item(ns, entry_id):
+    """Re-find a message whose indexed EntryID no longer resolves.
+
+    Outlook mints a NEW EntryID when a message moves between folders, so a
+    search hit indexed before the move opens with MAPI_E_NOT_FOUND - which
+    surfaces as the useless "The operation failed." The index still knows the
+    subject and received time, so hunt the message down across the mailbox and
+    re-stamp the row, and the next open is a straight hit.
+    """
+    row = _index_row_for(entry_id)
+    if not row:
+        _diag('recover: id not in index (live-search hit?) id=%s' % entry_id[:40])
+        return None
+    store_id, fpath, subject, received = row
+    if not subject:
+        _diag('recover: indexed row has no subject, folder=%s' % fpath)
+        return None
+    folder = _folder_by_path(ns, fpath, store_id or '')
+    _diag('recover: folder=%s resolved=%s subject=%r' % (fpath, folder is not None, (subject or '')[:60]))
+    want = None
+    try:
+        want = datetime.datetime.fromisoformat(str(received)).replace(tzinfo=None)
+    except Exception:
+        want = None
+    dasl = '@SQL="urn:schemas:httpmail:subject" = \'%s\'' % subject.replace("'", "''")
+    # A message that is genuinely gone costs the FULL sweep, and the caller is
+    # a UI request - so the hunt runs against a wall clock, not to completion.
+    try:
+        deadline = time.time() + float(os.environ.get('MAGIC_RECOVER_BUDGET', '9'))
+    except Exception:
+        deadline = time.time() + 9
+    best, best_gap, best_folder = None, None, None
+    scanned, started = 0, time.time()
+    for cand in _search_scope_for(ns, folder, store_id or ''):
+        if time.time() > deadline:
+            break
+        scanned += 1
+        try:
+            hits = cand.Items.Restrict(dasl)
+            count = hits.Count
+        except Exception as e:
+            _diag('recover: restrict failed on %s (%s)' % (_safe_name(cand), e))
+            continue
+        _diag('recover: %s -> %d subject hits' % (_safe_name(cand), count))
+        for k in range(1, min(count, 50) + 1):
+            try:
+                it = hits.Item(k)
+                if it.Class != 43:                       # olMail only
+                    continue
+                if (it.Subject or '').strip().lower() != subject.strip().lower():
+                    continue
+                gap = 0.0
+                if want is not None:
+                    got = it.ReceivedTime
+                    got = datetime.datetime(got.year, got.month, got.day,
+                                            got.hour, got.minute, got.second)
+                    gap = abs((got - want).total_seconds())
+                    if gap > 120:
+                        continue
+                if best is None or gap < best_gap:
+                    best, best_gap, best_folder = it, gap, cand
+            except Exception:
+                continue
+        if best is not None and (best_gap or 0) < 1:
+            break
+        if time.time() > deadline:
+            break
+    if best is None:
+        _diag('recover: no match in %d folders (%.1fs used)'
+              % (scanned, time.time() - started))
+        return None
+    _diag('recover: found in %s' % folder_path(best_folder))
+    try:                                                 # re-stamp the stale row
+        _remember_alias(entry_id, best.EntryID)
+        path = os.environ.get('MAGIC_MAIL_INDEX', '').strip() or default_index_path()
+        con  = sqlite3.connect(path)
+        con.execute('DELETE FROM mail WHERE entry_id = ?', (best.EntryID,))
+        con.execute('UPDATE mail SET entry_id = ?, folder = ? WHERE entry_id = ?',
+                    (best.EntryID, folder_path(best_folder), entry_id))
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+    return best
+
+
+def item_by_id(ns, entry_id, store_id='', _depth=0):
+    """GetItemFromID that also works for items outside the default store.
+
+    A bare GetItemFromID resolves the EntryID against the default store, so an
+    id coming from a shared mailbox — which full-mailbox search returns — can
+    raise. Retry with every known StoreID, then — for an id the index recorded
+    before the message was moved, which kills the id — re-find the message by
+    subject and received time across its mailbox.
+    """
+    if store_id and store_id not in ('default', 'all'):
+        try:
+            return ns.GetItemFromID(entry_id, store_id)
+        except Exception:
+            pass
+    err = None
+    try:
+        return ns.GetItemFromID(entry_id)
+    except Exception as e:
+        err = e
+    try:
+        for i in range(1, ns.Stores.Count + 1):
+            try:
+                sid = ns.Stores.Item(i).StoreID
+            except Exception:
+                continue
+            try:
+                return ns.GetItemFromID(entry_id, sid)
+            except Exception:
+                continue
+    except Exception:
+        pass
+    # No store knows this id any more: the message moved (a move mints a new
+    # EntryID) or was deleted after the index recorded it. Try to find it again.
+    alias = _alias_for(entry_id)
+    if alias and alias != entry_id and _depth < 2:       # A->B->A can happen: cap it
+        try:
+            return item_by_id(ns, alias, store_id, _depth + 1)
+        except Exception:
+            pass
+    try:
+        found = _recover_moved_item(ns, entry_id)
+    except Exception:
+        found = None
+    if found is not None:
+        return found
+    raise Exception('Outlook could not open that message - it was moved or deleted '
+                    'after the search index recorded it. Rebuild the index and try '
+                    'again. (Outlook said: %s)' % (err if err else 'not found'))
 
 
 def email_summary(item):
@@ -419,6 +786,458 @@ def _restrict_since(items, since_str, until_str='', with_attachment=False):
         return items.Restrict(clause)
     except Exception:
         return items
+
+
+# ─── Full-mailbox search ──────────────────────────────────────────────────────
+# Classic Outlook's own search box leans on the Windows Search index, which on
+# this machine is stale/broken — that is the whole reason this action exists. So
+# every query here goes through Items.Restrict with a DASL filter, which Outlook
+# evaluates itself (MAPI, no index involved). Slower than an indexed hit, but it
+# always finds what is actually in the store.
+SEARCH_PROPS = {
+    'subject':   'urn:schemas:httpmail:subject',
+    'body':      'urn:schemas:httpmail:textdescription',
+    'fromname':  'urn:schemas:httpmail:fromname',
+    'fromemail': 'urn:schemas:httpmail:fromemail',
+    'to':        'urn:schemas:httpmail:displayto',
+    'cc':        'urn:schemas:httpmail:displaycc',
+}
+META_FIELDS = ('subject', 'fromname', 'fromemail', 'to', 'cc')
+
+
+def search_tokens(q):
+    """Split a query into terms; "quoted phrases" stay whole.
+
+    Every term must match (AND), each against any searched field (OR) — the way
+    a person expects "fenton QW28237" to behave.
+    """
+    out = []
+    for m in re.finditer(r'"([^"]+)"|(\S+)', q or ''):
+        tok = (m.group(1) or m.group(2) or '').strip()
+        if tok:
+            out.append(tok)
+    return out
+
+
+# -- Match modes -------------------------------------------------------------
+# LIKE '%term%' is always a substring hit, so "gate" matches "delegate" and the
+# row that comes back has nothing visible to show for it. --mode narrows what
+# counts as a hit:
+#   part  - the term anywhere inside a word (what search always did)
+#   word  - the term standing on its own
+#   start - the term at the start of a word
+# The boundary is deliberately NOT \b: Eaton joins words with underscores in
+# filenames and references, and \w counts an underscore as part of the word, so
+# \bquote\b never fires inside EL_quote_2026_R2.
+MATCH_MODES = ('part', 'word', 'start')
+_WORD_CHAR  = '[A-Za-z0-9]'
+
+
+def term_pattern(term, mode):
+    esc = re.escape(term)
+    if mode == 'word':
+        return f'(?<!{_WORD_CHAR}){esc}(?!{_WORD_CHAR})'
+    if mode == 'start':
+        return f'(?<!{_WORD_CHAR}){esc}'
+    return esc
+
+
+def compile_terms(tokens, mode):
+    """One case-insensitive regex per term, honouring the match mode."""
+    mode = mode if mode in MATCH_MODES else 'part'
+    return [re.compile(term_pattern(t, mode), re.IGNORECASE) for t in tokens]
+
+
+def _matches_mode(text, regexes):
+    """Every term present under the active mode (AND, same as the LIKE chain)."""
+    t = text or ''
+    return all(r.search(t) for r in regexes)
+
+
+SNIPPET_PAD = 55     # characters of context kept either side of a hit
+SNIPPET_MAX = 3      # snippets per email - enough to explain the hit, not a wall
+
+
+def match_snippets(fields, regexes, pad=SNIPPET_PAD, limit=SNIPPET_MAX):
+    """Where each term was actually found: [{'field': label, 'text': snippet}].
+
+    A list row only ever shows sender, subject and the first 300 body characters,
+    so a hit in the recipients, an attachment name, or 20 kB into the body used to
+    arrive with nothing highlighted - the search looked broken while being right.
+    """
+    out, seen = [], set()
+    for label, text in fields:
+        if not text:
+            continue
+        for rx in regexes:
+            m = rx.search(text)
+            if not m:
+                continue
+            a = max(0, m.start() - pad)
+            b = min(len(text), m.end() + pad)
+            snip = re.sub(r'\s+', ' ', text[a:b]).strip()
+            if a > 0:
+                snip = '\u2026' + snip
+            if b < len(text):
+                snip = snip + '\u2026'
+            key = (label, snip.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({'field': label, 'text': snip})
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _dasl_lit(s):
+    """Escape a term for a DASL string literal. `'` doubles; `%`/`_` are LIKE
+    wildcards, so a literal one is dropped rather than silently widening the
+    match."""
+    return s.replace("'", "''").replace('%', '').replace('_', ' ')
+
+
+def search_dasl(tokens, with_body):
+    fields = list(META_FIELDS) + (['body'] if with_body else [])
+    parts  = []
+    for tok in tokens:
+        lit = _dasl_lit(tok)
+        if not lit:
+            continue
+        ors = ' OR '.join(f'"{SEARCH_PROPS[f]}" LIKE \'%{lit}%\'' for f in fields)
+        parts.append(f'({ors})')
+    if not parts:
+        return ''
+    return '@SQL=' + ' AND '.join(parts)
+
+
+def _restrict_search(items, tokens, with_body):
+    """Restricted collection for `tokens`, or None when the store rejects DASL.
+
+    Tried body-inclusive first, then meta-only: some PST/OST stores refuse a
+    LIKE on textdescription, and a subject/sender-only hit list beats none.
+    """
+    for body in ((True, False) if with_body else (False,)):
+        dasl = search_dasl(tokens, body)
+        if not dasl:
+            return None
+        try:
+            hits = items.Restrict(dasl)
+            hits.GetFirst()          # forces evaluation — a bad filter raises here
+            return hits
+        except Exception:
+            continue
+    return None
+
+
+def _item_blob(item, with_body):
+    """Lowercased haystack for the Python-side fallback matcher."""
+    parts = [
+        getattr(item, 'Subject', '') or '',
+        getattr(item, 'SenderName', '') or '',
+        getattr(item, 'SenderEmailAddress', '') or '',
+        getattr(item, 'To', '') or '',
+        getattr(item, 'CC', '') or '',
+    ]
+    if with_body:
+        try:
+            parts.append((item.Body or '')[:20000])
+        except Exception:
+            pass
+    return ' '.join(parts).lower()
+
+
+def _att_blob(item):
+    """Lowercased attachment filenames of an item."""
+    names = []
+    try:
+        for k in range(1, item.Attachments.Count + 1):
+            try:
+                names.append(item.Attachments.Item(k).FileName or '')
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ' '.join(names).lower()
+
+
+def _sort_stamp(item):
+    d = _item_date(item)
+    try:
+        return d.strftime('%Y%m%d%H%M%S')
+    except Exception:
+        return ''
+
+
+# ─── Search scope + local mail index ─────────────────────────────────────────
+# Search is deliberately NOT mailbox-wide. The quote work lives in exactly two
+# folders of the shared box; everything else (personal Inbox, "email drop" — a
+# dump that duplicates Inbox mail — Deleted Items, Public Folders) only produced
+# duplicate, irrelevant hits. Scope is a hard allowlist, matched on the store's
+# display name and the root-level folder name.
+SEARCH_SCOPE = [
+    ('ukquotefactoryel', ('inbox', 'completed by laith')),
+]
+
+# Local copy of those folders. Outlook COM is the bottleneck — ~64 ms per item —
+# so a live search re-reads thousands of messages every time. Indexing them once
+# into SQLite turns a search into a millisecond LIKE query, and only genuinely
+# new mail has to be read afterwards.
+INDEX_SCHEMA = """
+CREATE TABLE IF NOT EXISTS mail (
+  entry_id     TEXT PRIMARY KEY,
+  store        TEXT,
+  store_id     TEXT,
+  folder       TEXT,
+  subject      TEXT,
+  sender       TEXT,
+  sender_email TEXT,
+  recipients   TEXT,
+  received     TEXT,
+  stamp        TEXT,
+  body_preview TEXT,
+  atts         TEXT,     -- JSON, same shape email_summary returns
+  unread       INTEGER,
+  has_pdf      INTEGER,
+  meta_blob    TEXT,     -- lowercase subject + sender + recipients + attachment names
+  blob         TEXT,     -- meta_blob + body text, lowercased (what LIKE runs on)
+  body_text    TEXT,     -- body in its original case, so a hit can be quoted back
+  updated      TEXT
+);
+CREATE INDEX IF NOT EXISTS mail_stamp  ON mail(stamp DESC);
+CREATE INDEX IF NOT EXISTS mail_folder ON mail(folder);
+CREATE TABLE IF NOT EXISTS folder_state (
+  folder    TEXT PRIMARY KEY,
+  store     TEXT,
+  store_id  TEXT,
+  items     INTEGER,
+  -- 1 once a run has walked this folder all the way to its oldest message. Until
+  -- then an incremental run must NOT stop at the first stretch of already-known
+  -- mail: the known part is the newest slice, and everything older is missing.
+  complete  INTEGER DEFAULT 0,
+  last_sync TEXT
+);
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+"""
+
+
+def default_index_path():
+    return os.path.join(SCRIPT_DIR, 'mail_index.db')
+
+
+def index_open(path):
+    path = path or default_index_path()
+    d = os.path.dirname(os.path.abspath(path))
+    if d:
+        os.makedirs(d, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.execute('PRAGMA journal_mode=WAL')
+    con.executescript(INDEX_SCHEMA)
+    # Migrations for an index built by an older version. Each is a no-op once the
+    # column exists; body_text stays NULL on old rows until the next full reindex,
+    # and the snippet builder falls back to the lowercase blob meanwhile.
+    for ddl in ('ALTER TABLE folder_state ADD COLUMN complete INTEGER DEFAULT 0',
+                'ALTER TABLE mail ADD COLUMN body_text TEXT'):
+        try:
+            con.execute(ddl)
+            con.commit()
+        except Exception:
+            pass
+    return con
+
+
+def scope_folders(ns):
+    """The folders search is allowed to touch: (store, store_id, folder, path).
+
+    Only root-level folders of an allowlisted store are considered, so the
+    identically named "Completed by Laith" sitting under the PERSONAL store's
+    Deleted Items is never picked up.
+    """
+    out = []
+    try:
+        count = ns.Stores.Count
+    except Exception:
+        return out
+    for i in range(1, count + 1):
+        try:
+            store = ns.Stores.Item(i)
+            name  = store.DisplayName or ''
+        except Exception:
+            continue
+        key = re.sub(r'[^a-z0-9]', '', name.lower())
+        wanted = None
+        for store_key, folders in SEARCH_SCOPE:
+            if store_key in key:
+                wanted = folders
+                break
+        if not wanted:
+            continue
+        try:
+            root     = store.GetRootFolder()
+            store_id = store.StoreID
+        except Exception:
+            continue
+        for j in range(1, root.Folders.Count + 1):
+            try:
+                f = root.Folders.Item(j)
+            except Exception:
+                continue
+            if (f.Name or '').lower() not in wanted:
+                continue
+            out.append((name, store_id, f, folder_path(f)))
+    return out
+
+
+def index_row(item, store, store_id, fpath):
+    """Everything the Inbox list needs about one message, ready to INSERT."""
+    atts = [att_info_light(item.Attachments.Item(k))
+            for k in range(1, item.Attachments.Count + 1)]
+    subject   = item.Subject or '(no subject)'
+    sender    = getattr(item, 'SenderName', '') or ''
+    smtp      = resolve_smtp(item)
+    recips    = ' '.join([getattr(item, 'To', '') or '', getattr(item, 'CC', '') or ''])
+    att_names = ' '.join(a['name'] or '' for a in atts)
+    body      = (item.Body or '')
+    meta_blob = ' '.join([subject, sender, smtp, recips, att_names]).lower()
+    return (
+        item.EntryID, store, store_id, fpath,
+        subject, sender, smtp, recips,
+        str(item.ReceivedTime), _sort_stamp(item),
+        body[:300].strip(), json.dumps(atts),
+        1 if item.UnRead else 0,
+        1 if any(a['isPdf'] for a in atts) else 0,
+        meta_blob, (meta_blob + ' ' + body[:40000]).lower(), body[:40000],
+        datetime.datetime.now().isoformat(timespec='seconds'),
+    )
+
+
+INDEX_INSERT = ('INSERT OR REPLACE INTO mail (entry_id, store, store_id, folder, subject, sender,'
+                ' sender_email, recipients, received, stamp, body_preview, atts, unread, has_pdf,'
+                ' meta_blob, blob, body_text, updated) VALUES (' + ','.join('?' * 18) + ')')
+
+
+def _like_param(tok):
+    """A LIKE pattern for one search term, wildcards in the term escaped."""
+    esc = tok.lower().replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    return f'%{esc}%'
+
+
+def index_status(path):
+    path = path or default_index_path()
+    if not os.path.exists(path):
+        return {'built': False, 'total': 0, 'folders': []}
+    try:
+        con   = sqlite3.connect(path)
+        total = con.execute('SELECT COUNT(*) FROM mail').fetchone()[0]
+        last  = con.execute("SELECT v FROM meta WHERE k = 'last_sync'").fetchone()
+        rows  = con.execute('SELECT folder, items, last_sync FROM folder_state').fetchall()
+        con.close()
+        return {
+            'built':    total > 0,
+            'total':    total,
+            'lastSync': last[0] if last else None,
+            'folders':  [{'folder': r[0], 'items': r[1], 'lastSync': r[2]} for r in rows],
+        }
+    except Exception as e:
+        return {'built': False, 'total': 0, 'folders': [], 'error': str(e)}
+
+
+# A narrowing mode cannot be counted in SQL, so it post-filters LIKE candidates;
+# this caps how many rows that costs on a query like "a" that matches everything.
+INDEX_SCAN_CAP = 4000
+
+INDEX_COLS = ('SELECT entry_id, store, store_id, folder, subject, sender, sender_email, received,'
+              ' body_preview, atts, unread, has_pdf, recipients, body_text, meta_blob, blob')
+
+
+def index_search(args):
+    """Search the local copy. Returns a result dict, or None when the index is
+    unusable (missing / empty / wrong schema) so the caller can go live."""
+    path = args.dest or default_index_path()
+    if not os.path.exists(path):
+        return None
+    tokens = search_tokens(args.query)
+    if not tokens:
+        return {'emails': [], 'error': 'Empty search query'}
+    mode    = getattr(args, 'mode', 'part')
+    mode    = mode if mode in MATCH_MODES else 'part'
+    regexes = compile_terms(tokens, mode)
+    meta_only = args.fields == 'meta'
+    try:
+        con  = sqlite3.connect(path)
+        rows_total = con.execute('SELECT COUNT(*) FROM mail').fetchone()[0]
+        if not rows_total:
+            con.close()
+            return None
+        col    = 'meta_blob' if meta_only else 'blob'
+        where  = ' AND '.join([f"{col} LIKE ? ESCAPE '\\'"] * len(tokens))
+        params = [_like_param(t) for t in tokens]
+        sql    = f'{INDEX_COLS} FROM mail WHERE {where} ORDER BY stamp DESC LIMIT ?'
+        truncated = False
+        if mode == 'part':
+            # LIKE already IS the answer, so the count stays a single cheap query.
+            total = con.execute(f'SELECT COUNT(*) FROM mail WHERE {where}', params).fetchone()[0]
+            rows  = con.execute(sql, params + [args.limit]).fetchall()
+        else:
+            cand      = con.execute(sql, params + [INDEX_SCAN_CAP]).fetchall()
+            truncated = len(cand) >= INDEX_SCAN_CAP
+            kept      = [r for r in cand if _matches_mode(r[15] if not meta_only else r[14], regexes)]
+            total     = len(kept)
+            rows      = kept[:args.limit]
+        last = con.execute("SELECT v FROM meta WHERE k = 'last_sync'").fetchone()
+        con.close()
+    except Exception:
+        return None
+    emails = []
+    for r in rows:
+        try:
+            atts = json.loads(r[9] or '[]')
+        except Exception:
+            atts = []
+        # Attribute the hit to a real field rather than to the search blob, so the
+        # UI can say "found in Attachments" and quote the line it found it on.
+        fields = [('Subject', r[4]), ('From', r[5]), ('Email', r[6]),
+                  ('To/CC', r[12]),
+                  ('Attachments', ' '.join(a.get('name') or '' for a in atts))]
+        if not meta_only:
+            # body_text is NULL on rows written before the column existed; the
+            # lowercase blob minus its meta prefix is the same text, just flattened.
+            body = r[13] or (r[15] or '')[len(r[14] or '') + 1:]
+            fields.append(('Body', body))
+        emails.append({
+            'entryId': r[0], 'store': r[1], 'storeId': r[2], 'folder': r[3],
+            'subject': r[4], 'sender': r[5], 'senderEmail': r[6], 'received': r[7],
+            'bodyPreview': r[8], 'attachments': atts,
+            'unread': bool(r[10]), 'hasPdf': bool(r[11]),
+            'matches': match_snippets(fields, regexes),
+        })
+    return {
+        'emails': emails, 'total': total, 'source': 'index',
+        'indexTotal': rows_total, 'lastSync': last[0] if last else None,
+        'truncated': truncated, 'degraded': 0, 'query': args.query, 'mode': mode,
+    }
+
+
+def _search_folder_order(root):
+    """Every mail folder under `root`, Inbox tree first, then Sent, then the rest.
+
+    A search can run out of time budget on a big mailbox, so the order decides
+    what a partial result contains. Inbox and Sent Items hold the mail anyone is
+    actually looking for; deep archive trees come last.
+    """
+    folders = list(walk_folders(root, max_depth=8, skip=True))
+
+    def rank(f):
+        path = folder_path(f).lower()
+        parts = path.split('\\')
+        top   = parts[1] if len(parts) > 1 else parts[0]
+        if top in INBOX_NAMES:
+            return 0
+        if top in SENT_NAMES:
+            return 1
+        return 2
+
+    return sorted(folders, key=rank)
 
 
 def _folders_for_att_search(ns):
@@ -1206,7 +2025,8 @@ def _imap_action(args, cfg):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--action', required=True, choices=[
-        'status', 'mailboxes', 'emails', 'email', 'save-attachment',
+        'status', 'mailboxes', 'emails', 'email', 'search', 'index', 'index-status',
+        'save-attachment',
         'send-reply', 'get-attachment',
         'flag', 'mark-unread', 'delete', 'forward', 'open-in-outlook',
         'categorize', 'suggest-attachments', 'reply-with-attachments', 'send-new',
@@ -1222,6 +2042,10 @@ def main():
     parser.add_argument('--dest',       default='')
     parser.add_argument('--index',      type=int, default=0)
     parser.add_argument('--body',       default='')
+    # Read --body from stdin instead. Anything secret (the IMAP password) has to
+    # come this way: on Windows another process running as the same user can read
+    # this one's command line for as long as it is alive.
+    parser.add_argument('--body-stdin', dest='body_stdin', type=int, default=0)
     parser.add_argument('--to',         default='')
     parser.add_argument('--subject',    default='')
     parser.add_argument('--category',   default='')
@@ -1231,12 +2055,26 @@ def main():
     parser.add_argument('--sender',     default='')   # substring to match sender addr/name
     parser.add_argument('--since',      default='')    # DD/MM/YYYY or MM/DD/YYYY start date
     parser.add_argument('--recipient',  default='')    # comma-sep substrings; keep only if ANY is a To/CC recipient
+    parser.add_argument('--skip-auto',  action='store_true')  # emails-from: drop auto-replies/OOF/bounces
     parser.add_argument('--days',       type=int, default=30)  # scan-quotes look-back window
     parser.add_argument('--until',      default='')    # scan-jobs end date, DD/MM/YYYY
     parser.add_argument('--max',        type=int, default=5000) # scan-jobs message cap
     parser.add_argument('--store-filter', dest='store_filter', default='')  # scan-todo/contacts: mailbox name substring
     parser.add_argument('--draft',      type=int, default=0)    # send-new: leave in Drafts instead of sending
+    # search / index knobs
+    parser.add_argument('--fields',     default='all', choices=['all', 'meta'])  # 'meta' = skip body
+    parser.add_argument('--attachments', type=int, default=0)   # live search: also match attachment filenames
+    parser.add_argument('--timeout',    type=int, default=120)  # seconds; partial results returned on expiry
+    parser.add_argument('--scan-cap', dest='scan_cap', type=int, default=4000)  # items/folder on the no-DASL path
+    parser.add_argument('--source',     default='auto', choices=['auto', 'index', 'live'])
+    parser.add_argument('--mode',       default='part', choices=list(MATCH_MODES))  # how a term must sit in the text
+    parser.add_argument('--full',       type=int, default=0)    # index: re-read every message
     args = parser.parse_args()
+
+    # Secrets arrive on stdin so they never sit in this process's command line.
+    # lstrip the BOM: a PowerShell pipe prepends one and json.loads rejects it.
+    if args.body_stdin:
+        args.body = sys.stdin.read().lstrip('﻿').strip()
 
     # ── IMAP config: test + save credentials ─────────────────────────────────
     if args.action == 'imap-config':
@@ -1295,6 +2133,22 @@ def main():
         except Exception as e:
             print(json.dumps({'ok': False, 'error': str(e)}))
         return
+
+    # ── Local index reads: pure SQLite, no COM, no Outlook contention ─────────
+    if args.action == 'index-status':
+        print(json.dumps(index_status(args.dest)))
+        return
+
+    if args.action == 'search' and args.source in ('index', 'auto'):
+        hit = index_search(args)
+        if hit is not None:
+            print(json.dumps(hit))
+            return
+        if args.source == 'index':
+            print(json.dumps({'emails': [], 'source': 'index', 'total': 0,
+                              'error': 'The local mail index has not been built yet'}))
+            return
+        # 'auto' with no usable index → fall through to the live MAPI search.
 
     # ── Status ────────────────────────────────────────────────────────────────
     if args.action == 'status':
@@ -1429,9 +2283,317 @@ def _win32_action(args):
             print(json.dumps({'emails': [], 'error': str(e)}))
         return
 
-    # ── Fetch every Inbox email from a given sender since a date, with body +
-    #    attachments (used by the EL Internal Info tab). ─────────────────────────
+    # ── Local index: read the scoped folders into SQLite ──────────────────────
+    if args.action == 'index':
+        t0  = time.time()
+        con = index_open(args.dest)
+        try:
+            _, ns  = get_outlook_ns()
+            folders = scope_folders(ns)
+            if not folders:
+                print(json.dumps({'ok': False, 'error': 'None of the searched folders were found '
+                                                        '(is the UKQuoteFactoryEL mailbox open?)'}))
+                return
+            added = updated = removed = 0
+            for store, store_id, f, fpath in folders:
+                sys.stderr.write(f'[index] {fpath}\n')
+                sys.stderr.flush()
+                known    = set()
+                complete = False
+                if not args.full:
+                    known = {r[0] for r in con.execute(
+                        'SELECT entry_id FROM mail WHERE folder = ?', (fpath,))}
+                    row = con.execute('SELECT complete FROM folder_state WHERE folder = ?',
+                                      (fpath,)).fetchone()
+                    complete = bool(row and row[0])
+                items = f.Items
+                try:
+                    items.Sort('[ReceivedTime]', True)
+                except Exception:
+                    pass
+                # Newest first, so an incremental run walks off the end of the new
+                # mail almost immediately instead of re-reading the whole folder.
+                streak   = 0
+                rows     = []
+                walked   = True          # False if the loop stops before the oldest item
+                seen_ids = set()         # every id this run laid eyes on, for the prune below
+                for item in items:
+                    if time.time() - t0 > args.timeout:
+                        walked = False
+                        break
+                    try:
+                        if item.Class != 43:
+                            continue
+                        eid = item.EntryID
+                        seen_ids.add(eid)
+                        if eid in known:
+                            streak += 1
+                            # Only a folder already read to the end can be trusted to
+                            # end here — otherwise the known run is just the newest
+                            # slice of a half-built index and the rest is older.
+                            if complete and streak >= 60:
+                                break
+                            continue
+                        streak = 0
+                        rows.append(index_row(item, store, store_id, fpath))
+                        added += 1
+                        if len(rows) >= 100:
+                            con.executemany(INDEX_INSERT, rows)
+                            con.commit()
+                            sys.stderr.write(f'[index] {fpath}: {added} read\n')
+                            sys.stderr.flush()
+                            rows = []
+                    except Exception:
+                        pass
+                if rows:
+                    con.executemany(INDEX_INSERT, rows)
+                    con.commit()
+
+                # Drop rows for mail that has moved out or been deleted. Only a
+                # full run may do this: it is the only one that saw every message
+                # in the folder, so anything it did not see really is gone. (An
+                # earlier version compared against EntryIDs read from the MAPI
+                # table — those do not compare equal to item.EntryID, so every row
+                # looked stale and the folder was emptied.)
+                if args.full and walked:
+                    stale = [r[0] for r in con.execute(
+                        'SELECT entry_id FROM mail WHERE folder = ?', (fpath,)) if r[0] not in seen_ids]
+                    if stale:
+                        con.executemany('DELETE FROM mail WHERE entry_id = ?', [(s,) for s in stale])
+                        removed += len(stale)
+                count = 0
+                try:
+                    count = f.Items.Count
+                except Exception:
+                    pass
+                con.execute('INSERT OR REPLACE INTO folder_state (folder, store, store_id, items,'
+                            ' complete, last_sync) VALUES (?,?,?,?,?,?)',
+                            (fpath, store, store_id, count,
+                             1 if (walked or complete) else 0,
+                             datetime.datetime.now().isoformat(timespec='seconds')))
+                con.commit()
+
+            con.execute('INSERT OR REPLACE INTO meta (k, v) VALUES (?,?)',
+                        ('last_sync', datetime.datetime.now().isoformat(timespec='seconds')))
+            con.commit()
+            total = con.execute('SELECT COUNT(*) FROM mail').fetchone()[0]
+            print(json.dumps({
+                'ok': True, 'added': added, 'updated': updated, 'removed': removed,
+                'total': total, 'folders': [f[3] for f in folders],
+                'seconds': round(time.time() - t0, 1), 'full': bool(args.full),
+            }))
+        except Exception as e:
+            print(json.dumps({'ok': False, 'error': str(e)}))
+        finally:
+            con.close()
+        return
+
+    # ── Search every folder of every mailbox ──────────────────────────────────
+    #    The Inbox tab's search box used to filter only the ~30 summaries it had
+    #    already loaded. This walks the real stores instead, so an email from two
+    #    years ago in a nested subfolder is findable without Outlook's own
+    #    (index-dependent, unreliable) search.
+    if args.action == 'search':
+        tokens = search_tokens(args.query)
+        if not tokens:
+            print(json.dumps({'emails': [], 'error': 'Empty search query'}))
+            return
+        with_body  = args.fields != 'meta'
+        # DASL only knows LIKE '%term%', so a narrowing mode is enforced here, on
+        # the same text the restriction matched. Keeps live and index answers to
+        # the same rule instead of two engines disagreeing about one query.
+        mode       = args.mode if args.mode in MATCH_MODES else 'part'
+        regexes    = compile_terms(tokens, mode)
+        deadline   = time.time() + max(5, args.timeout)
+        try:
+            _, ns = get_outlook_ns()
+
+            # Hits are collected as cheap references — a stamp and an EntryID —
+            # NOT as full summaries. Building a summary touches Body and walks
+            # Attachments, which on a folder with hundreds of matches burns the
+            # whole time budget on mail that will never make the first page. The
+            # top `--limit` refs are re-opened and expanded once, at the end.
+            hits      = []       # [(sort stamp, ref dict)]
+            seen      = set()
+            truncated = False
+            degraded  = 0        # folders where DASL failed → slow Python scan
+
+            # Same hard allowlist the index uses — never the whole mailbox.
+            plan = [(store, store_id, f, fpath)
+                    for store, store_id, f, fpath in scope_folders(ns)]
+            if not plan:
+                print(json.dumps({'emails': [], 'error': 'None of the searched folders were found '
+                                                         '(is the UKQuoteFactoryEL mailbox open?)'}))
+                return
+
+            def keep(item, fpath, store_name, store_id):
+                try:
+                    if item.Class != 43:
+                        return
+                    eid = item.EntryID
+                    if eid in seen:
+                        return
+                    seen.add(eid)
+                    hits.append((_sort_stamp(item), {
+                        'entryId': eid,
+                        'folder':  fpath,
+                        'store':   store_name,
+                        'storeId': store_id,
+                    }))
+                except Exception:
+                    pass
+
+            def out_of_budget():
+                return time.time() > deadline or len(hits) >= args.max
+
+            def folder_items(f):
+                try:
+                    items = f.Items
+                except Exception:
+                    return None
+                try:
+                    items.Sort('[ReceivedTime]', True)
+                except Exception:
+                    pass
+                if args.since:
+                    items = _restrict_since(items, args.since, args.until)
+                return items
+
+            # ── Pass 1: text (subject / sender / recipients / body) ───────────
+            scanned = 0
+            for store_name, store_id, f, fpath in plan:
+                if out_of_budget():
+                    truncated = True
+                    break
+                scanned += 1
+                sys.stderr.write(f'[search] {fpath}\n')
+                sys.stderr.flush()
+                items = folder_items(f)
+                if items is None:
+                    continue
+                restricted = _restrict_search(items, tokens, with_body)
+                if restricted is not None:
+                    for item in restricted:
+                        if out_of_budget():
+                            truncated = True
+                            break
+                        keep(item, fpath, store_name, store_id)
+                else:
+                    # Store refused the DASL filter — fall back to reading the
+                    # folder from Python, newest first and hard-capped so one huge
+                    # archive folder cannot eat the whole time budget.
+                    degraded += 1
+                    looked = 0
+                    for item in items:
+                        if looked >= args.scan_cap or out_of_budget():
+                            truncated = True
+                            break
+                        looked += 1
+                        try:
+                            if item.Class != 43:
+                                continue
+                            if _matches_mode(_item_blob(item, with_body), regexes):
+                                keep(item, fpath, store_name, store_id)
+                        except Exception:
+                            pass
+
+            # ── Pass 2: attachment filenames ──────────────────────────────────
+            # There is no DASL property for an attachment's name, so this one has
+            # to open each item that carries a file. It runs only after the text
+            # sweep is done and only on the time that is left — a slow extra
+            # never costs the results the fast path already has.
+            if args.attachments and not truncated:
+                for store_name, store_id, f, fpath in plan:
+                    if out_of_budget():
+                        truncated = True
+                        break
+                    items = folder_items(f)
+                    if items is None:
+                        continue
+                    try:
+                        att_items = items.Restrict('@SQL="urn:schemas:httpmail:hasattachment" = 1')
+                    except Exception:
+                        continue
+                    sys.stderr.write(f'[search:att] {fpath}\n')
+                    sys.stderr.flush()
+                    looked = 0
+                    for item in att_items:
+                        if looked >= args.scan_cap or out_of_budget():
+                            truncated = True
+                            break
+                        looked += 1
+                        try:
+                            if item.Class != 43 or item.EntryID in seen:
+                                continue
+                            if _matches_mode(_att_blob(item), regexes):
+                                keep(item, fpath, store_name, store_id)
+                        except Exception:
+                            pass
+
+            # Newest first, then expand only the page being returned.
+            hits.sort(key=lambda h: h[0], reverse=True)
+            emails = []
+            for _stamp, ref in hits[:args.limit]:
+                try:
+                    item = item_by_id(ns, ref['entryId'], ref['storeId'])
+                except Exception:
+                    continue
+                s = email_summary(item)
+                if not s:
+                    continue
+                s['folder']  = ref['folder']
+                s['store']   = ref['store']
+                s['storeId'] = ref['storeId']
+                # Same "where did it hit" evidence the index path returns.
+                try:
+                    body = (item.Body or '')[:40000] if with_body else ''
+                except Exception:
+                    body = ''
+                s['matches'] = match_snippets([
+                    ('Subject', s.get('subject') or ''),
+                    ('From',    s.get('sender') or ''),
+                    ('Email',   s.get('senderEmail') or ''),
+                    ('To/CC',   ' '.join([getattr(item, 'To', '') or '', getattr(item, 'CC', '') or ''])),
+                    ('Attachments', ' '.join(a.get('name') or '' for a in s.get('attachments') or [])),
+                    ('Body',    body),
+                ], regexes)
+                emails.append(s)
+            print(json.dumps({
+                'emails':    emails,
+                'total':     len(hits),
+                'folders':   scanned,
+                'truncated': truncated,
+                'degraded':  degraded,
+                'query':     args.query,
+                'mode':      mode,
+            }))
+        except Exception as e:
+            print(json.dumps({'emails': [], 'error': str(e)}))
+        return
+
+    # ── Fetch every email from a given sender since a date, with body +
+    #    attachments (used by the EL Internal Info and Ask Fenton tabs).
+    #
+    #    Scans the Inbox TREE of every work store, not just the personal Inbox:
+    #    a colleague writing to UKQuoteFactoryEL lands in the shared store, and
+    #    once Laith has dealt with it the thread is filed under "Completed by
+    #    Laith". Restricting to ns.GetDefaultFolder(6) saw only the fraction of
+    #    the conversation that was also addressed to him personally. ───────────
     if args.action == 'emails-from':
+        # Auto-generated mail carries no expertise: server bounces, OOF replies,
+        # meeting-response stubs. Matched on the subject prefix Outlook writes,
+        # in the languages this mailbox actually receives.
+        AUTO_SUBJECT_RE = re.compile(
+            r'^\s*(re:\s*|fw:\s*|fwd:\s*)*('
+            r'automatic reply|auto(matische)?\s*reply|out of office'
+            r'|réponse automatique|automatische antwort'
+            r'|undeliverable|delivery status notification|delivery has failed'
+            r'|read:|not read:|accepted:|declined:|tentative:|canceled:|cancelled:'
+            r'|message recall'
+            r')',
+            re.I,
+        )
+
         def _recipients_blob(item):
             parts = [getattr(item, 'To', '') or '', getattr(item, 'CC', '') or '']
             try:
@@ -1450,45 +2612,90 @@ def _win32_action(args):
             return ' '.join(parts).lower()
         try:
             _, ns = get_outlook_ns()
-            folder = ns.GetDefaultFolder(6)  # Inbox
-            items  = folder.Items
-            items.Sort('[ReceivedTime]', True)
-            if args.since:
-                try:
-                    items = items.Restrict(f"[ReceivedTime] >= '{args.since} 00:00'")
-                except Exception:
-                    pass
+
+            # Every mail folder of every work store — NOT just the Inbox tree.
+            # "Completed by Laith" is a sibling of the shared Inbox, not a child
+            # of it, so an Inbox-rooted walk misses the folder that holds most
+            # of the traffic. Sent Items is skipped: it only holds mail this
+            # user sent, and we are always filtering on somebody else's address.
+            SENT_NAMES = {'sent items', 'éléments envoyés', 'gesendete elemente',
+                          'verzonden items', 'posta inviata', 'elementos enviados'}
+            folders = []
+            for store_name, root in work_stores(ns):
+                for f in walk_folders(root):
+                    try:
+                        if (f.Name or '').lower() in SENT_NAMES:
+                            continue
+                    except Exception:
+                        pass
+                    folders.append((store_name, f))
+            if not folders:
+                folders = [('', ns.GetDefaultFolder(6))]
+
             needle = (args.sender or '').strip().lower()
             recip_needles = [s.strip().lower() for s in (args.recipient or '').split(',') if s.strip()]
-            emails = []
-            for item in items:
+            skip_auto = bool(getattr(args, 'skip_auto', False))
+            emails, seen = [], set()
+
+            for store_name, folder in folders:
+                fpath = folder_path(folder)
                 try:
-                    if item.Class != 43:
-                        continue
-                    addr  = (getattr(item, 'SenderEmailAddress', '') or '')
-                    name  = (getattr(item, 'SenderName', '') or '')
-                    smtp  = resolve_smtp(item)
-                    blob  = f'{addr} {name} {smtp}'.lower()
-                    if needle and needle not in blob:
-                        continue
-                    if recip_needles:
-                        rblob = _recipients_blob(item)
-                        if not any(n in rblob for n in recip_needles):
-                            continue
-                    atts = [att_info(item.Attachments.Item(k))
-                            for k in range(1, item.Attachments.Count + 1)]
-                    emails.append({
-                        'entryId':     item.EntryID,
-                        'subject':     item.Subject or '(no subject)',
-                        'sender':      name,
-                        'senderEmail': smtp,
-                        'received':    str(item.ReceivedTime),
-                        'body':        (item.Body or '')[:6000],
-                        'attachments': atts,
-                        'hasPdf':      any(a['isPdf'] for a in atts),
-                    })
+                    items = folder.Items
+                    items.Sort('[ReceivedTime]', True)
+                    if args.since:
+                        try:
+                            items = items.Restrict(f"[ReceivedTime] >= '{args.since} 00:00'")
+                        except Exception:
+                            pass
                 except Exception:
-                    pass
+                    continue
+                # A store the sender's mail was filed into counts as delivery to
+                # that recipient — a thread forwarded inside the quote factory
+                # need not still name the shared box in To/CC.
+                store_is_recipient = any(n in (store_name or '').lower() for n in recip_needles)
+                for item in items:
+                    try:
+                        if item.Class != 43:
+                            continue
+                        # Cheap gates first: the expensive MAPI round trips
+                        # (SMTP resolution, recipient walk, attachment probes)
+                        # must only run for mail that is already a candidate.
+                        addr = (getattr(item, 'SenderEmailAddress', '') or '')
+                        name = (getattr(item, 'SenderName', '') or '')
+                        if needle and needle not in f'{addr} {name}'.lower():
+                            smtp = resolve_smtp(item)
+                            if needle not in (smtp or '').lower():
+                                continue
+                        else:
+                            smtp = resolve_smtp(item)
+                        subject = item.Subject or '(no subject)'
+                        if skip_auto and AUTO_SUBJECT_RE.match(subject):
+                            continue
+                        eid = item.EntryID
+                        if eid in seen:
+                            continue
+                        if recip_needles and not store_is_recipient:
+                            rblob = _recipients_blob(item)
+                            if not any(n in rblob for n in recip_needles):
+                                continue
+                        atts = [att_info(item.Attachments.Item(k))
+                                for k in range(1, item.Attachments.Count + 1)]
+                        seen.add(eid)
+                        emails.append({
+                            'entryId':     eid,
+                            'subject':     subject,
+                            'sender':      name,
+                            'senderEmail': smtp,
+                            'received':    str(item.ReceivedTime),
+                            'folder':      fpath,
+                            'body':        (item.Body or '')[:6000],
+                            'attachments': atts,
+                            'hasPdf':      any(a['isPdf'] for a in atts),
+                        })
+                    except Exception:
+                        pass
+
+            emails.sort(key=lambda e: e['received'], reverse=True)
             print(json.dumps({'emails': emails}))
         except Exception as e:
             print(json.dumps({'emails': [], 'error': str(e)}))
@@ -2315,7 +3522,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             atts  = [att_info(item.Attachments.Item(k))
                      for k in range(1, item.Attachments.Count + 1)]
             try:
@@ -2349,7 +3556,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             os.makedirs(args.dest, exist_ok=True)
             saved = []
             for k in range(1, item.Attachments.Count + 1):
@@ -2374,7 +3581,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             os.makedirs(args.dest, exist_ok=True)
             att   = item.Attachments.Item(args.index)
             safe  = att.FileName.replace('/', '_').replace('\\', '_')
@@ -2391,7 +3598,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             reply = item.Reply()
             reply.Body = args.body + '\n\n' + (reply.Body or '')
             reply.Send()
@@ -2406,7 +3613,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             item.FlagStatus = 2 if args.flagged else 0
             item.Save()
             print(json.dumps({'ok': True, 'flagged': bool(args.flagged)}))
@@ -2420,7 +3627,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             item.UnRead = True
             item.Save()
             print(json.dumps({'ok': True}))
@@ -2434,7 +3641,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             item.Delete()
             print(json.dumps({'ok': True}))
         except Exception as e:
@@ -2447,7 +3654,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             fwd   = item.Forward()
             fwd.To = args.to
             if args.body:
@@ -2464,7 +3671,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             item.Display()
             print(json.dumps({'ok': True}))
         except Exception as e:
@@ -2477,7 +3684,7 @@ def _win32_action(args):
             return
         try:
             _, ns = get_outlook_ns()
-            item  = ns.GetItemFromID(args.id)
+            item  = item_by_id(ns, args.id, args.store)
             item.Categories = args.category
             item.Save()
             print(json.dumps({'ok': True, 'category': args.category}))

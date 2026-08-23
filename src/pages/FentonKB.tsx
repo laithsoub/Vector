@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
+import { failed, plural } from '../lib/errors';
 import type { ToastFn } from '../App';
 
 interface FenAtt { index: number; name: string; size: number; isPdf: boolean; isImage?: boolean }
@@ -74,10 +75,17 @@ export function FentonKBPage({ toast }: { toast: ToastFn }) {
     setRefreshing(true);
     try {
       const r = await api.fentonRefresh(force);
-      if (r.error) toast('warn', r.error);
+      if (r.error) toast('warn', failed('refresh the knowledge base', r.error));
+      const kept = (r.cards || []).length;
       setCards(r.cards || []); setLastRefresh(r.lastRefreshAt);
-      toast('ok', force ? `Rebuilt ${r.total} cards` : (r.added > 0 ? `${r.added} new · ${r.total} total` : `Up to date · ${r.total} answers`));
-    } catch (e: any) { toast('err', e.message); }
+      // r.total counts every email swept; only the ones carrying real expertise
+      // become cards, so report what actually landed in the knowledge base.
+      const filtered = r.skipped ? ` (${r.skipped} admin emails filtered out)` : '';
+      toast('ok', force
+        ? `Knowledge base rebuilt — ${plural(kept, 'card')}${filtered}`
+        : (r.added > 0 ? `${plural(r.added, 'new email')} swept — ${plural(kept, 'answer')} in the base${filtered}`
+                       : `Already up to date — ${plural(kept, 'answer')} stored${filtered}`));
+    } catch (e: any) { toast('err', failed('refresh the knowledge base', e)); }
     setRefreshing(false);
   }
 
@@ -121,7 +129,7 @@ export function FentonKBPage({ toast }: { toast: ToastFn }) {
           </p>
         </div>
         {cards.length > 0 && (
-          <button onClick={() => refresh(true)} disabled={refreshing} title="Re-run AI extraction on all emails"
+          <button aria-label="Re-run AI extraction on all emails" onClick={() => refresh(true)} disabled={refreshing} title="Re-run AI extraction on all emails"
             className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
             <Sparkles className="w-3.5 h-3.5" /> Rebuild
           </button>
@@ -214,7 +222,7 @@ export function FentonKBPage({ toast }: { toast: ToastFn }) {
                   onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
                   placeholder="Ask Mark…"
                   className="flex-1 h-8 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 placeholder:text-[var(--t3)] text-[var(--t1)]" />
-                <button onClick={sendChat} disabled={!chatInput.trim() || chatLoading}
+                <button aria-label="Send message" onClick={sendChat} disabled={!chatInput.trim() || chatLoading}
                   className="w-8 h-8 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
                   <Send className="w-3.5 h-3.5" />
                 </button>

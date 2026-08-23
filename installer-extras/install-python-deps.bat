@@ -44,7 +44,7 @@ echo.
 REM --- 2. Upgrade pip + install packages ---------------------------------------
 echo   Installing required libraries...
 %PY% -m pip install --upgrade pip
-%PY% -m pip install pdfplumber openpyxl requests urllib3 pywin32 pandas
+%PY% -m pip install pdfplumber openpyxl requests urllib3 pywin32 pandas pymupdf reportlab cryptography
 
 if errorlevel 1 (
     echo.

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
+import { failed, plural } from '../lib/errors';
 import type { ToastFn } from '../App';
 
 interface ElAtt { index: number; name: string; size: number; isPdf: boolean; isImage?: boolean; isInline?: boolean }
@@ -96,10 +97,12 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
     setRefreshing(true);
     try {
       const r = await api.elInternalRefresh();
-      if (r.error) toast('warn', r.error);
+      if (r.error) toast('warn', failed('check for new EL updates', r.error));
       setEmails(r.emails || []); setLastRefresh(r.lastRefreshAt);
-      toast('ok', r.added > 0 ? `${r.added} new update${r.added !== 1 ? 's' : ''} · ${r.total} total` : `Up to date · ${r.total} updates`);
-    } catch (e: any) { toast('err', e.message); }
+      toast('ok', r.added > 0
+        ? `${plural(r.added, 'new update')} found — ${r.total} in total`
+        : `Already up to date — ${plural(r.total, 'update')} stored`);
+    } catch (e: any) { toast('err', failed('check for new EL updates', e)); }
     setRefreshing(false);
   }
 
@@ -107,9 +110,9 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
     setDigesting(true);
     try {
       const r = await api.elInternalDigest();
-      if (r.error) { toast('warn', r.error); }
+      if (r.error) { toast('warn', failed('write the AI digest', r.error)); }
       else { setDigest(r.digest); setDigestAt(r.digestAt || new Date().toISOString()); }
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('write the AI digest', e)); }
     setDigesting(false);
   }
 
@@ -123,7 +126,7 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
     try {
       const r = await api.elInternalChat({ history: chat, question: q });
       setChat(prev => [...prev, { role: 'ai', text: r.answer || r.error || 'No response.' }]);
-    } catch (e: any) { setChat(prev => [...prev, { role: 'ai', text: 'Error: ' + e.message }]); }
+    } catch (e: any) { setChat(prev => [...prev, { role: 'ai', text: failed('answer that', e) }]); }
     setChatLoading(false);
     setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
   }
@@ -239,7 +242,7 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
                     onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
                     placeholder="Ask about EL updates…"
                     className="flex-1 h-8 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 placeholder:text-[var(--t3)] text-[var(--t1)]" />
-                  <button onClick={sendChat} disabled={!chatInput.trim() || chatLoading}
+                  <button aria-label="Send message" onClick={sendChat} disabled={!chatInput.trim() || chatLoading}
                     className="w-8 h-8 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
                     <Send className="w-3.5 h-3.5" />
                   </button>

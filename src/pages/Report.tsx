@@ -12,6 +12,7 @@ import {
 import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, KpiTile, relTime } from '../lib/ui';
 import { api } from '../lib/api';
+import { failed, plural } from '../lib/errors';
 import { exportJobReport, type ReportFormat } from '../lib/export';
 import type { JobsReport, JobsReportStatus, JobThread } from '../types';
 import type { ToastFn } from '../App';
@@ -94,8 +95,8 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
       setStatus(s);
       if (!s.running) {
         if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-        if (s.phase === 'done') { await loadResult(); toast('ok', s.message || 'Report ready'); }
-        if (s.phase === 'error') toast('err', s.error || 'Scan failed');
+        if (s.phase === 'done') { await loadResult(); toast('ok', s.message || 'Job report ready'); }
+        if (s.phase === 'error') toast('err', failed('finish the mailbox scan', s.error));
       }
     } catch { /* transient — keep polling */ }
   }, [loadResult, toast]);
@@ -110,14 +111,14 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
   }, [poll]);
 
   async function runScan() {
-    if (!isValidRange(from, to)) { toast('err', 'Enter a valid date range (DD/MM/YYYY, from ≤ to)'); return; }
+    if (!isValidRange(from, to)) { toast('warn', 'Check the date range — both dates must be DD/MM/YYYY and "from" cannot be after "to"'); return; }
     try {
       const s = await api.jobsReportScan(from, to);
       setStatus(s);
-      if ((s as any).error) { toast('err', (s as any).error); return; }
-      toast('info', 'Scanning your mailbox — this can take a few minutes');
+      if ((s as any).error) { toast('err', failed('start the mailbox scan', (s as any).error)); return; }
+      toast('info', `Scanning your mailbox from ${from} to ${to} — this can take a few minutes`);
       if (!pollRef.current) pollRef.current = window.setInterval(poll, 2000);
-    } catch (e: any) { toast('err', e.message); }
+    } catch (e: any) { toast('err', failed('start the mailbox scan', e)); }
   }
 
   const running = !!status?.running;
@@ -164,7 +165,7 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
     a.download = `vector-job-report_${report.range.from.replace(/\//g, '-')}_${report.range.to.replace(/\//g, '-')}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    toast('ok', `${visible.length} jobs exported`);
+    toast('ok', `${plural(visible.length, 'job')} exported to CSV`);
   }
 
   // PDF / Word are laid out server-side. We send the jobs that are on screen, in the
@@ -182,10 +183,10 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
         filter:    { category: catFilter, query: filter.trim() },
         filename:  `vector-job-report_${report.range.from.replace(/\//g, '-')}_${report.range.to.replace(/\//g, '-')}`,
       });
-      toast('ok', `${visible.length} jobs exported to ${fmt === 'pdf' ? 'PDF' : 'Word'}`);
+      toast('ok', `${plural(visible.length, 'job')} exported to ${fmt === 'pdf' ? 'PDF' : 'Word'}`);
       setExportOpen(false);
     } catch (e: any) {
-      toast('err', e?.message || 'Export failed');
+      toast('err', failed(`export the report to ${fmt === 'pdf' ? 'PDF' : 'Word'}`, e));
     }
     setExporting(null);
   }

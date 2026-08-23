@@ -5,34 +5,41 @@ import {
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
   Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
   Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge, Pin, PinOff,
-  Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo,
+  Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo, Lightbulb,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
 import { cn } from './lib/cn';
 import { api } from './lib/api';
+import { failed } from './lib/errors';
 import { openExternal, isTauri } from './lib/shell';
 import { CancelDock } from './components/CancelDock';
 import { LangCtx, useLang, T, type Lang } from './lib/i18n';
+import { TabErrorBoundary } from './lib/ErrorBoundary';
 import type { Config } from './types';
 
-import { DashboardPage }   from './pages/Dashboard';
-import { AnalyticsPage }   from './pages/Analytics';
-import { ReportPage }      from './pages/Report';
-import { HistoryPage }     from './pages/History';
-import { InboxPage }       from './pages/Inbox';
-import { SettingsPage }    from './pages/Settings';
 import { OverlayPage }     from './pages/Overlay';
-import { CrmPage }         from './pages/Crm';
-import { ELInfoPage }      from './pages/ELInfo';
-import { TodoPage }        from './pages/Todo';
+
+// Every tab is code-split: the shell boots with the rail and the header, and a
+// page's code arrives the first time it is opened. `visited` already delayed
+// MOUNTING; this delays downloading and parsing too.
+const DashboardPage  = React.lazy(() => import('./pages/Dashboard').then(m => ({ default: m.DashboardPage })));
+const AnalyticsPage  = React.lazy(() => import('./pages/Analytics').then(m => ({ default: m.AnalyticsPage })));
+const ReportPage     = React.lazy(() => import('./pages/Report').then(m => ({ default: m.ReportPage })));
+const HistoryPage    = React.lazy(() => import('./pages/History').then(m => ({ default: m.HistoryPage })));
+const InboxPage      = React.lazy(() => import('./pages/Inbox').then(m => ({ default: m.InboxPage })));
+const SettingsPage   = React.lazy(() => import('./pages/Settings').then(m => ({ default: m.SettingsPage })));
+const CrmPage        = React.lazy(() => import('./pages/Crm').then(m => ({ default: m.CrmPage })));
+const ELInfoPage     = React.lazy(() => import('./pages/ELInfo').then(m => ({ default: m.ELInfoPage })));
+const FentonKBPage   = React.lazy(() => import('./pages/FentonKB').then(m => ({ default: m.FentonKBPage })));
+const TodoPage       = React.lazy(() => import('./pages/Todo').then(m => ({ default: m.TodoPage })));
 // AI Assistant + Tools pages are lazy-imported below, gated on STRIPPED. In the
 // stripped ship build that gate is a compile-time `true`, so Rollup dead-code-
 // eliminates their code from the bundle; locally (full app) they load normally.
 
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 type TabId =
-  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Report' | 'Inbox' | 'Todo' | 'CRM' | 'ELInfo'
+  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Report' | 'Inbox' | 'Todo' | 'CRM' | 'ELInfo' | 'Fenton'
   | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Docs' | 'Settings';
 
 // Stripped ship build vs full local app. The desktop ship is produced with
@@ -46,7 +53,7 @@ const STRIPPED = import.meta.env.PROD;
 // the stripped ship (personal API keys / tooling not ready for rollout), full
 // locally.
 const LOCKED_TABS = new Set<TabId>(
-  STRIPPED ? ['Assistant', 'ELInfo', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
+  STRIPPED ? ['Assistant', 'ELInfo', 'Fenton', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
 );
 const isLocked = (t: TabId) => LOCKED_TABS.has(t);
 
@@ -64,6 +71,7 @@ const CBUCalculator  = STRIPPED ? null : React.lazy(() => import('./CBUCalculato
 const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
   Assistant:  { title: 'Ask Vector',        desc: 'Your in-app AI copilot for quotes, specs, and projects is being prepared for the whole team. Stay tuned.' },
   ELInfo:     { title: 'EL Internal Info',  desc: 'Your EL division internal-updates hub — digest, files and AI chat — is coming soon to your workspace.' },
+  Fenton:     { title: 'Ask Fenton',        desc: "Our lighting application expert's answers, distilled into a searchable knowledge base. Coming soon to your workspace." },
   Todo:       { title: 'To-Do',             desc: 'AI triage of the shared mailbox into what you can finish, what is blocked, and what the team must pick up. Coming soon.' },
   Schematics: { title: 'Schematics Reader', desc: 'Automated schematic analysis is coming soon to your workspace.' },
   PMO:        { title: 'PMO',               desc: 'PMO automation is being readied for the team and will land here soon.' },
@@ -83,6 +91,7 @@ const NAV_STRUCTURE = {
       { id: 'Todo'      as TabId, Icon: ListTodo,        labelKey: 'todo'      as const },
       { id: 'CRM'       as TabId, Icon: Users,           labelKey: 'crm'       as const },
       { id: 'ELInfo'    as TabId, Icon: Megaphone,       labelKey: 'elInfo'    as const },
+      { id: 'Fenton'    as TabId, Icon: Lightbulb,      labelKey: 'fenton'    as const },
       { id: 'History'   as TabId, Icon: HistoryIcon,     labelKey: 'history'   as const },
       { id: 'Analytics' as TabId, Icon: BarChart3,       labelKey: 'analytics' as const },
       { id: 'Report'    as TabId, Icon: ClipboardList,  labelKey: 'report'    as const },
@@ -108,6 +117,7 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   Todo:      { t: 'todo',       s: 'sub_todo'       },
   CRM:       { t: 'crm',        s: 'sub_crm'       },
   ELInfo:    { t: 'elInfo',     s: 'sub_elInfo'    },
+  Fenton:    { t: 'fenton',     s: 'sub_fenton'    },
   History:   { t: 'history',    s: 'sub_history'   },
   Analytics: { t: 'analytics',  s: 'sub_analytics' },
   Report:    { t: 'report',     s: 'sub_report'    },
@@ -142,7 +152,7 @@ function ToastList({ toasts, remove }: { toasts: Toast[]; remove: (id: number) =
              t.type === 'err' ? <AlertCircle  className="w-3.5 h-3.5 shrink-0" /> :
                                 <Info         className="w-3.5 h-3.5 shrink-0" />}
             <span className="flex-1">{t.msg}</span>
-            <button onClick={() => remove(t.id)} className="opacity-40 hover:opacity-100"><X className="w-3 h-3" /></button>
+            <button aria-label="Dismiss notification" onClick={() => remove(t.id)} className="opacity-40 hover:opacity-100"><X className="w-3 h-3" /></button>
           </motion.div>
         ))}
       </AnimatePresence>
@@ -198,7 +208,7 @@ function Sidebar({
           <p className="text-[13.5px] font-semibold tracking-[-0.02em] truncate">Vector</p>
           <p className="text-[10px] text-[var(--t3)] mt-0.5 truncate">Quote Automation · v3.0</p>
         </div>
-        <button
+        <button aria-label={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
           onClick={() => { setPinned(!pinned); setHovered(false); }}
           title={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
           className={cn(
@@ -222,7 +232,7 @@ function Sidebar({
               const locked = isLocked(it.id);
               const badge = it.id === 'Dashboard' ? queueCount : it.id === 'Inbox' ? inboxUnread : 0;
               return (
-                <button key={it.id} onClick={() => setTab(it.id)}
+                <button aria-label={locked ? 'Coming soon' : undefined} key={it.id} onClick={() => setTab(it.id)}
                   title={locked ? 'Coming soon' : undefined}
                   style={active ? activeShadow : undefined}
                   className={navBtn(active, locked)}>
@@ -308,7 +318,7 @@ function Header({
         </div>
       )}
 
-      <button onClick={onConnect} disabled={connecting}
+      <button aria-label={connecting ? tr.connecting : (userName || 'Click to connect to JOE')} onClick={onConnect} disabled={connecting}
         style={connected && !connecting
           ? { border: '1px solid color-mix(in oklab, var(--ok) 32%, transparent)', background: 'var(--ok-soft)', color: 'var(--ok)' }
           : undefined}
@@ -326,13 +336,13 @@ function Header({
         {connected && !connecting && <RefreshCw className="w-3 h-3 opacity-60" />}
       </button>
 
-      <button onClick={onFeedback} title="Send feedback"
+      <button aria-label="Send feedback" onClick={onFeedback} title="Send feedback"
         className="h-8 px-[11px] rounded-[9px] text-[11.5px] font-medium flex items-center gap-[7px] border border-[var(--line-2)] bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s-hover)] hover:text-[var(--t1)] transition-colors">
         <MessageSquarePlus className="w-3.5 h-3.5" />
         <span className="hidden sm:inline">Feedback</span>
       </button>
 
-      <button onClick={() => setDark((d: boolean) => !d)} title="Toggle theme" className={iconBtn}>
+      <button aria-label="Toggle theme" onClick={() => setDark((d: boolean) => !d)} title="Toggle theme" className={iconBtn}>
         {dark ? <Sun className="w-[15px] h-[15px]" /> : <Moon className="w-[15px] h-[15px]" />}
       </button>
 
@@ -436,7 +446,7 @@ function ShortcutsModal({ onClose }: { onClose: () => void }) {
         <div className="flex items-center gap-2 mb-4">
           <Keyboard className="w-4 h-4 text-[var(--t3)]" />
           <span className="text-[13px] font-semibold flex-1">Keyboard Shortcuts</span>
-          <button onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
+          <button aria-label="Close" onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -542,11 +552,11 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
                 className="text-[10.5px] text-[var(--accent-text)] hover:text-[var(--accent-text)] font-medium mr-1">
                 Full view →
               </button>
-              <button onClick={() => setMsgs([])} title="Clear chat"
+              <button aria-label="Clear chat" onClick={() => setMsgs([])} title="Clear chat"
                 className="w-5 h-5 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
                 <RefreshCw className="w-3 h-3" />
               </button>
-              <button onClick={() => setOpen(false)}
+              <button aria-label="Close" onClick={() => setOpen(false)}
                 className="w-5 h-5 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
                 <X className="w-3 h-3" />
               </button>
@@ -603,7 +613,7 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
                 placeholder="Ask anything… (Enter to send)"
                 className="flex-1 resize-none text-[11.5px] bg-transparent outline-none text-[var(--t1)] placeholder:text-[var(--t3)] leading-relaxed py-0.5"
               />
-              <button onClick={send} disabled={!input.trim() || loading}
+              <button aria-label="Send message" onClick={send} disabled={!input.trim() || loading}
                 className={cn(
                   'w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-colors mb-0.5',
                   input.trim() && !loading
@@ -735,10 +745,10 @@ function FeedbackModal({
     setSending(true);
     try {
       const r = await api.feedback({ message: msg, category, page: currentTab, userName, userEmail });
-      if (r.ok) { toast('ok', 'Thanks — feedback sent'); onClose(); }
-      else      { toast('err', r.error || 'Could not send feedback'); }
+      if (r.ok) { toast('ok', 'Feedback sent — thank you'); onClose(); }
+      else      { toast('err', failed('send your feedback', r.error)); }
     } catch (e: any) {
-      toast('err', e.message || 'Could not send feedback');
+      toast('err', failed('send your feedback', e));
     }
     setSending(false);
   }
@@ -751,7 +761,7 @@ function FeedbackModal({
         <div className="flex items-center gap-2 mb-4">
           <MessageSquarePlus className="w-4 h-4 text-[var(--accent-text)]" />
           <span className="text-[13px] font-semibold flex-1">Send feedback</span>
-          <button onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
+          <button aria-label="Close" onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
@@ -844,7 +854,7 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
 // ────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ────────────────────────────────────────────────────────────────────────────
-const VALID_TABS: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'Todo', 'CRM', 'ELInfo', 'History', 'Analytics', 'Report', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'Settings'];
+const VALID_TABS: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'Todo', 'CRM', 'ELInfo', 'Fenton', 'History', 'Analytics', 'Report', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'Settings'];
 
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
@@ -1001,11 +1011,11 @@ export default function App() {
         setSplashDone(true);
       } else {
         const detail = r.lines?.filter((l: string) => l.includes('[ERR]') || l.includes('[WARN]')).slice(-3).join(' | ');
-        toast('err', detail || r.error || 'Connection failed — check vector.log');
+        toast('err', failed('connect to JOE', detail || r.error || 'see vector.log for the reason'));
       }
       await refreshHeader();
     } catch (e: any) {
-      toast('err', e.message || 'Connection failed');
+      toast('err', failed('connect to JOE', e));
     }
     setConnecting(false);
   }
@@ -1023,7 +1033,7 @@ export default function App() {
       // ⌘K / Ctrl+K → AI Assistant (locked for team rollout)
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        if (isLocked('Assistant')) toast('info', 'Ask Vector — coming soon');
+        if (isLocked('Assistant')) toast('info', 'Ask Vector is coming soon');
         else setTab('Assistant');
         return;
       }
@@ -1115,9 +1125,14 @@ export default function App() {
                       />
                     </div>
                   ) : visited.has(t) && (isInbox ? (
-                    <InboxPage toast={toast} setTab={t2 => setTab(t2 as TabId)} onUnreadCount={setInboxUnread} />
+                    <TabErrorBoundary label="Inbox">
+                      <React.Suspense fallback={<div className="flex items-center justify-center h-full text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
+                        <InboxPage toast={toast} setTab={t2 => setTab(t2 as TabId)} onUnreadCount={setInboxUnread} />
+                      </React.Suspense>
+                    </TabErrorBoundary>
                   ) : (
                     <div className="p-6 w-full">
+                      <TabErrorBoundary label={t}>
                       <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
                       {t === 'Analytics'  && <AnalyticsPage />}
@@ -1126,6 +1141,7 @@ export default function App() {
                       {t === 'History'    && <HistoryPage      toast={toast} />}
                       {t === 'CRM'        && <CrmPage          toast={toast} />}
                       {t === 'ELInfo'     && <ELInfoPage       toast={toast} />}
+                      {t === 'Fenton'     && <FentonKBPage     toast={toast} />}
                       {t === 'Assistant'  && AssistantPage  && <AssistantPage  connected={!!connected} toast={toast} />}
                       {t === 'Schematics' && SchematicsPage && <SchematicsPage toast={toast} />}
                       {t === 'PMO'        && PmoPage        && <PmoPage        toast={toast} />}
@@ -1136,6 +1152,7 @@ export default function App() {
                         await api.saveConfig(c); setConfig(c); toast('ok', tCurrent.settings_saved);
                       }} />}
                       </React.Suspense>
+                      </TabErrorBoundary>
                     </div>
                   ))}
                 </div>

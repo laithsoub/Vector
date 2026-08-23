@@ -4,9 +4,10 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
+    "certs": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/export-corporate-ca.ps1",
+    "dev": "cross-env NODE_EXTRA_CA_CERTS=certs/corporate-roots.pem tsx server.ts",
     "dev:frontend": "vite",
-    "dev:server": "cross-env TAURI_SIDECAR=1 tsx server.ts",
+    "dev:server": "cross-env TAURI_SIDECAR=1 NODE_EXTRA_CA_CERTS=certs/corporate-roots.pem tsx server.ts",
     "dev:tauri": "concurrently -n SERVER,TAURI -c blue,cyan \"npm run dev:server\" \"tauri dev\"",
     "build": "vite build",
     "build:frontend": "vite build",

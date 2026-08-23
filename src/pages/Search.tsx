@@ -13,6 +13,7 @@ import {
 } from '../lib/ui';
 import { PRODUCT_COLORS } from '../lib/charts';
 import { api } from '../lib/api';
+import { plural } from '../lib/errors';
 import type { SearchResult, DqDoc } from '../types';
 import type { ToastFn } from '../App';
 
@@ -287,7 +288,7 @@ export function SearchPage({
     a.download = `quotes_${activeQuery.replace(/\s+/g, '_')}.csv`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    toast('ok', `${filtered.length} row${filtered.length !== 1 ? 's' : ''} exported`);
+    toast('ok', `${plural(filtered.length, 'row')} exported to CSV`);
   }
 
   return (
@@ -309,7 +310,7 @@ export function SearchPage({
             placeholder="SF ID, quote name, customer, salesman…"
             className="flex-1 h-9 bg-transparent text-[14px] focus:outline-none placeholder:text-[var(--t3)] text-[var(--t1)]" />
           {(query || activeQuery) && (
-            <button onClick={clearAll}
+            <button aria-label="Clear search" onClick={clearAll}
               className="text-[var(--t3)] hover:text-[var(--t1)] px-2">
               <X className="w-4 h-4" />
             </button>
@@ -405,7 +406,7 @@ export function SearchPage({
                   Clear
                 </button>
               )}
-              <button onClick={() => askAI()}
+              <button aria-label="Send question" onClick={() => askAI()}
                 disabled={aiLoading || !aiInput.trim()}
                 className="h-8 w-8 rounded-lg bg-violet-500 hover:bg-violet-600 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
                 <ArrowRight className="w-3.5 h-3.5" />
@@ -439,7 +440,7 @@ export function SearchPage({
               <span className="text-[11px] text-[var(--t3)] num mr-1">{dqResults.length} file{dqResults.length !== 1 ? 's' : ''}</span>
             )}
             {/* Mine-only toggle */}
-            <button onClick={() => toggleMine(!mineOnly)}
+            <button aria-label={mineOnly ? 'Showing only quotes you created — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'} onClick={() => toggleMine(!mineOnly)}
               title={mineOnly ? 'Showing only quotes you created — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'}
               className={cn(
                 'h-6 px-2 rounded-md text-[10.5px] font-medium flex items-center gap-1.5 ring-1 ring-inset transition-colors',

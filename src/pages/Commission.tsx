@@ -68,8 +68,9 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
     <div className="flex items-center justify-between gap-3">
       <label className="text-[12px] text-[var(--t2)] flex-1">{label}</label>
       <button onClick={() => onChange(!value)}
-        className={cn('relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1', value ? 'bg-violet-600' : 'bg-[var(--s3)]')}>
-        <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform', value ? 'translate-x-4' : 'translate-x-1')} />
+        style={{ background: value ? 'var(--accent)' : 'var(--line-3)' }}
+        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1">
+        <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform', value ? 'translate-x-4' : 'translate-x-1')} />
       </button>
     </div>
   );
@@ -105,7 +106,7 @@ function CGLineCalc() {
     try {
       const r = await fetch('/api/run/commission', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'cg', panels, lumis, cards: 0, software: sw ? 'yes' : 'no', centralLondon: cl ? 'yes' : 'no' }),
+        body: JSON.stringify({ type: 'cg', panels, lumis, cards: 0, software: sw ? 'yes' : 'no', centralLondon: cl ? 'yes' : 'no', ref: ref.trim() }),
       });
       const json = await r.json();
       if (!r.ok) throw new Error(json.error || 'Server error');
@@ -238,7 +239,7 @@ function EasicheckCalc() {
     try {
       const r = await fetch('/api/run/commission', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'easicheck', panels, lumis, cards, software: sw ? 'yes' : 'no', centralLondon: cl ? 'yes' : 'no' }),
+        body: JSON.stringify({ type: 'easicheck', panels, lumis, cards, software: sw ? 'yes' : 'no', centralLondon: cl ? 'yes' : 'no', ref: ref.trim() }),
       });
       const json = await r.json();
       if (!r.ok) throw new Error(json.error || 'Server error');

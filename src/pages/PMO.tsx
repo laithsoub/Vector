@@ -8,6 +8,7 @@ import {
 
 import { cn } from '../lib/cn';
 import { Card, Pill, Button } from '../lib/ui';
+import { failed } from '../lib/errors';
 import type { ToastFn } from '../App';
 
 export function PmoPage({ toast }: { toast: ToastFn }) {
@@ -87,7 +88,7 @@ function PmoForm({ toast }: { toast: ToastFn }) {
             setDlName(rest.slice(colon + 1));
           } else if (txt === '__DONE_OK__') {
             setDone(true);
-            toast('ok', 'PMO document ready!');
+            toast('ok', 'PMO document ready — check it before filing');
             // Parse email fields from log lines
             const fields: Record<string,string> = {};
             for (const line of allLines) {
@@ -96,7 +97,7 @@ function PmoForm({ toast }: { toast: ToastFn }) {
             }
             setEmailData(fields);
           } else if (txt === '__DONE_ERR__') {
-            setDone(false); toast('err', 'PMO failed — see log');
+            setDone(false); toast('err', failed('build the PMO document', 'see the log below for the failing step'));
           } else {
             allLines.push(txt);
             setLines(prev => [...prev, txt]);
@@ -106,7 +107,7 @@ function PmoForm({ toast }: { toast: ToastFn }) {
     } catch (e: any) {
       setLines(prev => [...prev, `[ERR] ${e.message}`]);
       setDone(false);
-      toast('err', e.message);
+      toast('err', failed('build the PMO document', e));
     }
     setRunning(false);
   }
@@ -132,10 +133,10 @@ function PmoForm({ toast }: { toast: ToastFn }) {
       } else {
         setSaved(true);
         setSavedPath(data.path);
-        toast('ok', 'Saved to the PMO folder');
+        toast('ok', `Saved to the PMO folder as ${dlName || 'PMO.docx'}`);
       }
     } catch (e: any) {
-      toast('err', `Couldn't save: ${e.message}`);
+      toast('err', failed('save the document to the PMO folder', e));
     }
     setSaving(false);
   }
@@ -151,7 +152,7 @@ function PmoForm({ toast }: { toast: ToastFn }) {
       document.body.appendChild(a); a.click();
       setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 3000);
     } catch (e: any) {
-      toast('err', `Download failed: ${e.message}`);
+      toast('err', failed(`download ${dlName || 'the PMO document'}`, e));
     }
   }
 
@@ -197,7 +198,7 @@ Best,`;
                   />
                 </div>
                 {docuPdfs.length > 1 && (
-                  <button onClick={() => setDocuPdfs(prev => prev.filter((_, j) => j !== i))}
+                  <button aria-label="Remove this document" onClick={() => setDocuPdfs(prev => prev.filter((_, j) => j !== i))}
                     className="p-1.5 rounded-md text-[var(--t3)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 shrink-0">
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -461,7 +462,7 @@ function PdfSlot({
         <p className="text-[10.5px] text-[var(--t3)] truncate">{loaded ? file!.name : sub}</p>
       </div>
       {loaded && (
-        <button onClick={e => { e.stopPropagation(); onFile(null); }}
+        <button aria-label="Remove this file" onClick={e => { e.stopPropagation(); onFile(null); }}
           className="text-[var(--t3)] hover:text-red-500 shrink-0"><X className="w-3.5 h-3.5" /></button>
       )}
     </div>

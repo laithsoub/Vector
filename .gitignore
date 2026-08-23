@@ -30,6 +30,9 @@ ship-automation/
 **/.copilot_cookies
 graph_token_cache.json
 **/graph_token_cache.json
+# Corporate proxy root CAs, exported from the Windows store by `npm run certs`.
+# Not secret, but machine-specific and regenerable — no reason to carry it.
+/certs/
 *.token
 *token_cache*
 

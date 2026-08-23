@@ -17,10 +17,20 @@ try {
 } catch { Log "kill port 3000 failed: $_" }
 Start-Sleep -Milliseconds 800
 
-# 2) Kill Edge
-Get-Process msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 2
-Log "edge killed"
+# 2) Is a debug Edge already listening on 9222?
+# The debug instance runs on its own --user-data-dir, so it coexists with the
+# user's normal Edge windows. Never kill Edge: a launcher run must not close
+# the browsing session, and a debug instance that is already up is reused.
+function Test-DebugPort {
+    try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $ok = $c.ConnectAsync('127.0.0.1', 9222).Wait(700)
+        $c.Close()
+        return $ok
+    } catch { return $false }
+}
+$debugUp = Test-DebugPort
+Log "debug port 9222 already up: $debugUp"
 
 # 3) Locate Edge
 $edge = if (Test-Path 'C:\Program Files\Microsoft\Edge\Application\msedge.exe') {
@@ -36,7 +46,7 @@ Log "edge path: $edge"
 # only binds with a dedicated --user-data-dir. Log into SharePoint once in this
 # profile; cookies persist here for Connect to JOE.
 $edgeProfile = Join-Path $env:LOCALAPPDATA 'VectorEdgeDebug'
-if ($edge) {
+if ($edge -and -not $debugUp) {
     Start-Process $edge -ArgumentList @(
         '--remote-debugging-port=9222',
         '--no-first-run',
@@ -44,6 +54,8 @@ if ($edge) {
         'https://eaton.sharepoint.com/sites/QuotationFactoryEMEA'
     )
     Log "edge launched with debugging (user-data-dir=$edgeProfile)"
+} elseif ($debugUp) {
+    Log "reusing the debug Edge already on 9222"
 }
 
 # 5) Start server as detached hidden process using node.exe directly (no PATH dependency)
@@ -74,10 +86,13 @@ for ($i = 1; $i -le 30; $i++) {
 }
 if (-not $ready) { Log "server NEVER came up after 30s" }
 
-# 7) Open app tab (same profile → joins the debug instance)
+# 7) Open the app tab in the NORMAL Edge profile. The app itself needs no
+# SharePoint cookies (the server-side python holds them), so it does not have
+# to live in the debug profile — this way it opens as a tab in the browser
+# window that is already in front of the user.
 if ($edge) {
-    Start-Process $edge -ArgumentList @("--user-data-dir=`"$edgeProfile`"", 'http://localhost:3000')
-    Log "app tab opened"
+    Start-Process $edge -ArgumentList @('http://localhost:3000')
+    Log "app tab opened in the default profile"
 }
 
 Log "=== PS launcher done ==="
