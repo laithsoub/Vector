@@ -5,7 +5,8 @@ import { cn } from '../lib/cn';
 import { api } from '../lib/api';
 import { failed, plural } from '../lib/errors';
 import { fmtGBP } from '../lib/ui';
-import { DATA, SALESMEN, SIZES_1PH, SIZES_3PH } from '../lib/cbuData';
+import { DATA, SIZES_1PH, SIZES_3PH } from '../lib/cbuData';
+import { useSalesmen, type Salesman } from '../lib/salesmen';
 import { extractMaterialHints } from '../lib/elHints';
 import { openExternal } from '../lib/shell';
 import type { ToastFn } from '../App';
@@ -29,12 +30,12 @@ function cbuLines(system: string): Line[] {
 }
 
 // Match the email sender to a salesman (by email, then by name); fall back to first.
-function matchSalesman(email?: string, name?: string): number {
+function matchSalesman(roster: Salesman[], email?: string, name?: string): number {
   const e = (email || '').trim().toLowerCase();
-  if (e) { const i = SALESMEN.findIndex(s => s.email.toLowerCase() === e); if (i >= 0) return i; }
+  if (e) { const i = roster.findIndex(s => s.email.toLowerCase() === e); if (i >= 0) return i; }
   const n = (name || '').toLowerCase().replace(/,/g, ' ').replace(/\s+/g, ' ').trim();
   if (n) {
-    const i = SALESMEN.findIndex(s => {
+    const i = roster.findIndex(s => {
       const sn = s.name.toLowerCase();
       return sn === n || sn.split(' ').every(t => n.includes(t));
     });
@@ -50,7 +51,13 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
   const [quoteNumber, setQuoteNumber] = useState('');               // Job number
   const [quoteNo, setQuoteNo] = useState('');                       // Quotation No (EU1L…)
   const [date, setDate] = useState(todayUK());
-  const [smIdx, setSmIdx] = useState(() => matchSalesman(senderEmail, senderName));
+  const SALESMEN = useSalesmen();
+  const [smIdx, setSmIdx] = useState(0);
+  // Auto-match once the roster lands, but never over a choice the user made.
+  const smPicked = useRef(false);
+  useEffect(() => {
+    if (!smPicked.current && SALESMEN.length) setSmIdx(matchSalesman(SALESMEN, senderEmail, senderName));
+  }, [SALESMEN, senderEmail, senderName]);
   const [system, setSystem] = useState('');
   const [lines, setLines] = useState<Line[]>([]);
   const [detecting, setDetecting] = useState(false);
@@ -99,6 +106,7 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
     setGenerating(true);
     try {
       const sm = SALESMEN[smIdx];
+      if (!sm) { toast('warn', 'No salesman configured — add cbu_salesmen to config.json'); setGenerating(false); return; }
       const r = await api.quoteGenerate({
         header: { quoteName, quoteNumber, quoteNo, date, salesman: { name: sm.name, email: sm.email, phone: sm.phone } },
         lines: lines.map((l, i) => ({ itemNo: String((i + 1) * 10).padStart(3, '0'), catNo: l.catNo, product: l.product, description: l.description, qty: Number(l.qty) || 0, price: Number(l.price) || 0 })),
@@ -130,7 +138,7 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
         <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Date</span>
           <input value={date} onChange={e => setDate(e.target.value)} className={inp} /></label>
         <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Salesman</span>
-          <select value={smIdx} onChange={e => setSmIdx(Number(e.target.value))} className={inp}>
+          <select value={smIdx} onChange={e => { smPicked.current = true; setSmIdx(Number(e.target.value)); }} className={inp}>
             {SALESMEN.map((s, i) => <option key={s.email} value={i}>{s.name}</option>)}
           </select></label>
         <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">CBU system</span>

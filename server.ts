@@ -133,8 +133,30 @@ function swallowReport() {
 // sp_site and dq_store among them, which decide where quotes get uploaded.
 const CONFIG_KEYS = [
   'base', 'initials', 'sp_site', 'sp_list', 'dq_store',
-  'gemini_key', 'ai_model', 'job_categories',
+  'inside_sales', 'azure_di_endpoint', 'azure_di_key',
+  'gemini_key', 'ai_model', 'job_categories', 'cbu_salesmen',
 ] as const;
+
+// ── Salesman roster ──────────────────────────────────────────────────────────
+// Colleagues' names, work emails and personal mobile numbers. This lived as a
+// hardcoded array in three source files, which put it in the repository — and the
+// repository was public for a while. It belongs in config.json, which is
+// gitignored, so it is entered once per install and never committed again.
+// Everything that needs it (this file, the CBU sizer, the Inbox generator) now
+// reads it from there through /api/config.
+export interface Salesman { name: string; email: string; phone: string }
+
+function salesmenRoster(): Salesman[] {
+  const raw = (loadPyCfg() as any).cbu_salesmen;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(r => r && typeof r.name === 'string' && r.name.trim())
+    .map(r => ({
+      name:  String(r.name).trim(),
+      email: String(r.email || '').trim(),
+      phone: String(r.phone || '').trim(),
+    }));
+}
 
 function loadPyCfg(): Record<string, string> {
   const defaults: Record<string, string> = {
@@ -1833,23 +1855,13 @@ async function startServer() {
     return rows.map((r: any) => String(r.name));
   }
 
-  // Known Eaton salesmen (same roster as CBUCalculator) — used to attach email +
-  // phone to the salesman contact derived from each account's quotes.
-  const SALESMEN_ROSTER = [
-    { name: 'Blair McDonald',  email: 'blairgmcdonald@eaton.com', phone: '07890954552' },
-    { name: 'Craig Donaldson', email: 'craigdonaldson@eaton.com', phone: '07811692079' },
-    { name: 'Joe Bayley',      email: 'joebayley@eaton.com',      phone: '07713325534' },
-    { name: 'Mark Fenton',     email: 'MarkAFenton@Eaton.com',    phone: '07713325528' },
-    { name: 'Ollie Bailey',    email: 'olliejbailey@eaton.com',   phone: '07866893068' },
-    { name: 'Ryan Houston',    email: 'ryanhouston@eaton.com',    phone: '07773949386' },
-  ];
   // Order-independent name match (handles "Bayley, Joe" vs "Joe Bayley" and middle
   // initials), so the roster's email/phone attaches to the resolved salesman.
-  function matchSalesman(name: string): { name: string; email: string; phone: string } | null {
+  function matchSalesman(name: string): Salesman | null {
     const toks = (s: string) => s.toLowerCase().replace(/[^a-z ]/g, ' ').split(/\s+/).filter(t => t.length > 1);
     const nt = new Set(toks(name));
     if (!nt.size) return null;
-    return SALESMEN_ROSTER.find(r => { const rt = toks(r.name); return rt.length > 0 && rt.every(t => nt.has(t)); }) || null;
+    return salesmenRoster().find(r => { const rt = toks(r.name); return rt.length > 0 && rt.every(t => nt.has(t)); }) || null;
   }
 
   // Pull the salesman from any of a SharePoint row's people fields (claims/OWSUSER
@@ -6268,7 +6280,9 @@ async function startServer() {
           `You route messages for an Eaton quote-automation app. The user can search their quotes `
           + `(stored on SharePoint — searchable by customer, salesman, KVA rating, catalogue/fitting `
           + `number, or any text inside the quote PDF/email) OR ask a general question about the app/workflow.\n`
-          + `Known sales reps (salesmen whose names appear in quotes, for salesman-scoped searches): Blair McDonald, Craig Donaldson, Joe Bayley, Mark Fenton, Ollie Bailey, Ryan Houston.\n\n`
+          + (salesmenRoster().length
+              ? `Known sales reps (salesmen whose names appear in quotes, for salesman-scoped searches): ${salesmenRoster().map(s => s.name).join(', ')}.\n\n`
+              : '')
           + (histCtx ? `Recent conversation (for context, oldest first):\n${histCtx}\n\n` : '')
           + `New message: "${query.replace(/"/g, "'")}"\n\n`
           + `Reply with ONLY a JSON object, no prose:\n`

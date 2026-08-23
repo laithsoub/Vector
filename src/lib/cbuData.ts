@@ -395,14 +395,9 @@ cbu24.ventBoost = '24.192 m³/h';
 cbu24.ventFloat = '3.024 m³/h';
 cbu24.rows.find(r => r.label === 'External battery cabinet')!.qty = 6;
 
-export const SALESMEN = [
-  { name: 'Blair McDonald',  email: 'blairgmcdonald@eaton.com',  phone: '07890954552' },
-  { name: 'Craig Donaldson', email: 'craigdonaldson@eaton.com',  phone: '07811692079' },
-  { name: 'Joe Bayley',      email: 'joebayley@eaton.com',       phone: '07713325534' },
-  { name: 'Mark Fenton',     email: 'MarkAFenton@Eaton.com',     phone: '07713325528' },
-  { name: 'Ollie Bailey',    email: 'olliejbailey@eaton.com',    phone: '07866893068' },
-  { name: 'Ryan Houston',    email: 'ryanhouston@eaton.com',     phone: '07773949386' },
-];
+// The salesman roster used to live here. It is colleagues' names, work emails
+// and personal mobile numbers, so it now comes from gitignored config instead --
+// see src/lib/salesmen.ts.
 
 export const SIZES_1PH = ['1PH- 0.5KVA','1PH- 1KVA','1PH- 2KVA','1PH- 4KVA','1PH- 5KVA','1PH- 8KVA','1PH- 10KVA','1PH- 12KVA','1PH- 15KVA','1PH- 16KVA','1PH- 20KVA'];
 export const SIZES_3PH = ['3PH- 6KVA','3PH- 8KVA','3PH- 10KVA','3PH- 12KVA','3PH- 14KVA','3PH- 16KVA','3PH- 18KVA','3PH- 20KVA','3PH- 24KVA','3PH- 28KVA','3PH- 30KVA','3PH- 32KVA','3PH- 36KVA','3PH- 40KVA','3PH- 42KVA','3PH- 48KVA','3PH- 54KVA','3PH- 56KVA','3PH- 60KVA','3PH- 64KVA','3PH- 72KVA','3PH- 80KVA'];

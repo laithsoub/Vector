@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Printer, ChevronDown, Copy, Check } from 'lucide-react';
 
-import { DATA, SALESMEN, SIZES_1PH, SIZES_3PH } from './lib/cbuData';
+import { DATA, SIZES_1PH, SIZES_3PH } from './lib/cbuData';
+import { useSalesmen } from './lib/salesmen';
 
 const f2 = (n:number) => `£${n.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
@@ -78,8 +79,9 @@ export default function CBUCalculator() {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
 
+  const SALESMEN = useSalesmen();
   const cfg = size ? DATA[size] : null;
-  const sm  = smIdx !== null ? SALESMEN[smIdx] : null;
+  const sm  = smIdx !== null ? SALESMEN[smIdx] ?? null : null;
   const ok  = !!cfg && !!pn.trim() && !!qr.trim() && sm !== null;
 
   const ycls = "bg-yellow-50 dark:bg-yellow-900/20 border border-zinc-200 dark:border-zinc-700 px-2 py-1 text-xs font-semibold text-zinc-800 dark:text-zinc-100 rounded";

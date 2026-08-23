@@ -70,6 +70,7 @@ let _detail: EmailDetail | null = null;
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
 import type { MatchMode, SearchMatch } from '../lib/api';
+import { useSalesmen } from '../lib/salesmen';
 import { failed, plural } from '../lib/errors';
 import { fmtGBP } from '../lib/ui';
 import type { TodoBucket } from '../types';
@@ -508,14 +509,7 @@ const CBU_SYSTEMS = [
   '3PH- 48KVA','3PH- 54KVA','3PH- 56KVA','3PH- 60KVA',
 ];
 
-const CBU_SALESMEN = [
-  { name: 'Blair McDonald',  email: 'blairgmcdonald@eaton.com',  phone: '07890954552' },
-  { name: 'Craig Donaldson', email: 'craigdonaldson@eaton.com',  phone: '07811692079' },
-  { name: 'Joe Bayley',      email: 'joebayley@eaton.com',       phone: '07713325534' },
-  { name: 'Mark Fenton',     email: 'MarkAFenton@Eaton.com',     phone: '07713325528' },
-  { name: 'Ollie Bailey',    email: 'olliejbailey@eaton.com',    phone: '07866893068' },
-  { name: 'Ryan Houston',    email: 'ryanhouston@eaton.com',     phone: '07773949386' },
-];
+// The CBU salesman roster comes from gitignored config -- see src/lib/salesmen.ts.
 
 // Known CBU system capacities in kVA — used to validate watt-to-kVA conversions
 const CBU_KNOWN_KVA = [0.5,1,2,4,5,6,8,10,12,14,15,16,18,20,24,28,30,32,36,40,42,48,54,56,60];
@@ -596,7 +590,8 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
   const [loading, setLoading] = useState(false);
   const [dlId,    setDlId]    = useState<string | null>(null);
 
-  const sm = smIdx !== null ? CBU_SALESMEN[smIdx] : null;
+  const CBU_SALESMEN = useSalesmen();
+  const sm = smIdx !== null ? CBU_SALESMEN[smIdx] ?? null : null;
   const ok = systems.length > 0 && !!project.trim() && !!quote.trim() && sm !== null;
 
   function updateSystem(i: number, v: string) {
@@ -686,6 +681,7 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
           <select value={smIdx ?? ''} onChange={e => setSmIdx(e.target.value === '' ? null : Number(e.target.value))}
             className="mt-1 w-full h-7 px-2 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] focus:outline-none focus:ring-[var(--accent-line)]">
             <option value="">Select salesman…</option>
+            {CBU_SALESMEN.length === 0 && <option value="" disabled>No salesmen configured (config.json)</option>}
             {CBU_SALESMEN.map((s, i) => <option key={i} value={i}>{s.name}</option>)}
           </select>
         </div>

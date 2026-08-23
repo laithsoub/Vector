@@ -36,6 +36,9 @@ export interface Config {
   gemini_key_set?: boolean;
   ai_model?:       string;   // Ask Vector "smart" model id (Settings dropdown); blank = server default
   job_categories?: string[]; // Report tab buckets; blank = server defaults
+  // Salesman roster. Lives here rather than in source because it is colleagues'
+  // names, work emails and personal mobiles — config.json is gitignored.
+  cbu_salesmen?:   { name: string; email: string; phone: string }[];
 }
 
 // ─── Quick check-up: quote mail vs the Quotations List ───────────────────────
