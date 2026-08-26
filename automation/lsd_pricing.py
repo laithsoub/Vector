@@ -272,9 +272,35 @@ def load_reference(master):
     """Read the four lookup tables the ledger uses. Keys are built exactly like
     the model's CONCATENATE so a Python price equals the Excel price."""
     import pyxlsb
-    e2e, pv, mv, cust = {}, {}, {}, {}
+    e2e, pv, mv, cust, trig = {}, {}, {}, {}, {}
     with pyxlsb.open_workbook(str(master)) as wb:
         names = {n.strip(): n for n in wb.sheets}
+
+        # Trigger sheets — the list-price / cost reference by material. A CPQ export
+        # of a net-priced deal (most FIRE quotes) carries NO list price, so the
+        # ledger's list has to come from here instead. The two sheets have different
+        # layouts and currencies (verified against the V2 master, 2026-08-26):
+        #   'EL Trigger 26'   D=material  F=cost  H=list  J=target  — prices in EUR
+        #   'Fire Trigger 26' E=material  G=cost  I=list  H=trigger — prices in USD
+        for tname, cols, ccy in (
+            ("EL Trigger 26",   {"mat": 3, "cost": 5, "list": 7, "target": 9}, "EUR"),
+            ("Fire Trigger 26", {"mat": 4, "cost": 6, "list": 8, "target": 7}, "USD"),
+        ):
+            if tname not in names:
+                continue
+            with wb.get_sheet(names[tname]) as sh:
+                for row in sh.rows():
+                    v = {c.c: c.v for c in row}
+                    mat = v.get(cols["mat"])
+                    if mat in (None, "", "Material"):
+                        continue
+                    listp = num(v.get(cols["list"]))
+                    if not listp:                       # only rows that actually carry a list
+                        continue
+                    # first spelling wins, like Excel VLOOKUP; EL sheet listed first
+                    trig.setdefault(canon(mat), {
+                        "list": listp, "cost": num(v.get(cols["cost"])),
+                        "target": num(v.get(cols["target"])), "ccy": ccy})
 
         # 'E2E Guidelines ' — I = pricing group description, N = E2E% target
         if "E2E Guidelines" in names:
@@ -312,7 +338,7 @@ def load_reference(master):
                     if cid not in (None, "", "Custmer #"):
                         cust.setdefault(canon(cid), (v.get(1), v.get(2)))
 
-    return {"e2e": e2e, "pv": pv, "mv": mv, "cust": cust}
+    return {"e2e": e2e, "pv": pv, "mv": mv, "cust": cust, "trig": trig}
 
 
 def detect_aprc(lines):
@@ -379,15 +405,36 @@ def price_lines(lines, ref, meta):
     customer = canon(meta.get("customer"))
     ledger = canon(meta.get("ledger") or "R2321")
 
+    deal_ccy = "EUR" if meta.get("aprc") == "525" else "USD"
+
+    def _to_deal(value, src_ccy):
+        """Trigger prices are stored per sheet currency (EL EUR, Fire USD). Convert
+        to the deal currency; R6 = 1.12522 USD per EUR, as the ledger's W/Y do."""
+        if value is None or src_ccy == deal_ccy:
+            return value
+        return value * fx if deal_ccy == "USD" else value / fx
+
     out = []
     for ln in lines:
         mat = ln["material"]
         qty = ln["qty"] or 0.0
         listp = ln["list"]
         std = ln["std_disc"]
-        unit_std = listp * (1 - std) if listp is not None else None
-        total_std = unit_std * qty if unit_std is not None else None
         cost = ln["cost"]
+
+        # List price (and cost) fall back to the Trigger sheet by material when the
+        # BOM omits them — a CPQ export of a net-priced FIRE deal carries neither,
+        # and the ledger's whole list-based machinery needs a list to work at all.
+        list_from_trigger = False
+        t = ref["trig"].get(mat)
+        if (not listp) and t:
+            listp = _to_deal(t["list"], t["ccy"])
+            list_from_trigger = True
+        if (not cost) and t:
+            cost = _to_deal(t["cost"], t["ccy"])
+
+        unit_std = listp * (1 - std) if listp else None
+        total_std = unit_std * qty if unit_std is not None else None
         total_cost = cost * qty if cost is not None else None
 
         # Requested discount — the ledger reads the BOM's Requested Discount %,
@@ -445,8 +492,12 @@ def price_lines(lines, ref, meta):
         e2e = (1 - total_cost / total_net) if (total_cost is not None and total_net) else None
 
         # ── flags: what a human should still look at ─────────────────────────
-        if listp is None:
-            flags.append(("action", "no list price on the transaction - cannot price"))
+        if not listp:
+            flags.append(("action", "no list price - not on the transaction, and the material "
+                                    "is not in the Trigger sheet; cannot price"))
+        elif list_from_trigger:
+            flags.append(("verify", "list price from the Trigger sheet (the transaction "
+                                    "carried none) - verify"))
         if tgt_e2e is None and ln["group"]:
             flags.append(("verify", f"pricing group '{ln['group']}' is not in E2E Guidelines"))
         if raised:
