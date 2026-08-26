@@ -367,8 +367,10 @@ The RPI solve is **algebraic, not iterative**, because Mix Variance does not mov
 
 **Accuracy, honestly:** the engine reproduces the documented procedure to the cent (MOPA W262168503E: 33/33 lines exact, 253,217.96, E2E 52.35%, Total RPI 16.04%). Against a *real* analyst approval it lands ~40% of lines exactly — the rest are per-line negotiated discounts and carried-forward prices that exist in neither the CSV nor the model. Those lines are the ones flagged REVIEW/VERIFY.
 
-Config: `lsd_master_model` (blank = newest `.xlsb` in `data/lsd`), `lsd_cases_root` (blank = `Desktop\LSD Pricing Doc`), `lsd_ledger` (default `R2321`).
-Endpoints: `GET /api/lsd/status|cases|file`, `POST /api/lsd/upload|preview|build|reveal`. Python: `lsd_pricing.py --job job.json --out result.json`. Component: `src/pages/LSD.tsx`.
+**Fetch from CPQ** (added 2026-08-26): type a transaction number and the BOM + header (customer #, name, project, CRM ID) come straight from **Oracle CPQ's REST v19 API** — no manual Export Line Items. CPQ is Oracle SSO (a different realm from SharePoint/JOE), so `cpq_fetch.py` holds no CPQ credentials: it drives the CPQ tab already open in the **debug-rail Edge** (port 9222, the JOE rail) via CDP and runs the REST reads in that tab's page context. Two reads — `commerceDocumentsOraclecpqoTransaction?q={transactionNumber_t}` for the doc id, then its `transactionLine` child for the BOM — then it writes a CPQ-shaped `.xlsx` (values in the manual export's column positions) so the priced path is identical to a dropped file. Proven: W262168503E rebuilt from the API prices to 253,217.96 / 33 lines, zero line diffs. **Note:** CPQ's header customer is the sold-to; the analyst sometimes prices a different account CPQ doesn't carry (MOPA's approved used 74895, absent from CPQ), so the fetched customer is auto-filled, flagged, and editable.
+
+Config: `lsd_master_model` (blank = newest `.xlsb` in `data/lsd`), `lsd_cases_root` (blank = `Desktop\LSD Pricing Doc`), `lsd_ledger` (default `R2321`), `lsd_cpq_port` (default `9222`).
+Endpoints: `GET /api/lsd/status|cases|file`, `POST /api/lsd/upload|preview|build|reveal|cpq-fetch`. Python: `lsd_pricing.py`, `cpq_fetch.py` (both `--job … --out …`). Component: `src/pages/LSD.tsx`.
 Locked in the ship build: the tab is gated, `/api/lsd` is 403'd in the sidecar, and `lsd_pricing.py` is excluded from `ship-automation/`.
 
 ### 6.8 LocalStorage Persistence
