@@ -452,6 +452,18 @@ export function SettingsPage({
           />
         </div>
 
+        {/* LSD Pricing. All three are optional — the tab falls back to the newest
+            .xlsb in data/lsd, the Desktop case archive, and R2321. */}
+        <div className="mt-5 pt-4 border-t border-[var(--line)] space-y-4">
+          <label className="block text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)]">LSD Pricing</label>
+          {field('lsd_master_model', 'Master CPQ model',
+                 'Full path to the "CPQ Pricing Model LSD … V2" .xlsb. Blank = newest .xlsb in data\\lsd')}
+          {field('lsd_cases_root',   'Case folder root',
+                 'Where generated case folders are written. Blank = Desktop\\LSD Pricing Doc')}
+          {field('lsd_ledger',       'MV ledger code',
+                 'Keys the prior-year country average. This master carries R2321 (UAE) only')}
+        </div>
+
         {/* Language. Scope is stated because it is real: the translations cover the
             navigation, the header and this screen. Page content is English only,
             and a picker that implies otherwise reads as a broken feature. */}

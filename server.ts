@@ -135,6 +135,7 @@ const CONFIG_KEYS = [
   'base', 'initials', 'sp_site', 'sp_list', 'dq_store',
   'inside_sales', 'azure_di_endpoint', 'azure_di_key',
   'gemini_key', 'ai_model', 'job_categories', 'cbu_salesmen',
+  'lsd_master_model', 'lsd_cases_root', 'lsd_ledger',
 ] as const;
 
 // ── Salesman roster ──────────────────────────────────────────────────────────
@@ -1771,6 +1772,9 @@ async function startServer() {
       // To-Do: the AI triage and the AI draft writer only. The board itself
       // (/api/todo, /api/todo/:id/send) stays usable in the ship build.
       '/api/todo/scan', '/api/todo/draft',
+      // LSD Pricing: the tab is locked in the ship and lsd_pricing.py is not
+      // staged into ship-automation, so the whole surface refuses here too.
+      '/api/lsd',
     ];
     app.use((req, res, next) => {
       if (SHIP_BLOCKED.some(p => req.path === p || req.path.startsWith(p + '/'))) {
@@ -3419,6 +3423,225 @@ async function startServer() {
       writeFileSync(path.join(pdfDir, path.basename(filename)), req.body as Buffer);
       res.json({ ok: true });
     } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // ── LSD Pricing ────────────────────────────────────────────────────────────
+  // Drop a CPQ transaction, get a case folder holding the transaction, the
+  // Approved Offer and the Working File (the master model itself, filled and
+  // toggled). automation/lsd_pricing.py does the pricing and drives Excel; this
+  // is only plumbing — staging the upload, running the script, guarding paths.
+  const LSD_DIR    = path.join(DATA_DIR, 'data', 'lsd');
+  const LSD_UPLOAD = path.join(LSD_DIR, '_incoming');
+
+  function lsdMaster(): string {
+    const cfg = loadPyCfg() as any;
+    const set = String(cfg.lsd_master_model || '').trim();
+    if (set && existsSync(set)) return set;
+    // Otherwise take the newest .xlsb sitting in data/lsd.
+    try {
+      const found = readdirSync(LSD_DIR)
+        .filter(f => f.toLowerCase().endsWith('.xlsb') && !f.startsWith('~$'))
+        .map(f => path.join(LSD_DIR, f))
+        .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
+      if (found.length) return found[0];
+    } catch {}
+    return '';
+  }
+
+  function lsdCasesRoot(): string {
+    const cfg = loadPyCfg() as any;
+    const set = String(cfg.lsd_cases_root || '').trim();
+    if (set) return set;
+    // Default to the analyst's own case archive when it exists, so generated
+    // folders land beside the real ones rather than somewhere new.
+    const desktop = path.join(os.homedir(), 'Desktop', 'LSD Pricing Doc');
+    return existsSync(desktop) ? desktop : path.join(loadPyCfg().base, 'LSD Cases');
+  }
+
+  // Every path that comes back from the client is re-checked against the case
+  // root before it is opened or streamed — the client must not be able to name
+  // an arbitrary file on disk.
+  function insideCasesRoot(p: string): string | null {
+    try {
+      const root = path.resolve(lsdCasesRoot());
+      const abs  = path.resolve(p);
+      const rel  = path.relative(root, abs);
+      if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return abs;
+    } catch {}
+    return null;
+  }
+
+  function runLsd(job: Record<string, unknown>, timeoutMs: number,
+                  res: Response, onOk?: (r: any) => void) {
+    const script = pyFile('lsd_pricing.py');
+    if (!existsSync(script)) {
+      res.status(500).json({ ok: false, error: 'lsd_pricing.py is missing from this install' });
+      return;
+    }
+    const master = lsdMaster();
+    if (!master) {
+      res.status(400).json({
+        ok: false,
+        error: 'No master CPQ model. Put the "CPQ Pricing Model LSD … V2" .xlsb in '
+             + `${LSD_DIR}, or set its path in Settings → LSD Pricing.`,
+      });
+      return;
+    }
+    const tmp     = path.join(os.tmpdir(), `lsd_${Date.now()}_${randomUUID().slice(0, 8)}`);
+    const jobPath = path.join(tmp, 'job.json');
+    const outPath = path.join(tmp, 'out.json');
+    const cleanup = () => {
+      for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} }
+      try { rmdirSync(tmp); } catch {}
+    };
+    try {
+      mkdirSync(tmp, { recursive: true });
+      writeFileSync(jobPath, JSON.stringify({
+        ...job,
+        // The client calls the staged upload `file`; the engine calls it `bom`.
+        bom: (job as any).bom || (job as any).file,
+        master, cases_root: lsdCasesRoot(),
+        ledger: (job as any).ledger || (loadPyCfg() as any).lsd_ledger || 'R2321',
+      }), 'utf8');
+    } catch (e: any) { cleanup(); res.status(500).json({ ok: false, error: e.message }); return; }
+
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+      { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let errBuf = '';
+    proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+    // Excel can hang on a repair prompt; kill rather than leave the tab spinning.
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
+    proc.on('error', (e: any) => {
+      clearTimeout(killer); cleanup();
+      if (!res.headersSent) res.status(500).json({ ok: false, error: e.message });
+    });
+    proc.on('close', () => {
+      clearTimeout(killer);
+      let out: any = null;
+      try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+      cleanup();
+      if (!out) {
+        if (!res.headersSent) {
+          res.status(500).json({ ok: false, error: errBuf.trim().slice(-600) || 'The pricing run produced no result.' });
+        }
+        return;
+      }
+      if (out.ok && onOk) { try { onOk(out); } catch {} }
+      if (!res.headersSent) res.json(out);
+    });
+  }
+
+  // What the tab needs to know before it lets you drop anything.
+  app.get('/api/lsd/status', (_req, res) => {
+    const master = lsdMaster();
+    const root   = lsdCasesRoot();
+    res.json({
+      master, masterName: master ? path.basename(master) : '',
+      masterDir: LSD_DIR, casesRoot: root, casesRootExists: existsSync(root),
+      ledger: (loadPyCfg() as any).lsd_ledger || 'R2321',
+    });
+  });
+
+  // Stage the dropped transaction. It is copied into the case folder verbatim by
+  // the build step, so keep the original filename — CPQ encodes the date in it
+  // and that is what picks H1 vs H2.
+  app.post('/api/lsd/upload', express.raw({ type: '*/*', limit: '25mb' }), (req, res) => {
+    const raw  = decodeURIComponent((req.headers['x-filename'] as string) || 'transaction.xlsx');
+    const name = path.basename(raw).replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+    if (!/\.(csv|xlsx|xlsb)$/i.test(name)) {
+      res.status(400).json({ ok: false, error: 'Drop the CPQ line-item export (.csv, .xlsx or .xlsb).' });
+      return;
+    }
+    try {
+      mkdirSync(LSD_UPLOAD, { recursive: true });
+      // A build consumes its staged file, but a preview that is never built
+      // leaves one behind. Sweep anything older than a day on the way in.
+      const cutoff = Date.now() - 864e5;
+      for (const f of readdirSync(LSD_UPLOAD)) {
+        const p = path.join(LSD_UPLOAD, f);
+        try { if (statSync(p).mtimeMs < cutoff) unlinkSync(p); } catch {}
+      }
+      const dest = path.join(LSD_UPLOAD, `${Date.now()}__${name}`);
+      writeFileSync(dest, req.body as Buffer);
+      res.json({ ok: true, file: dest, name });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // Price without writing anything — this is what fills the review table.
+  app.post('/api/lsd/preview', (req, res) => {
+    const b = (req.body || {}) as any;
+    if (!b.file || !existsSync(b.file)) {
+      res.status(400).json({ ok: false, error: 'Upload the transaction first.' }); return;
+    }
+    runLsd({ ...b, mode: 'preview' }, 120_000, res);
+  });
+
+  // Price and write the case folder. Needs Excel, so it gets a long leash.
+  app.post('/api/lsd/build', (req, res) => {
+    const b = (req.body || {}) as any;
+    if (!b.file || !existsSync(b.file)) {
+      res.status(400).json({ ok: false, error: 'Upload the transaction first.' }); return;
+    }
+    if (!String(b.transaction || '').trim() && !String(b.project || '').trim()) {
+      res.status(400).json({ ok: false, error: 'Give the case a transaction number or a project name — it names the folder.' });
+      return;
+    }
+    runLsd({ ...b, mode: 'build' }, 600_000, res, () => {
+      // The staged upload has been copied into the case folder; drop the copy.
+      try { unlinkSync(b.file); } catch {}
+    });
+  });
+
+  // Case folders already on disk, newest first.
+  app.get('/api/lsd/cases', (_req, res) => {
+    const root = lsdCasesRoot();
+    try {
+      if (!existsSync(root)) { res.json({ root, cases: [] }); return; }
+      const cases = readdirSync(root, { withFileTypes: true })
+        .filter(d => d.isDirectory() && !d.name.startsWith('.') && !d.name.startsWith('_'))
+        .map(d => {
+          const dir = path.join(root, d.name);
+          let files: { name: string; size: number; path: string }[] = [];
+          try {
+            files = readdirSync(dir)
+              .filter(f => !f.startsWith('~$'))
+              .map(f => ({ name: f, size: statSync(path.join(dir, f)).size, path: path.join(dir, f) }));
+          } catch {}
+          return { name: d.name, path: dir, mtime: statSync(dir).mtimeMs, files };
+        })
+        .filter(c => c.files.length > 0)
+        .sort((a, b) => b.mtime - a.mtime)
+        .slice(0, 60);
+      res.json({ root, cases });
+    } catch (e: any) { res.status(500).json({ root, cases: [], error: e.message }); }
+  });
+
+  // Open a case folder (or a file in one) in Explorer.
+  app.post('/api/lsd/reveal', (req, res) => {
+    const target = insideCasesRoot(String((req.body || {}).path || ''));
+    if (!target || !existsSync(target)) {
+      res.status(400).json({ ok: false, error: 'That path is not inside the case folder root.' });
+      return;
+    }
+    try {
+      const isDir = statSync(target).isDirectory();
+      // explorer.exe returns exit code 1 even when it succeeds, so nothing is
+      // read back from it — fire and forget.
+      spawn('explorer.exe', isDir ? [target] : ['/select,', target], { detached: true, stdio: 'ignore' }).unref();
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // Download one produced file.
+  app.get('/api/lsd/file', (req, res) => {
+    const target = insideCasesRoot(String(req.query.path || ''));
+    if (!target || !existsSync(target) || statSync(target).isDirectory()) {
+      res.status(404).send('Not found'); return;
+    }
+    res.setHeader('Content-Disposition', contentDisposition('attachment', path.basename(target)));
+    res.setHeader('Content-Type', 'application/octet-stream');
+    createReadStream(target).pipe(res);
   });
 
   // ── Debug ──────────────────────────────────────────────────────────────────

@@ -39,6 +39,12 @@ export interface Config {
   // Salesman roster. Lives here rather than in source because it is colleagues'
   // names, work emails and personal mobiles — config.json is gitignored.
   cbu_salesmen?:   { name: string; email: string; phone: string }[];
+  // LSD Pricing. The master model holds every price, cost, E2E target and
+  // prior-year average, so the tab cannot price anything without it; blank means
+  // "use the newest .xlsb in data/lsd".
+  lsd_master_model?: string;
+  lsd_cases_root?:   string;   // blank = Desktop\LSD Pricing Doc when it exists
+  lsd_ledger?:       string;   // MV Ledger code for the country prior-year lookup
 }
 
 // ─── Quick check-up: quote mail vs the Quotations List ───────────────────────

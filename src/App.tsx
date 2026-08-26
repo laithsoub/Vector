@@ -5,7 +5,7 @@ import {
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
   Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
   Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge, Pin, PinOff,
-  Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo, Lightbulb,
+  Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo, Lightbulb, Tags,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
@@ -40,7 +40,7 @@ const TodoPage       = React.lazy(() => import('./pages/Todo').then(m => ({ defa
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 type TabId =
   | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Report' | 'Inbox' | 'Todo' | 'CRM' | 'ELInfo' | 'Fenton'
-  | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Docs' | 'Settings';
+  | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Docs' | 'LSD' | 'Settings';
 
 // Stripped ship build vs full local app. The desktop ship is produced with
 // `vite build` (import.meta.env.PROD === true). The full app runs ONLY via the
@@ -53,7 +53,7 @@ const STRIPPED = import.meta.env.PROD;
 // the stripped ship (personal API keys / tooling not ready for rollout), full
 // locally.
 const LOCKED_TABS = new Set<TabId>(
-  STRIPPED ? ['Assistant', 'ELInfo', 'Fenton', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs'] : [],
+  STRIPPED ? ['Assistant', 'ELInfo', 'Fenton', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'LSD'] : [],
 );
 const isLocked = (t: TabId) => LOCKED_TABS.has(t);
 
@@ -65,6 +65,7 @@ const SchematicsPage = STRIPPED ? null : React.lazy(() => import('./pages/Schema
 const PmoPage        = STRIPPED ? null : React.lazy(() => import('./pages/PMO').then(m => ({ default: m.PmoPage })));
 const CommissionPage = STRIPPED ? null : React.lazy(() => import('./pages/Commission').then(m => ({ default: m.CommissionPage })));
 const DocsPage       = STRIPPED ? null : React.lazy(() => import('./pages/Docs').then(m => ({ default: m.DocsPage })));
+const LsdPage        = STRIPPED ? null : React.lazy(() => import('./pages/LSD').then(m => ({ default: m.LsdPage })));
 const CBUCalculator  = STRIPPED ? null : React.lazy(() => import('./CBUCalculator'));
 
 // Title/description shown on each locked tab's Coming Soon wall.
@@ -78,6 +79,7 @@ const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
   CBU:        { title: 'CBU Sizer',         desc: 'The CBU sizing tool is coming soon to your workspace.' },
   Commission: { title: 'Commission',        desc: 'Commission tooling is coming soon to your workspace.' },
   Docs:       { title: 'Doc Packs',         desc: 'Document pack generation is coming soon to your workspace.' },
+  LSD:        { title: 'LSD Pricing',       desc: 'Drop a CPQ transaction, get the priced feedback sheet and its working file. Coming soon to your workspace.' },
 };
 
 // Static nav structure — labels resolved at render time via useLang()
@@ -100,6 +102,7 @@ const NAV_STRUCTURE = {
   tools: {
     labelKey: 'tools' as const,
     items: [
+      { id: 'LSD'        as TabId, Icon: Tags,          labelKey: 'lsd'         as const },
       { id: 'PMO'        as TabId, Icon: ClipboardList, labelKey: 'pmo'        as const },
       { id: 'CBU'        as TabId, Icon: Calculator,    labelKey: 'cbuSizer'    as const },
       { id: 'Commission' as TabId, Icon: Gauge,          labelKey: 'commission'  as const },
@@ -126,6 +129,7 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   Commission: { t: 'commission',  s: 'sub_commission' },
   Schematics:{ t: 'schematics', s: 'sub_schematics' },
   Docs:      { t: 'docPacks',   s: 'sub_docs'      },
+  LSD:       { t: 'lsd',        s: 'sub_lsd'       },
   Settings:  { t: 'settings',   s: 'sub_settings'  },
 };
 
@@ -1147,6 +1151,7 @@ export default function App() {
                       {t === 'PMO'        && PmoPage        && <PmoPage        toast={toast} />}
                       {t === 'Commission' && CommissionPage && <CommissionPage />}
                       {t === 'Docs'       && DocsPage       && <DocsPage       toast={toast} />}
+                      {t === 'LSD'        && LsdPage        && <LsdPage        toast={toast} />}
                       {t === 'CBU'        && CBUCalculator  && <CBUCalculator />}
                       {t === 'Settings'   && <SettingsPage config={config} onSave={async c => {
                         await api.saveConfig(c); setConfig(c); toast('ok', tCurrent.settings_saved);

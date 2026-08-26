@@ -6,8 +6,11 @@ reportlab>=4.0       # export_report.py, commission_export.py — build PDFs fro
 requests>=2.31
 urllib3>=2.0
 cryptography>=42.0   # AES-256-GCM at-rest encryption for JOE/SharePoint cookies (cookie_crypto.py)
+pyxlsb>=1.0          # lsd_pricing.py — reads the CPQ master model (.xlsb is binary, openpyxl can't)
 
-# Optional — Outlook COM automation (Classic Outlook on Windows)
+# Optional — Outlook COM automation (Classic Outlook on Windows), and the LSD
+# Working File: only Excel itself can write a .xlsb, so the case-folder build
+# needs this. Pricing and the preview table work without it.
 # pip install pywin32
 # pywin32>=306
 

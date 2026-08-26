@@ -23,6 +23,60 @@ export interface UserDoc {
   file: string; origName: string; ext: string; size: number; date: string;
 }
 
+// ─── LSD Pricing ─────────────────────────────────────────────────────────────
+// One priced transaction line, straight out of automation/lsd_pricing.py. The
+// guardrail columns are carried through so the review table can show WHY each
+// price is what it is, not just the number.
+export interface LsdLine {
+  material: string; description: string | null; group: string | null;
+  qty: number; list: number | null; std_disc: number;
+  unit_std: number | null; total_std: number | null;
+  cost: number | null; total_cost: number | null;
+  target_e2e: number | null; net_at_target: number | null; disc_at_target: number | null;
+  requested: number | null; req_disc: number | null;
+  cust_avg: number | null; cust_qty: number | null;
+  ctry_avg: number | null; ctry_qty: number | null;
+  rpi_floor: number | null; rpi_before: number | null; rpi_after: number | null;
+  add_disc: number; unit_net: number | null; total_net: number | null;
+  e2e: number | null; binds: string; raised: boolean;
+  severity: 'action' | 'verify' | 'info' | 'ok'; flags: string;
+}
+
+export interface LsdSummary {
+  lines: number; grand_total: number; total_standard: number;
+  overall_add_disc: number | null; overall_e2e: number | null;
+  overall_rpi: number | null; total_rpi: number | null;
+  raised: number; action: number; verify: number; no_py: number;
+  currency: 'USD' | 'EUR';
+}
+
+export interface LsdResult {
+  ok: boolean;
+  error?: string;
+  mode?: 'preview' | 'build';
+  lines?: LsdLine[];
+  summary?: LsdSummary;
+  meta?: Record<string, string>;
+  log?: Array<{ kind: 'info' | 'ok' | 'warn' | 'error'; msg: string }>;
+  case_dir?: string; bom?: string; working?: string; feedback?: string;
+  checks?: { ledger_T11: number; feedback_L10: number; python: number; agree: boolean };
+}
+
+export interface LsdCase {
+  name: string; path: string; mtime: number;
+  files: Array<{ name: string; size: number; path: string }>;
+}
+
+// What the tab sends before it prices anything.
+export interface LsdMeta {
+  file: string;
+  customer: string; customer_name: string; country: string;
+  project: string; transaction: string; crm: string;
+  half: 'auto' | 'H1' | 'H2';
+  aprc: 'auto' | '525' | '530-535';
+  ledger: string;
+}
+
 export const api = {
   // Stats / Jobs
   stats:    () => axios.get<DashboardStats>('/api/stats').then(r => r.data),
@@ -53,6 +107,28 @@ export const api = {
       body: await file.arrayBuffer(),
     });
   },
+
+  // LSD Pricing — transaction in, case folder out
+  lsdStatus:  () => axios.get<{
+    master: string; masterName: string; masterDir: string;
+    casesRoot: string; casesRootExists: boolean; ledger: string;
+  }>('/api/lsd/status').then(r => r.data),
+  lsdUpload:  async (file: File) => {
+    const r = await fetch('/api/lsd/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Filename': encodeURIComponent(file.name) },
+      body: await file.arrayBuffer(),
+    });
+    return r.json() as Promise<{ ok: boolean; file?: string; name?: string; error?: string }>;
+  },
+  // Pricing is pure Python and quick; the build drives Excel, so it gets minutes.
+  lsdPreview: (meta: LsdMeta) =>
+    axios.post<LsdResult>('/api/lsd/preview', meta, { timeout: 180_000 }).then(r => r.data),
+  lsdBuild:   (meta: LsdMeta) =>
+    axios.post<LsdResult>('/api/lsd/build', meta, { timeout: 600_000 }).then(r => r.data),
+  lsdCases:   () => axios.get<{ root: string; cases: LsdCase[]; error?: string }>('/api/lsd/cases').then(r => r.data),
+  lsdReveal:  (p: string) => axios.post<{ ok: boolean; error?: string }>('/api/lsd/reveal', { path: p }).then(r => r.data),
+  lsdFileUrl: (p: string) => `/api/lsd/file?path=${encodeURIComponent(p)}`,
 
   // Doc Packs (user-uploaded, persisted)
   docsUser:       () => axios.get<UserDoc[]>('/api/docs/user').then(r => r.data),

@@ -346,6 +346,31 @@ Endpoints: `GET /api/fenton/list`, `POST /api/fenton/refresh|chat`.
 ### 6.11 Quick Quote (Inbox panel) — added 2026-07-16
 Generates a quick UK **proposal PDF** (not Bidman) from an email. AI-detects the LoadStar/CBU system (`/api/quote/detect-cbu`), auto-pulls its BOM lines from the shared `src/lib/cbuData.ts` (extracted from `CBUCalculator.tsx`) minus relays, and pulls priced luminaires from the email (`/api/quote/luminaires` → `schematic_reader --mode list` on `extractMaterialHints` output, shared in `src/lib/elHints.ts`). All lines editable (list price), free-form **+ Add line**, then `/api/quote/generate` → `quote_export.py` (openpyxl → LibreOffice → pypdf-merge Commissioning + T&C) → download. Component: `src/pages/QuickQuote.tsx`.
 
+### 6.12 LSD Pricing (LSD tab) — added 2026-08-26
+Drop a CPQ **Export Line Items** transaction (`.csv` / `.xlsx` / `.xlsb`); the tab prices every line and writes a case folder holding the **transaction**, the **Approved Offer** (`.xlsx`) and the **Working File** — the master CPQ model itself, filled with the transaction and toggled, so the file shows how the feedback was produced.
+
+**The rule** (LSD Daily Work Procedure, 2026-08-05):
+```
+Add. Discount = MIN( Requested Discount , Add. Discount @Target E2E , 20% )
+```
+then any line with a prior-year *country* reference is pulled up to the half-year RPI floor (**H1 3.5% / H2 6%**) if it sits below it. Target E2E is a **floor**, not a value to match — a line whose cost outruns the standard price prices *above* it. Nothing is rounded (rounding was measured and it makes the match worse).
+
+The RPI solve is **algebraic, not iterative**, because Mix Variance does not move with price. It mirrors ledger columns AB/AD/AE/AF exactly:
+- only a country average → `S* = Y × (1 + rate)`
+- customer **and** country → `S* = (W·QTY − AD) / ((1 − rate/(1+rate)) · QTY)`, `AD = (QTY − QFC)(W − Y)`
+- `QTY ≥ 5 × PY country QTY` → the model forces RPI to 0; nothing can move it
+- customer average but **no** country average → the model's AE errors to 0, so RPI reads 0 (flagged)
+
+**Reference data** comes from the master `.xlsb`, from the same sheets the ledger's own XLOOKUPs use: `E2E Guidelines ` (I → N), `PV 2025 ` (J → H/F, customer&material), `MV Ledger 2025` (H → F/D, ledger&material), `Customer Master Data`. Note this master's MV ledger carries **R2321 (UAE) only** — a non-UAE customer gets the UAE ledger as its country base, and the run log says so.
+
+**The Working File** is built by Excel COM (only Excel can write `.xlsb`). The transaction is pasted into `Paste BOM Here`, the header and APRC are set (`P6` 525 → EUR / `530-535` → USD; never touch `P5`), and SAP/QTY/List/STD/Cost are written as **values** per row — the procedure's own fix for the duplicate-material trap, where the ledger's XLOOKUPs hand every repeat of a material the first row's quantity. Every derived column stays a live formula. Flagged lines are highlighted in the ledger. A **three-way total check** (ledger `T11` = Feedback `L10` = engine) runs before saving, and the Approved Offer is the Feedback sheet copied and pasted as values (both model macros are broken in V2).
+
+**Accuracy, honestly:** the engine reproduces the documented procedure to the cent (MOPA W262168503E: 33/33 lines exact, 253,217.96, E2E 52.35%, Total RPI 16.04%). Against a *real* analyst approval it lands ~40% of lines exactly — the rest are per-line negotiated discounts and carried-forward prices that exist in neither the CSV nor the model. Those lines are the ones flagged REVIEW/VERIFY.
+
+Config: `lsd_master_model` (blank = newest `.xlsb` in `data/lsd`), `lsd_cases_root` (blank = `Desktop\LSD Pricing Doc`), `lsd_ledger` (default `R2321`).
+Endpoints: `GET /api/lsd/status|cases|file`, `POST /api/lsd/upload|preview|build|reveal`. Python: `lsd_pricing.py --job job.json --out result.json`. Component: `src/pages/LSD.tsx`.
+Locked in the ship build: the tab is gated, `/api/lsd` is 403'd in the sidecar, and `lsd_pricing.py` is excluded from `ship-automation/`.
+
 ### 6.8 LocalStorage Persistence
 | Key | Value | Purpose |
 |---|---|---|
