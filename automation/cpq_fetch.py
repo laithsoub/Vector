@@ -263,9 +263,27 @@ def _digits(v):
 
 # ── write the CPQ-shaped export ──────────────────────────────────────────────
 def _num(v):
+    """Parse a CPQ numeric string. CPQ is inconsistent about locale: the same
+    field comes back '1028.16' on one quote and '76,68' (comma decimal) on
+    another, and thousands grouping can appear too. Decide the decimal mark from
+    which separator is last, and treat a lone comma with 1-2 trailing digits as a
+    decimal — otherwise '76,68' silently becomes 7668."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = str(v).strip()
+    if not s:
+        return None
+    if "," in s and "." in s:
+        s = (s.replace(".", "").replace(",", ".")
+             if s.rfind(",") > s.rfind(".") else s.replace(",", ""))
+    elif "," in s:
+        head, _, tail = s.rpartition(",")
+        s = f"{head}.{tail}" if len(tail) in (1, 2) and head.replace("-", "").isdigit() else s.replace(",", "")
     try:
-        return float(str(v).replace(",", ""))
-    except (TypeError, ValueError):
+        return float(s)
+    except ValueError:
         return None
 
 
@@ -288,9 +306,12 @@ def write_export(transaction, doc_id, rows, out_dir, log):
         put("qty", _num(r.get("requestedQuantity_l")))
         put("list", _num(r.get("oldListPrice_l")))
         put("std_pct", _num(r.get("customerConditionInPer_l")))
-        # Net Fixed Amount is the requested price; the model reads col Y as text.
-        put("net_fixed", r.get("netFixedAmountString_l"))
-        put("requested", _num(r.get("netFixedAmountString_l")))
+        # Net Fixed Amount is the requested price. Write the PARSED float, not the
+        # raw CPQ string — that string can be European-formatted ('76,68'), and a
+        # naive reader downstream would turn it into 7668.
+        reqp = _num(r.get("netFixedAmountString_l"))
+        put("net_fixed", reqp)
+        put("requested", reqp)
         put("req_disc_pct", _num(r.get("extraDiscount_l_c")))
         put("cost", _num(r.get("cost_l")))
         ws.append(line)

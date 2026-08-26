@@ -87,17 +87,26 @@ FIRE_GROUPS = {
 
 # ─── small helpers ───────────────────────────────────────────────────────────
 def num(v):
-    """Excel-ish number coercion. '26.96', 26.96, '33.27%' → float; junk → None."""
+    """Excel-ish number coercion. '26.96', 26.96, '33.27%' → float; junk → None.
+    Handles European decimals ('76,68' → 76.68) and thousands grouping, deciding
+    the decimal mark from which separator is last — a lone comma with 1-2 trailing
+    digits is a decimal, otherwise it is a thousands separator."""
     if v is None or isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
         return float(v)
-    s = str(v).strip().replace(",", "")
+    s = str(v).strip()
     if not s:
         return None
     pct = s.endswith("%")
     if pct:
-        s = s[:-1]
+        s = s[:-1].strip()
+    if "," in s and "." in s:
+        s = (s.replace(".", "").replace(",", ".")
+             if s.rfind(",") > s.rfind(".") else s.replace(",", ""))
+    elif "," in s:
+        head, _, tail = s.rpartition(",")
+        s = f"{head}.{tail}" if len(tail) in (1, 2) and head.replace("-", "").isdigit() else s.replace(",", "")
     try:
         f = float(s)
     except ValueError:
@@ -466,7 +475,12 @@ def price_lines(lines, ref, meta):
                  "target E2E" if disc_at_tgt is not None and abs(add_disc - disc_at_tgt) < EPS else
                  "20% cap" if abs(add_disc - ADD_DISC_CAP) < EPS else "floor 0%")
 
-        unit_net = unit_std * (1 - add_disc) if unit_std is not None else ln["requested"]
+        # No list (and no trigger fallback) => the list-based model cannot price
+        # this line, and the ledger drops it. Leave it unpriced and flagged rather
+        # than quietly pricing it at requested — that would inflate the engine
+        # total above the ledger and disagree with the three-way check. (These are
+        # typically EL spares on a FIRE quote; the analyst prices them elsewhere.)
+        unit_net = unit_std * (1 - add_disc) if unit_std else None
 
         # ── the RPI floor ────────────────────────────────────────────────────
         # Keys are CONCATENATE(customer|ledger, material). With a blank prefix the
