@@ -858,7 +858,16 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
 // ────────────────────────────────────────────────────────────────────────────
 // MAIN APP
 // ────────────────────────────────────────────────────────────────────────────
-const VALID_TABS: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'Todo', 'CRM', 'ELInfo', 'Fenton', 'History', 'Analytics', 'Report', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'Settings'];
+// Every tab the app will route to and mount a panel for. Derived from the nav
+// rather than hand-listed: this used to be a literal array, and a tab added to
+// NAV_STRUCTURE but forgotten here got a working sidebar button that switched to
+// a blank screen, because the render loop below never emitted a panel for it.
+// Settings is appended because its button lives in the sidebar footer, not the nav.
+const VALID_TABS: TabId[] = [
+  ...NAV_STRUCTURE.workflow.items.map(i => i.id),
+  ...NAV_STRUCTURE.tools.items.map(i => i.id),
+  'Settings',
+];
 
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
