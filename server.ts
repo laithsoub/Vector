@@ -135,7 +135,7 @@ const CONFIG_KEYS = [
   'base', 'initials', 'sp_site', 'sp_list', 'dq_store',
   'inside_sales', 'azure_di_endpoint', 'azure_di_key',
   'gemini_key', 'ai_model', 'job_categories', 'cbu_salesmen',
-  'lsd_master_model', 'lsd_cases_root', 'lsd_ledger',
+  'lsd_master_model', 'lsd_cases_root', 'lsd_ledger', 'lsd_cpq_port',
 ] as const;
 
 // ── Salesman roster ──────────────────────────────────────────────────────────
@@ -3590,6 +3590,49 @@ async function startServer() {
     runLsd({ ...b, mode: 'build' }, 600_000, res, () => {
       // The staged upload has been copied into the case folder; drop the copy.
       try { unlinkSync(b.file); } catch {}
+    });
+  });
+
+  // Pull a transaction straight from Oracle CPQ (its REST API, driven through the
+  // debug-rail Edge the user is already signed into — see cpq_fetch.py). Writes a
+  // CPQ-shaped .xlsx into the same staging dir an upload lands in, so the priced
+  // path downstream is identical whether the BOM came from a drop or from CPQ.
+  app.post('/api/lsd/cpq-fetch', (req, res) => {
+    const transaction = String((req.body || {}).transaction || '').trim();
+    if (!transaction) { res.status(400).json({ ok: false, error: 'Enter a transaction number.' }); return; }
+    const script = pyFile('cpq_fetch.py');
+    if (!existsSync(script)) { res.status(500).json({ ok: false, error: 'cpq_fetch.py is missing from this install' }); return; }
+
+    const tmp     = path.join(os.tmpdir(), `cpqjob_${Date.now()}_${randomUUID().slice(0, 8)}`);
+    const jobPath = path.join(tmp, 'job.json');
+    const outPath = path.join(tmp, 'out.json');
+    const cleanup = () => { for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} } try { rmdirSync(tmp); } catch {} };
+    try {
+      mkdirSync(LSD_UPLOAD, { recursive: true });
+      mkdirSync(tmp, { recursive: true });
+      writeFileSync(jobPath, JSON.stringify({
+        transaction,
+        port: Number((loadPyCfg() as any).lsd_cpq_port) || 9222,
+        out_dir: LSD_UPLOAD,
+      }), 'utf8');
+    } catch (e: any) { cleanup(); res.status(500).json({ ok: false, error: e.message }); return; }
+
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+      { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let errBuf = '';
+    proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 90_000);
+    proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); if (!res.headersSent) res.status(500).json({ ok: false, error: e.message }); });
+    proc.on('close', () => {
+      clearTimeout(killer);
+      let out: any = null;
+      try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+      cleanup();
+      if (!out) { if (!res.headersSent) res.status(500).json({ ok: false, error: errBuf.trim().slice(-500) || 'CPQ fetch produced no result.' }); return; }
+      // Hand the written export back as `file`, the same shape /preview and /build expect.
+      if (out.ok) out.file = out.xlsx;
+      if (!res.headersSent) res.json(out);
     });
   });
 

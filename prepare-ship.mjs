@@ -28,7 +28,7 @@ const EXCLUDE_NAMES = new Set([
   'commission_export.py',
   // LSD pricing: the rule, the margin floors and the prior-year logic are
   // internal pricing policy, and the tab is locked in the ship anyway
-  'lsd_pricing.py',
+  'lsd_pricing.py', 'cpq_fetch.py',
   // internal maintenance tooling — audits/rewrites the shared D&Q Store, must
   // never reach an installed copy on someone else's machine
   'dq_backfill_audit.py',

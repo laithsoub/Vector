@@ -462,6 +462,8 @@ export function SettingsPage({
                  'Where generated case folders are written. Blank = Desktop\\LSD Pricing Doc')}
           {field('lsd_ledger',       'MV ledger code',
                  'Keys the prior-year country average. This master carries R2321 (UAE) only')}
+          {field('lsd_cpq_port',     'CPQ debug port',
+                 'Edge remote-debugging port for the Fetch-from-CPQ button. Blank = 9222')}
         </div>
 
         {/* Language. Scope is stated because it is real: the translations cover the

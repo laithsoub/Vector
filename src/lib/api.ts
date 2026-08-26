@@ -126,6 +126,10 @@ export const api = {
     axios.post<LsdResult>('/api/lsd/preview', meta, { timeout: 180_000 }).then(r => r.data),
   lsdBuild:   (meta: LsdMeta) =>
     axios.post<LsdResult>('/api/lsd/build', meta, { timeout: 600_000 }).then(r => r.data),
+  // Pull a transaction from Oracle CPQ (drives the logged-in debug-rail tab).
+  lsdCpqFetch: (transaction: string) =>
+    axios.post<LsdResult & { header?: Record<string, string>; file?: string; lines?: number }>(
+      '/api/lsd/cpq-fetch', { transaction }, { timeout: 120_000 }).then(r => r.data),
   lsdCases:   () => axios.get<{ root: string; cases: LsdCase[]; error?: string }>('/api/lsd/cases').then(r => r.data),
   lsdReveal:  (p: string) => axios.post<{ ok: boolean; error?: string }>('/api/lsd/reveal', { path: p }).then(r => r.data),
   lsdFileUrl: (p: string) => `/api/lsd/file?path=${encodeURIComponent(p)}`,

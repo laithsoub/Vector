@@ -11,7 +11,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import {
   Tags, Loader2, Upload, FileSpreadsheet, FolderOpen, Download, X, RefreshCw,
   AlertCircle, CheckCircle2, AlertTriangle, Info, ChevronRight, Play, Hammer,
-  Table2, ScrollText,
+  Table2, ScrollText, Search, CloudDownload,
 } from 'lucide-react';
 
 import { cn } from '../lib/cn';
@@ -182,6 +182,9 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
   const [cases, setCases]     = useState<LsdCase[]>([]);
   const [drag, setDrag]       = useState(false);
   const [showLog, setShowLog] = useState(false);
+  const [cpqNum, setCpqNum]   = useState('');
+  const [cpqBusy, setCpqBusy] = useState(false);
+  const [cpqNote, setCpqNote] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadStatus = useCallback(async () => {
@@ -229,6 +232,32 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
     const f = e.dataTransfer.files?.[0];
     if (f) take(f);
   }, [take]);
+
+  // Pull the transaction straight from CPQ: BOM + customer/project/CRM, all filled.
+  const fetchCpq = async () => {
+    const w = cpqNum.trim();
+    if (!w) return;
+    setCpqBusy(true); setCpqNote(''); setResult(null); setBuilt(null);
+    try {
+      const r = await api.lsdCpqFetch(w);
+      if (!r.ok || !r.file) { setCpqNote(r.error || 'Fetch failed.'); toast('err', r.error || 'CPQ fetch failed.'); return; }
+      const h = r.header || {};
+      setFile({ path: r.file, name: r.file.split(/[\\/]/).pop() || 'CPQ export' });
+      setMeta(m => ({
+        ...m,
+        transaction:   h.transaction   || w,
+        customer:      h.customer       ?? m.customer,
+        customer_name: h.customer_name  ?? m.customer_name,
+        project:       h.project        ?? m.project,
+        crm:           h.crm            ?? m.crm,
+      }));
+      // CPQ's header customer is the sold-to; some deals price a different
+      // account, so make the auto-filled number visible, not silent.
+      setCpqNote(`Fetched ${r.lines ?? ''} line(s). Customer ${h.customer || '?'} — CPQ's own; change it if you price a different account.`);
+      toast('ok', `Pulled ${w} from CPQ.`);
+    } catch (e) { setCpqNote(failed('reach CPQ', e)); toast('err', failed('reach CPQ', e)); }
+    finally { setCpqBusy(false); }
+  };
 
   const price = async () => {
     if (!file) return;
@@ -300,9 +329,37 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
           <Card>
             <CardTitle
               title="Transaction"
-              sub="The CPQ line-item export, as downloaded"
+              sub="Pull it from CPQ by number, or drop the export"
               right={file && <Button tone="ghost" size="sm" Icon={X} onClick={reset}>Clear</Button>}
             />
+
+            {/* Fetch straight from CPQ — BOM + customer/project/CRM in one go */}
+            <div className="flex gap-2 mb-3">
+              <div className="relative flex-1">
+                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t4)] pointer-events-none" />
+                <input
+                  value={cpqNum}
+                  onChange={e => setCpqNum(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !cpqBusy) fetchCpq(); }}
+                  placeholder="Transaction #  ·  W262168503E"
+                  className="w-full h-[34px] pl-8 pr-2.5 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
+              </div>
+              <Button tone="primary" Icon={cpqBusy ? Loader2 : CloudDownload}
+                      disabled={cpqBusy || !cpqNum.trim()} onClick={fetchCpq}>
+                {cpqBusy ? 'Fetching…' : 'Fetch'}
+              </Button>
+            </div>
+            {cpqNote && (
+              <p className="text-[10.5px] text-[var(--t3)] mb-3 leading-relaxed flex items-start gap-1.5">
+                <Info className="w-3 h-3 shrink-0 mt-0.5" />{cpqNote}
+              </p>
+            )}
+            <div className="flex items-center gap-2 mb-3">
+              <div className="h-px flex-1 bg-[var(--line-1)]" />
+              <span className="text-[10px] uppercase tracking-wider text-[var(--t4)]">or drop the file</span>
+              <div className="h-px flex-1 bg-[var(--line-1)]" />
+            </div>
+
             <div
               onDragOver={e => { e.preventDefault(); setDrag(true); }}
               onDragLeave={() => setDrag(false)}

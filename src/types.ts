@@ -45,6 +45,7 @@ export interface Config {
   lsd_master_model?: string;
   lsd_cases_root?:   string;   // blank = Desktop\LSD Pricing Doc when it exists
   lsd_ledger?:       string;   // MV Ledger code for the country prior-year lookup
+  lsd_cpq_port?:     string;   // Edge remote-debugging port for Fetch-from-CPQ (blank = 9222)
 }
 
 // ─── Quick check-up: quote mail vs the Quotations List ───────────────────────
