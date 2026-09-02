@@ -136,6 +136,8 @@ const CONFIG_KEYS = [
   'inside_sales', 'azure_di_endpoint', 'azure_di_key',
   'gemini_key', 'ai_model', 'job_categories', 'cbu_salesmen',
   'lsd_master_model', 'lsd_cases_root', 'lsd_ledger', 'lsd_cpq_port',
+  'lsd_register', 'lsd_sales_name', 'lsd_bu', 'lsd_request_type',
+  'lsd_approver', 'lsd_approver_cc',
 ] as const;
 
 // ── Salesman roster ──────────────────────────────────────────────────────────
@@ -1764,6 +1766,7 @@ async function startServer() {
       '/api/docs', '/api/docs-xlsx',
       '/api/run/cbu', '/api/run/commission', '/api/run/pmo',
       '/api/outlook/summarize', '/api/outlook/draft-reply', '/api/outlook/chat',
+      '/api/outlook/polish-reply', '/api/outlook/suggest-send',
       '/api/outlook/attachment-price',
       '/api/el-internal/digest', '/api/el-internal/chat',
       '/api/fenton/refresh', '/api/fenton/chat',
@@ -3471,8 +3474,12 @@ async function startServer() {
     return null;
   }
 
+  // Pricing runs currently in flight, so Cancel has something to cancel. Keyed
+  // on the id the tab generates, because the tab is what holds the button.
+  const lsdRuns = new Map<string, { proc: ReturnType<typeof spawn>; cancelPath: string }>();
+
   function runLsd(job: Record<string, unknown>, timeoutMs: number,
-                  res: Response, onOk?: (r: any) => void) {
+                  res: Response, onOk?: (r: any) => void | Promise<void>) {
     const script = pyFile('lsd_pricing.py');
     if (!existsSync(script)) {
       res.status(500).json({ ok: false, error: 'lsd_pricing.py is missing from this install' });
@@ -3490,10 +3497,12 @@ async function startServer() {
     const tmp     = path.join(os.tmpdir(), `lsd_${Date.now()}_${randomUUID().slice(0, 8)}`);
     const jobPath = path.join(tmp, 'job.json');
     const outPath = path.join(tmp, 'out.json');
+    const cancelPath = path.join(tmp, 'cancel');
     const cleanup = () => {
-      for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} }
+      for (const p of [jobPath, outPath, cancelPath]) { try { unlinkSync(p); } catch {} }
       try { rmdirSync(tmp); } catch {}
     };
+    const runId = String((job as any).job_id || randomUUID());
     try {
       mkdirSync(tmp, { recursive: true });
       writeFileSync(jobPath, JSON.stringify({
@@ -3502,22 +3511,27 @@ async function startServer() {
         bom: (job as any).bom || (job as any).file,
         master, cases_root: lsdCasesRoot(),
         ledger: (job as any).ledger || (loadPyCfg() as any).lsd_ledger || 'R2321',
+        // Cancel is cooperative: the engine watches for this file and unwinds,
+        // closing Excel behind it. See _check_cancel in lsd_pricing.py.
+        cancel_file: cancelPath,
       }), 'utf8');
     } catch (e: any) { cleanup(); res.status(500).json({ ok: false, error: e.message }); return; }
 
     const [py, base] = pyArgs(script);
     const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
       { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    lsdRuns.set(runId, { proc, cancelPath });
     let errBuf = '';
     proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
     // Excel can hang on a repair prompt; kill rather than leave the tab spinning.
     const killer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
     proc.on('error', (e: any) => {
-      clearTimeout(killer); cleanup();
+      clearTimeout(killer); lsdRuns.delete(runId); cleanup();
       if (!res.headersSent) res.status(500).json({ ok: false, error: e.message });
     });
     proc.on('close', () => {
       clearTimeout(killer);
+      lsdRuns.delete(runId);
       let out: any = null;
       try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
       cleanup();
@@ -3527,8 +3541,20 @@ async function startServer() {
         }
         return;
       }
-      if (out.ok && onOk) { try { onOk(out); } catch {} }
-      if (!res.headersSent) res.json(out);
+      // onOk may be async (the build registers the case before answering), so a
+      // promise it returns is waited on — the tab must not be told the case is
+      // done while the register row is still being written.
+      const finish = () => { if (!res.headersSent) res.json(out); };
+      if (out.ok && onOk) {
+        try {
+          const r = onOk(out) as unknown;
+          if (r && typeof (r as Promise<void>).then === 'function') {
+            (r as Promise<void>).then(finish, finish);
+            return;
+          }
+        } catch {}
+      }
+      finish();
     });
   }
 
@@ -3580,6 +3606,44 @@ async function startServer() {
   // Price and write the case folder. Needs Excel, so it gets a long leash.
   app.post('/api/lsd/build', (req, res) => {
     const b = (req.body || {}) as any;
+    // A rebuild names no file: the transaction is the one already sitting in the
+    // case folder, which is the only copy once the staged upload was consumed.
+    if (!b.file && b.rebuild) {
+      const dir = lsdCaseDir(String(b.transaction || ''), String(b.project || ''));
+      try {
+        const exports_ = readdirSync(dir)
+          .filter(f => /^\d{8,}_\d{4}-\d{2}-\d{2}\.xlsx?$/i.test(f) || /\.(csv|xlsx|xlsb)$/i.test(f))
+          .filter(f => !/approved|working/i.test(f) && !f.startsWith('~$'))
+          .map(f => path.join(dir, f))
+          .sort((a, c) => statSync(c).mtimeMs - statSync(a).mtimeMs);
+        if (exports_.length) b.file = exports_[0];
+      } catch {}
+      // Nothing in the case folder — fall back to a staged export stamped with
+      // this transaction (the case files may have been deleted on purpose, which
+      // is exactly when Rebuild is wanted).
+      if (!b.file) {
+        try {
+          const want = String(b.transaction || '').trim().toLowerCase();
+          const staged = readdirSync(LSD_UPLOAD)
+            .filter(f => f.toLowerCase().endsWith('.meta.json'))
+            .map(f => path.join(LSD_UPLOAD, f))
+            .filter(m => {
+              try {
+                const j = JSON.parse(readFileSync(m, 'utf8'));
+                return String(j.transaction || '').trim().toLowerCase() === want;
+              } catch { return false; }
+            })
+            .map(m => m.replace(/\.meta\.json$/i, ''))
+            .filter(p => existsSync(p))
+            .sort((a, c) => statSync(c).mtimeMs - statSync(a).mtimeMs);
+          if (staged.length) b.file = staged[0];
+        } catch {}
+      }
+      if (!b.file) {
+        res.status(400).json({ ok: false, error: 'Nothing to rebuild from — no transaction file in the case folder and no staged export for this number. Fetch it from CPQ again.' });
+        return;
+      }
+    }
     if (!b.file || !existsSync(b.file)) {
       res.status(400).json({ ok: false, error: 'Upload the transaction first.' }); return;
     }
@@ -3587,11 +3651,137 @@ async function startServer() {
       res.status(400).json({ ok: false, error: 'Give the case a transaction number or a project name — it names the folder.' });
       return;
     }
-    runLsd({ ...b, mode: 'build' }, 600_000, res, () => {
+    runLsd({ ...b, mode: 'build' }, 600_000, res, async out => {
       // The staged upload has been copied into the case folder; drop the copy.
-      try { unlinkSync(b.file); } catch {}
+      // ONLY if it is a staged upload: a rebuild is handed the transaction that
+      // already lives in the case folder, and deleting that would take the case's
+      // own record of what was priced with it.
+      const staged = path.resolve(b.file).toLowerCase()
+                       .startsWith(path.resolve(LSD_UPLOAD).toLowerCase() + path.sep);
+      if (staged) { try { unlinkSync(b.file); } catch {} }
+      // Every built case is registered. A register that cannot be written (the
+      // workbook open in Excel, say) must not fail the build — the case folder
+      // is already on disk — so the failure rides back on the response and the
+      // tab offers to register it again.
+      if (b.register === false) return;
+      const reg = await runRegister({ mode: 'append', row: lsdRegisterRow(b, out),
+                                      extra: lsdRegisterExtra(b, out) });
+      out.register = {
+        ok: !!reg.ok, error: reg.error, action: reg.action,
+        path: lsdRegisterPath(), skipped: reg.skipped || [],
+      };
     });
   });
+
+  // Stop a run in flight. The flag file goes down first so the engine can close
+  // Excel on its way out; the process is only killed if it ignores that, which
+  // would leave an orphaned Excel holding the master model open.
+  app.post('/api/lsd/cancel', (req, res) => {
+    const id = String((req.body || {}).job_id || '');
+    const run = lsdRuns.get(id);
+    if (!run) { res.json({ ok: false, error: 'That run has already finished.' }); return; }
+    try { writeFileSync(run.cancelPath, 'cancel', 'utf8'); } catch {}
+    setTimeout(() => {
+      if (lsdRuns.has(id)) { try { run.proc.kill(); } catch {} }
+    }, 20_000);
+    res.json({ ok: true });
+  });
+
+  // The approval mail. A case priced under its target E2E is not repriced — the
+  // margin goes to the approver, in his own format, with the LEDGER-ONLY .xlsm
+  // attached (the Working File is the whole master model). Draft only: the mail
+  // lands in Drafts with the composer open, and a human presses Send.
+  app.post('/api/lsd/approval-mail', (req, res) => {
+    const b = (req.body || {}) as any;
+    const cfg = loadPyCfg() as any;
+    const to = String(b.to || cfg.lsd_approver || '').trim();
+    if (!to) { res.status(400).json({ ok: false, error: 'No approver — set one in Settings → LSD Pricing.' }); return; }
+    if (!b.summary || !b.meta) { res.status(400).json({ ok: false, error: 'Price and build the case first.' }); return; }
+
+    // Only a file inside the case root may be attached — the client names it.
+    const attach = (Array.isArray(b.attach) ? b.attach : [b.attach])
+      .filter(Boolean).map((p: string) => insideCasesRoot(String(p))).filter(Boolean);
+
+    const script = pyFile('lsd_approval_mail.py');
+    if (!existsSync(script)) { res.status(500).json({ ok: false, error: 'lsd_approval_mail.py is missing from this install' }); return; }
+
+    const tmp     = path.join(os.tmpdir(), `lsdmail_${Date.now()}_${randomUUID().slice(0, 8)}`);
+    const jobPath = path.join(tmp, 'job.json');
+    const outPath = path.join(tmp, 'out.json');
+    const cleanup = () => { for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} } try { rmdirSync(tmp); } catch {} };
+    try {
+      mkdirSync(tmp, { recursive: true });
+      writeFileSync(jobPath, JSON.stringify({
+        summary: b.summary, meta: b.meta, attach,
+        to, cc: b.cc ?? cfg.lsd_approver_cc ?? '',
+        subject: b.subject || '', intro: b.intro || undefined,
+        // Never 'send' from here, whatever the client asks for.
+        mode: 'draft',
+      }), 'utf8');
+    } catch (e: any) { cleanup(); res.status(500).json({ ok: false, error: e.message }); return; }
+
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+      { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let errBuf = '';
+    proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 120_000);
+    proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); if (!res.headersSent) res.status(500).json({ ok: false, error: e.message }); });
+    proc.on('close', () => {
+      clearTimeout(killer);
+      let out: any = null;
+      try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+      cleanup();
+      if (!res.headersSent) res.json(out || { ok: false, error: errBuf.trim().slice(-500) || 'The mail draft produced no result.' });
+    });
+  });
+
+  // Windows-safe folder name, byte for byte what lsd_pricing.safe_name() makes —
+  // the two have to agree or the revision lands in a folder of its own.
+  function lsdSafeName(s: string, limit = 90): string {
+    let out = String(s || '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '-').replace(/^[\s.]+|[\s.]+$/g, '');
+    out = out.replace(/\s+/g, ' ');
+    return out.slice(0, limit).trim() || 'case';
+  }
+  function lsdCaseDir(transaction: string, project: string): string {
+    const name = transaction && project ? `${transaction} - ${project}`
+                                        : (transaction || project || 'case');
+    return path.join(lsdCasesRoot(), lsdSafeName(name));
+  }
+
+  // Which revisions of this transaction the analyst already has, and the
+  // approved file of the newest one pulled down so the pricing run can diff
+  // against it. Read-only against her OneDrive — see automation/onedrive_case.py.
+  function runOneDrive(job: Record<string, unknown>, timeoutMs = 180_000): Promise<any> {
+    return new Promise(resolve => {
+      const script = pyFile('onedrive_case.py');
+      if (!existsSync(script)) { resolve({ ok: false, error: 'onedrive_case.py is missing' }); return; }
+      const tmp     = path.join(os.tmpdir(), `odcase_${Date.now()}_${randomUUID().slice(0, 8)}`);
+      const jobPath = path.join(tmp, 'job.json');
+      const outPath = path.join(tmp, 'out.json');
+      const cleanup = () => { for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} } try { rmdirSync(tmp); } catch {} };
+      try {
+        mkdirSync(tmp, { recursive: true });
+        writeFileSync(jobPath, JSON.stringify({
+          port: Number((loadPyCfg() as any).lsd_cpq_port) || 9222, ...job,
+        }), 'utf8');
+      } catch (e: any) { cleanup(); resolve({ ok: false, error: e.message }); return; }
+      const [py, base] = pyArgs(script);
+      const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+        { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      let errBuf = '';
+      proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+      const killer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
+      proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); resolve({ ok: false, error: e.message }); });
+      proc.on('close', () => {
+        clearTimeout(killer);
+        let out: any = null;
+        try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+        cleanup();
+        resolve(out || { ok: false, error: errBuf.trim().slice(-300) || 'No result from the OneDrive lookup.' });
+      });
+    });
+  }
 
   // Pull a transaction straight from Oracle CPQ (its REST API, driven through the
   // debug-rail Edge the user is already signed into — see cpq_fetch.py). Writes a
@@ -3622,9 +3812,11 @@ async function startServer() {
       { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
     let errBuf = '';
     proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
-    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 90_000);
+    // Long enough to survive one tab reload and retry inside cpq_fetch — a 90s
+    // cap used to kill the fetch mid-recovery, which read as "it timed out".
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 180_000);
     proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); if (!res.headersSent) res.status(500).json({ ok: false, error: e.message }); });
-    proc.on('close', () => {
+    proc.on('close', async () => {
       clearTimeout(killer);
       let out: any = null;
       try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
@@ -3632,6 +3824,37 @@ async function startServer() {
       if (!out) { if (!res.headersSent) res.status(500).json({ ok: false, error: errBuf.trim().slice(-500) || 'CPQ fetch produced no result.' }); return; }
       // Hand the written export back as `file`, the same shape /preview and /build expect.
       if (out.ok) out.file = out.xlsx;
+      // Stamp the export with the transaction it belongs to. The file is named
+      // after CPQ's document id, so without this a rebuild cannot tell one
+      // staged export from another.
+      if (out.ok && out.xlsx) {
+        try {
+          writeFileSync(`${out.xlsx}.meta.json`, JSON.stringify({
+            transaction: (out.header || {}).transaction || transaction,
+            project: (out.header || {}).project || '',
+          }), 'utf8');
+        } catch {}
+      }
+
+      // FIRST QUESTION ON ANY TRANSACTION: has this been priced before? The
+      // answer lives in the analyst's OneDrive, so it is looked up here rather
+      // than left to whoever is at the keyboard to go and check by hand. A
+      // failure is reported, never fatal — the fetch itself already succeeded.
+      if (out.ok && (loadPyCfg() as any).lsd_skip_revision_check !== true) {
+        const h = out.header || {};
+        // Bounded well inside the client's own patience: the CPQ read has
+        // already succeeded by this point, and a slow OneDrive must not turn a
+        // good fetch into a failed one.
+        const od = await runOneDrive({
+          transaction: h.transaction || transaction,
+          out_dir: lsdCaseDir(h.transaction || transaction, h.project || ''),
+          pattern: 'approved',
+        }, 90_000);
+        out.revisions = od.ok
+          ? { ok: true, latest: od.latest_revision, next: od.next_revision,
+              files: od.files, pulled: od.downloaded }
+          : { ok: false, error: od.error };
+      }
       if (!res.headersSent) res.json(out);
     });
   });
@@ -3662,7 +3885,11 @@ async function startServer() {
 
   // Open a case folder (or a file in one) in Explorer.
   app.post('/api/lsd/reveal', (req, res) => {
-    const target = insideCasesRoot(String((req.body || {}).path || ''));
+    const asked  = String((req.body || {}).path || '');
+    // The register may be configured to live outside the case root, so it is
+    // allowed by identity as well as by containment.
+    const target = path.resolve(asked) === path.resolve(lsdRegisterPath())
+      ? path.resolve(asked) : insideCasesRoot(asked);
     if (!target || !existsSync(target)) {
       res.status(400).json({ ok: false, error: 'That path is not inside the case folder root.' });
       return;
@@ -3674,6 +3901,184 @@ async function startServer() {
       spawn('explorer.exe', isDir ? [target] : ['/select,', target], { detached: true, stdio: 'ignore' }).unref();
       res.json({ ok: true });
     } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // ── LSD daily register ─────────────────────────────────────────────────────
+  // Every transaction that gets a case folder also gets a row in a register
+  // workbook shaped like the analyst's "LSD Daily work" sheet, which is then
+  // pushed to SharePoint the same way quotes are. automation/lsd_register.py
+  // owns the workbook and the upload; this is the plumbing around it.
+  const REGISTER_NAME = 'LSD Daily Work - Vector.xlsx';
+
+  function lsdRegisterPath(): string {
+    const set = String((loadPyCfg() as any).lsd_register || '').trim();
+    if (set) return set;
+    return path.join(lsdCasesRoot(), REGISTER_NAME);
+  }
+
+  // Which business unit a transaction belongs to, read from the pricing groups
+  // the lines actually carry rather than from the APRC toggle — APRC only says
+  // which currency the model is in, and a UAE EL deal prices in USD too. The
+  // list's DIVISION is derived from this downstream (FIRE-only → FIRE, anything
+  // with EL in it → 'EL & FIRE').
+  const EL_GROUPS = /luminaire|luminarie|self contained|module|universal|emergency|central battery/i;
+  function lsdBu(lines: any[]): string {
+    let el = false, fire = false;
+    for (const l of lines || []) {
+      const g = String(l?.group || '').trim();
+      if (!g) continue;
+      if (EL_GROUPS.test(g)) el = true; else fire = true;
+    }
+    if (el) return 'EL';
+    return fire ? 'FIRE' : '';
+  }
+
+  // Same job-file/out-file contract as runLsd, but resolved rather than piped to
+  // a response, because the build has to await it mid-request.
+  function runRegister(job: Record<string, unknown>, timeoutMs = 60_000): Promise<any> {
+    return new Promise(resolve => {
+      const script = pyFile('lsd_register.py');
+      if (!existsSync(script)) {
+        resolve({ ok: false, error: 'lsd_register.py is missing from this install' });
+        return;
+      }
+      const tmp     = path.join(os.tmpdir(), `lsdreg_${Date.now()}_${randomUUID().slice(0, 8)}`);
+      const jobPath = path.join(tmp, 'job.json');
+      const outPath = path.join(tmp, 'out.json');
+      const cleanup = () => {
+        for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} }
+        try { rmdirSync(tmp); } catch {}
+      };
+      try {
+        mkdirSync(tmp, { recursive: true });
+        writeFileSync(jobPath, JSON.stringify({ register: lsdRegisterPath(), ...job }), 'utf8');
+      } catch (e: any) { cleanup(); resolve({ ok: false, error: e.message }); return; }
+
+      const [py, base] = pyArgs(script);
+      const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+        { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      let errBuf = '';
+      proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+      const killer = setTimeout(() => { try { proc.kill(); } catch {} }, timeoutMs);
+      proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); resolve({ ok: false, error: e.message }); });
+      proc.on('close', () => {
+        clearTimeout(killer);
+        let out: any = null;
+        try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+        cleanup();
+        resolve(out || { ok: false, error: errBuf.trim().slice(-400) || 'The register run produced no result.' });
+      });
+    });
+  }
+
+  // Turn a priced result plus whatever the form carried into one register row.
+  // The engine owns the numbers; the form owns the words (status, notes, who
+  // the deal belongs to) — nothing here invents a value the analyst would have
+  // to correct in the sheet afterwards.
+  function lsdRegisterRow(body: any, out: any): Record<string, unknown> {
+    const cfg  = loadPyCfg() as any;
+    const meta = out?.meta || {};
+    const sum  = out?.summary || {};
+    const ccy  = sum.currency || 'USD';
+    // The daily sheet has no currency column, so a run that prices in the other
+    // currency says so in the note rather than silently mixing the totals.
+    // The engine's own one-liner is the note — it already says what changed,
+    // what it costs and whether anything needs approving, which is exactly what
+    // the register's Notes column is read for.
+    const auto = sum.headline
+      || [`Vector · ${sum.lines ?? 0} lines`,
+          sum.overall_e2e != null ? `E2E ${(sum.overall_e2e * 100).toFixed(1)}%` : '',
+          ccy].filter(Boolean).join(' · ');
+    return {
+      country:          body.country || meta.country || '',
+      bu:               body.bu || cfg.lsd_bu || lsdBu(out?.lines || []),
+      transaction:      body.transaction || meta.transaction || '',
+      transaction_name: body.project || meta.project || '',
+      customer:         body.customer || meta.customer || '',
+      customer_name:    body.customer_name || meta.customer_name || '',
+      status:           body.status || 'Priced',
+      sales_name:       body.sales_name || cfg.lsd_sales_name || cfg.inside_sales || '',
+      cpq_updated:      body.cpq_updated || '',
+      total_value:      sum.grand_total ?? null,
+      out_date:         body.out_date || new Date().toISOString().slice(0, 10),
+      notes:            body.notes || auto,
+      rpi_comment:      body.rpi_comment || '',
+      rpi_comment_2:    body.rpi_comment_2 || '',
+      pv_pct:           sum.overall_rpi ?? null,     // price variance only (ledger K6)
+      rpi_pct:          sum.total_rpi ?? null,       // price + mix, the 6% gate
+      rpi_value:        sum.rpi_value ?? null,
+    };
+  }
+
+  // What the Quotations List needs and the daily sheet has no column for. It is
+  // stored in a sidecar JSON beside the register, keyed on transaction number,
+  // so the workbook stays exactly the analyst's layout.
+  function lsdRegisterExtra(body: any, out: any): Record<string, unknown> {
+    const meta = out?.meta || {};
+    const sum  = out?.summary || {};
+    return {
+      crm:      body.crm || meta.crm || '',
+      currency: sum.currency || '',
+      country:  body.country || meta.country || '',
+      lines:    sum.lines ?? null,
+      e2e:      sum.overall_e2e ?? null,
+    };
+  }
+
+  // The register as the tab shows it.
+  app.get('/api/lsd/register', async (req, res) => {
+    const out = await runRegister({ mode: 'rows', limit: Number(req.query.limit) || 300 });
+    res.json({
+      ...out,
+      register: lsdRegisterPath(),
+      name: path.basename(lsdRegisterPath()),
+      sp: { site: (loadPyCfg() as any).sp_list || '', list: 'Quotations List',
+            requestType: (loadPyCfg() as any).lsd_request_type || 'Standard CTO' },
+      connected: !!getSpCookies(),
+    });
+  });
+
+  // Register (or correct) one row by hand — the same upsert the build runs.
+  app.post('/api/lsd/register', async (req, res) => {
+    const row = (req.body || {}).row || req.body || {};
+    if (!String(row.transaction || '').trim() && !String(row.transaction_name || '').trim()) {
+      res.status(400).json({ ok: false, error: 'A register row needs a transaction number or name.' });
+      return;
+    }
+    res.json(await runRegister({ mode: 'append', row, extra: (req.body || {}).extra || {} }));
+  });
+
+  // Post the register's transactions to SharePoint as list items — the same
+  // 'Quotations List' the quote uploader writes to, so an LSD transaction reads
+  // like every other quote in the factory list. The register file itself never
+  // leaves the machine. Uses this session's JOE cookies, so a remote user posts
+  // as themselves rather than as whoever the box belongs to.
+  app.post('/api/lsd/register/push', async (req, res) => {
+    const cookies = getSpCookies();
+    if (!cookies) {
+      res.status(400).json({ ok: false, error: 'Not connected to SharePoint — run Connect to JOE first.' });
+      return;
+    }
+    const b   = (req.body || {}) as any;
+    const cfg = loadPyCfg() as any;
+    res.json(await runRegister({
+      mode: 'push', fed: cookies.fed, rt: cookies.rt,
+      sp_list: cfg.sp_list || '',
+      // No list — post every row. A list of transaction numbers posts just those.
+      transactions: Array.isArray(b.transactions) ? b.transactions : [],
+      request_type: b.request_type || cfg.lsd_request_type || '',
+      dry_run: !!b.dry_run,
+    }, 300_000));
+  });
+
+  // Download the register itself. It lives outside the case root (it spans every
+  // case), so it gets its own guard rather than insideCasesRoot().
+  app.get('/api/lsd/register/file', (_req, res) => {
+    const p = lsdRegisterPath();
+    if (!existsSync(p)) { res.status(404).send('No register yet'); return; }
+    res.setHeader('Content-Disposition', contentDisposition('attachment', path.basename(p)));
+    res.setHeader('Content-Type', 'application/octet-stream');
+    createReadStream(p).pipe(res);
   });
 
   // Download one produced file.
@@ -4353,20 +4758,141 @@ async function startServer() {
     return out;
   }
 
-  function searchMailIndex(q: string, limit: number, fields: string, mode: MatchMode): any | null {
+  // ─── Search filters ─────────────────────────────────────────────────────
+  // Narrowing that runs alongside the terms instead of inside them. A query is
+  // one question ("QW28237"); who it is from, when it landed and whether it
+  // carried a PDF are separate axes. Mirrors index_where() in outlook_reader.py.
+  type SearchScope = 'all' | 'meta' | 'subject' | 'from' | 'recipients' | 'atts' | 'body';
+  const SEARCH_SCOPES: SearchScope[] = ['all', 'meta', 'subject', 'from', 'recipients', 'atts', 'body'];
+  // The SQL each scope matches on. Lowercase throughout: meta_blob/blob already
+  // are, and LIKE has to see the same case on both sides.
+  const SCOPE_SQL: Record<SearchScope, string> = {
+    all:        'blob',
+    meta:       'meta_blob',
+    subject:    "lower(coalesce(subject, ''))",
+    from:       "lower(coalesce(sender, '') || ' ' || coalesce(sender_email, ''))",
+    recipients: "lower(coalesce(recipients, ''))",
+    atts:       "lower(coalesce(atts, ''))",
+    body:       "lower(coalesce(body_text, ''))",
+  };
+  // The same text, off a fetched row, for the match-mode re-check.
+  function scopeText(r: any, scope: SearchScope): string {
+    switch (scope) {
+      case 'meta':       return r.meta_blob || '';
+      case 'subject':    return r.subject || '';
+      case 'from':       return `${r.sender || ''} ${r.sender_email || ''}`;
+      case 'recipients': return r.recipients || '';
+      case 'atts':       return r.atts || '';
+      case 'body':       return r.body_text || '';
+      default:           return r.blob || '';
+    }
+  }
+
+  type SearchFilters = {
+    from?: string;                       // substring of sender name or address
+    since?: string; until?: string;      // YYYY-MM-DD, inclusive
+    folder?: string;                     // substring of the folder path
+    att?: 'any' | 'yes' | 'no' | 'pdf';
+    read?: 'any' | 'read' | 'unread';
+    sort?: 'new' | 'old';
+  };
+
+  // 'YYYY-MM-DD' (what a date input sends) or 'DD/MM/YYYY' -> the index's
+  // 'YYYYMMDD' stamp prefix. Anything else is treated as no bound at all.
+  function stampDay(s: string): string | null {
+    const t = (s || '').trim();
+    let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(t);
+    let y: number, mo: number, d: number;
+    if (m) { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else {
+      m = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(t);
+      if (!m) return null;
+      d = +m[1]; mo = +m[2]; y = +m[3];
+    }
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+    return `${String(y).padStart(4, '0')}${String(mo).padStart(2, '0')}${String(d).padStart(2, '0')}`;
+  }
+
+  // The filter half of the WHERE clause. `active` is echoed back so the UI can
+  // state what was applied rather than trust that a flag survived the trip.
+  function filterClauses(f: SearchFilters) {
+    const where: string[] = [];
+    const params: any[] = [];
+    const active: Record<string, string> = {};
+
+    const from = (f.from || '').trim();
+    if (from) {
+      where.push(`(lower(coalesce(sender, '')) LIKE ? ESCAPE '\\'`
+               + ` OR lower(coalesce(sender_email, '')) LIKE ? ESCAPE '\\')`);
+      params.push(likeParam(from), likeParam(from));
+      active.from = from;
+    }
+    const lo = stampDay(f.since || '');
+    const hi = stampDay(f.until || '');
+    if (lo) { where.push('stamp >= ?'); params.push(lo + '000000'); active.since = lo; }
+    if (hi) { where.push('stamp <= ?'); params.push(hi + '235959'); active.until = hi; }
+
+    const folder = (f.folder || '').trim();
+    if (folder) {
+      where.push(`lower(coalesce(folder, '')) LIKE ? ESCAPE '\\'`);
+      params.push(likeParam(folder));
+      active.folder = folder;
+    }
+    if (f.att === 'yes')      { where.push(`coalesce(atts, '[]') NOT IN ('[]', '')`); active.att = 'yes'; }
+    else if (f.att === 'no')  { where.push(`coalesce(atts, '[]') IN ('[]', '')`);     active.att = 'no'; }
+    else if (f.att === 'pdf') { where.push('has_pdf = 1');                            active.att = 'pdf'; }
+
+    if (f.read === 'unread')    { where.push('unread = 1'); active.read = 'unread'; }
+    else if (f.read === 'read') { where.push('unread = 0'); active.read = 'read'; }
+
+    return { where, params, active };
+  }
+
+  // What is actually IN the index. The From filter offers real addresses rather
+  // than making someone guess how Outlook spells a name.
+  function mailIndexFacets(limit = 60): any {
+    if (!SqliteDb || !existsSync(MAIL_INDEX)) return null;
+    let db: any = null;
+    try {
+      db = new SqliteDb(MAIL_INDEX);
+      const total = db.prepare('SELECT COUNT(*) AS c FROM mail').get().c as number;
+      const senders = db.prepare(
+        'SELECT sender AS name, sender_email AS email, COUNT(*) AS count FROM mail'
+        + ' GROUP BY lower(coalesce(sender_email, sender)) ORDER BY count DESC LIMIT ?').all(limit);
+      const folders = db.prepare(
+        'SELECT folder, COUNT(*) AS count FROM mail GROUP BY folder ORDER BY count DESC').all();
+      const span = db.prepare("SELECT MIN(stamp) AS lo, MAX(stamp) AS hi FROM mail WHERE stamp <> ''").get();
+      const iso = (s: string) => (s && s.length >= 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : null);
+      return { built: total > 0, total, senders, folders,
+               oldest: iso(span?.lo || ''), newest: iso(span?.hi || '') };
+    } catch (e: any) {
+      swallow('mailIndex.facets', e);
+      return null;
+    } finally {
+      try { db?.close(); } catch (e) { swallow('mailIndex.close', e); }
+    }
+  }
+
+  function searchMailIndex(q: string, limit: number, scope: SearchScope, mode: MatchMode,
+                           filters: SearchFilters): any | null {
     if (!SqliteDb || !existsSync(MAIL_INDEX)) return null;
     const terms = searchTerms(q);
-    if (!terms.length) return null;
+    const flt = filterClauses(filters);
+    // A filter narrows on its own — "everything from Fenton with a PDF this
+    // month" needs no term — so only a request with neither is empty.
+    if (!terms.length && !flt.where.length) return null;
     let db: any = null;
     try {
       db = new SqliteDb(MAIL_INDEX);
       const indexTotal = db.prepare('SELECT COUNT(*) AS c FROM mail').get().c as number;
       if (!indexTotal) return null;
-      const metaOnly = fields === 'meta';
-      const col    = metaOnly ? 'meta_blob' : 'blob';
-      const where  = terms.map(() => `${col} LIKE ? ESCAPE '\\'`).join(' AND ');
-      const params = terms.map(likeParam);
-      const rx     = terms.map(t => termRegex(t, mode));
+      const metaOnly = scope !== 'all' && scope !== 'body';
+      const col     = SCOPE_SQL[scope];
+      const clauses = terms.map(() => `${col} LIKE ? ESCAPE '\\'`).concat(flt.where);
+      const where   = clauses.length ? clauses.join(' AND ') : '1';
+      const params  = terms.map(likeParam).concat(flt.params);
+      const rx      = terms.map(t => termRegex(t, mode));
+      const order   = filters.sort === 'old' ? 'ASC' : 'DESC';
       // body_text arrived with the match-snippet work; an index written before it
       // has no such column, and reading it would throw instead of degrading.
       const hasBodyText = (db.prepare('PRAGMA table_info(mail)').all() as any[])
@@ -4374,18 +4900,18 @@ async function startServer() {
       const sql = 'SELECT entry_id, store, store_id, folder, subject, sender, sender_email, received,' +
         ' body_preview, atts, unread, has_pdf, recipients, meta_blob, blob' +
         (hasBodyText ? ', body_text' : ', NULL AS body_text') +
-        ` FROM mail WHERE ${where} ORDER BY stamp DESC LIMIT ?`;
+        ` FROM mail WHERE ${where} ORDER BY stamp ${order} LIMIT ?`;
       let total: number;
       let rows: any[];
       let truncated = false;
-      if (mode === 'part') {
+      if (mode === 'part' || !terms.length) {
         // LIKE already IS the answer, so the count stays one cheap query.
         total = db.prepare(`SELECT COUNT(*) AS c FROM mail WHERE ${where}`).get(...params).c as number;
         rows  = db.prepare(sql).all(...params, limit) as any[];
       } else {
         const cand = db.prepare(sql).all(...params, INDEX_SCAN_CAP) as any[];
         truncated  = cand.length >= INDEX_SCAN_CAP;
-        const kept = cand.filter(r => matchesMode(metaOnly ? r.meta_blob : r.blob, rx));
+        const kept = cand.filter(r => matchesMode(scopeText(r, scope), rx));
         total = kept.length;
         rows  = kept.slice(0, limit);
       }
@@ -4417,6 +4943,7 @@ async function startServer() {
         }),
         total, source: 'index', indexTotal, lastSync: last?.v ?? null,
         truncated, degraded: 0, query: q, mode,
+        scope, sort: order === 'ASC' ? 'old' : 'new', filters: flt.active,
       };
     } catch (e: any) {
       swallow('mailIndex.read', e);
@@ -4442,16 +4969,34 @@ async function startServer() {
 
   app.get('/api/outlook/search', async (req, res) => {
     const q = String(req.query.q || '').trim();
-    if (!q) { res.json({ emails: [], error: 'type something to search for' }); return; }
     const limit   = String(Math.min(500, parseInt(String(req.query.limit || '200'), 10) || 200));
-    const fields  = req.query.fields === 'meta' ? 'meta' : 'all';
-    const since   = String(req.query.since || '');
+    // `scope` is the finer way of saying what `fields` said: all/meta stay, and
+    // subject/from/recipients/atts/body narrow the terms to one field.
+    const scope: SearchScope = (SEARCH_SCOPES as string[]).includes(String(req.query.scope))
+      ? String(req.query.scope) as SearchScope
+      : (req.query.fields === 'meta' ? 'meta' : 'all');
     const source  = ['index', 'live', 'auto'].includes(String(req.query.source)) ? String(req.query.source) : 'auto';
     const mode    = (MATCH_MODES as string[]).includes(String(req.query.mode))
       ? String(req.query.mode) as MatchMode : 'part';
     const timeout = String(Math.min(280, parseInt(String(req.query.timeout || '200'), 10) || 200));
+    const one = <T extends string>(v: any, allowed: T[], dflt: T): T =>
+      (allowed as string[]).includes(String(v)) ? String(v) as T : dflt;
+    const filters: SearchFilters = {
+      from:   String(req.query.from || '').trim().slice(0, 200),
+      since:  String(req.query.since || '').trim(),
+      until:  String(req.query.until || '').trim(),
+      folder: String(req.query.folder || '').trim().slice(0, 200),
+      att:    one(req.query.att,  ['any', 'yes', 'no', 'pdf'] as const, 'any'),
+      read:   one(req.query.read, ['any', 'read', 'unread'] as const, 'any'),
+      sort:   one(req.query.sort, ['new', 'old'] as const, 'new'),
+    };
+    // A filter narrows on its own, so an empty box is only an error when nothing
+    // else was asked for either.
+    const anyFilter = !!(filters.from || filters.since || filters.until || filters.folder
+      || (filters.att && filters.att !== 'any') || (filters.read && filters.read !== 'any'));
+    if (!q && !anyFilter) { res.json({ emails: [], error: 'type something to search for, or set a filter' }); return; }
     if (source !== 'live') {
-      const hit = searchMailIndex(q, Number(limit), fields, mode);
+      const hit = searchMailIndex(q, Number(limit), scope, mode, filters);
       if (hit) { res.json(hit); return; }
       if (source === 'index') {
         res.json({ emails: [], total: 0, source: 'index',
@@ -4462,8 +5007,12 @@ async function startServer() {
     }
     try {
       const r = await runOutlookPy([
-        '--action', 'search', '--query', q, '--limit', limit, '--fields', fields,
-        '--since', since, '--source', source, '--dest', MAIL_INDEX, '--mode', mode,
+        '--action', 'search', '--query', q, '--limit', limit,
+        '--fields', scope === 'all' || scope === 'body' ? 'all' : 'meta', '--scope', scope,
+        '--since', filters.since || '', '--until', filters.until || '',
+        '--sender', filters.from || '', '--folder', filters.folder || '',
+        '--att', filters.att || '', '--read', filters.read || '', '--sort', filters.sort || 'new',
+        '--source', source, '--dest', MAIL_INDEX, '--mode', mode,
         '--attachments', '1', '--timeout', timeout, '--backend', 'win32',
       ]);
       // A live answer means the index was cold — start building it so the next
@@ -4471,6 +5020,15 @@ async function startServer() {
       if (r && r.source !== 'index' && !indexSyncing) void syncMailIndex();
       res.json(r);
     } catch (e: any) { res.json({ emails: [], error: e.message }); }
+  });
+
+  // The values the filters offer: who has actually written, which folders the
+  // index covers, and how far back it reaches.
+  app.get('/api/outlook/search/facets', async (_req, res) => {
+    const local = mailIndexFacets();
+    if (local) { res.json(local); return; }
+    try { res.json(await runOutlookPy(['--action', 'search-facets', '--dest', MAIL_INDEX, '--limit', '60'])); }
+    catch (e: any) { res.json({ built: false, senders: [], folders: [], error: e.message }); }
   });
 
   app.get('/api/outlook/index/status', async (_req, res) => {
@@ -5845,13 +6403,152 @@ async function startServer() {
 
     try {
       const response = await generateWithRetry(ai, {
-        model: 'gemini-2.5-flash',
+        model: AI_MODEL_FAST,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: { maxOutputTokens: 600, temperature: 0.3 },
+        // 600 tokens cut real replies off mid-sentence — a thinking model spends
+        // part of the budget before it writes a word, so give it real headroom.
+        config: { maxOutputTokens: 4096, temperature: 0.3 },
       });
       res.json({ draft: response.text });
     } catch (e: any) {
       res.json({ draft: null, error: 'Gemini error: ' + e.message });
+    }
+  });
+
+  // ── Polish a reply the user actually wrote ────────────────────────────────
+  // The Reply box starts blank on purpose: nothing is generated until the user
+  // asks. This endpoint takes THEIR raw idea (bullet points, half a sentence,
+  // whatever) and returns a sendable email body. `mode` reshapes an existing
+  // text instead of writing from scratch — the same call powers Shorten /
+  // Formalize / Rewrite on the result, so the user can iterate without
+  // re-typing the idea.
+  const POLISH_MODES: Record<string, string> = {
+    polish:    'Turn the note below into a clean, sendable email. Keep every fact and every commitment; fix grammar, structure and flow. Do not invent new information, dates, prices or promises.',
+    shorten:   'Rewrite the text below as short as it can be while keeping every fact and commitment. Cut pleasantries and repetition. Aim for under half the original length.',
+    formalize: 'Rewrite the text below in a more formal, corporate register suitable for an external customer. Keep the same content — no new facts.',
+    rewrite:   'Rewrite the text below from scratch in different words: same meaning, same facts, clearer structure and a fresh phrasing.',
+  };
+
+  app.post('/api/outlook/polish-reply', async (req, res) => {
+    const { text, mode, subject, sender, senderEmail, body, analysis } = req.body as {
+      text: string; mode?: string; subject?: string; sender?: string;
+      senderEmail?: string; body?: string; analysis?: string;
+    };
+    const raw = String(text || '').trim();
+    if (!raw) { res.json({ text: null, error: 'write your idea first' }); return; }
+    const ai = getGemini();
+    if (!ai) { res.json({ text: null, error: 'No Gemini API key — add it in Settings' }); return; }
+
+    const instruction = POLISH_MODES[String(mode || 'polish')] || POLISH_MODES.polish;
+    const me        = await connectedUserName();
+    const firstName = me ? me.split(' ')[0] : '';
+
+    const pastReplies = queryAll(
+      `SELECT subject, finalReply FROM email_feedback WHERE feedbackType IN ('sent','edited_sent') ORDER BY id DESC LIMIT 5`
+    );
+    const examplesBlock = pastReplies.length
+      ? '\n**Past approved replies (style reference only — do not copy their content):**\n' +
+        pastReplies.map((r, i) => `Example ${i + 1} (re: "${r.subject}"):\n${r.finalReply}`).join('\n\n')
+      : '';
+
+    const prompt = [
+      `You are helping ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest, write an email reply.`,
+      instruction,
+      ``,
+      subject ? `**The email being replied to:**\nFrom: ${sender || ''} <${senderEmail || ''}>\nSubject: ${subject}\n\n${(body || '').slice(0, 2000)}` : '',
+      analysis ? `\n**AI summary of that email:**\n${analysis.slice(0, 1500)}` : '',
+      examplesBlock,
+      ``,
+      `**The engineer's own text — this is what you rewrite:**`,
+      raw.slice(0, 6000),
+      ``,
+      `Rules:`,
+      `- Reply in the same language as the original email.`,
+      `- Output the email BODY only — no subject line, no "Re:", no commentary about what you changed, no markdown fences.`,
+      `- Never add facts, dates, prices, part numbers or promises that are not in the engineer's text or the original email.`,
+      `- No placeholders like "[Your Name]" — sign off as "${firstName ? firstName + ' / Eaton Budapest' : 'Eaton Budapest'}" unless the text already ends with a sign-off.`,
+    ].filter(Boolean).join('\n');
+
+    try {
+      const response = await generateWithRetry(ai, {
+        model: AI_MODEL_FAST,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { maxOutputTokens: 4096, temperature: mode === 'rewrite' ? 0.6 : 0.3 },
+      });
+      res.json({ text: response.text || null });
+    } catch (e: any) {
+      appendLog(`[polish-reply] ${e?.message || e}`);
+      res.json({ text: null, error: aiErrorText(e) });
+    }
+  });
+
+  // ── Suggest who to send a quote to, plus a short covering note ────────────
+  // Half the "please forward this quote" mails come from a colleague, not from
+  // the person who actually needs the PDF, so replying to the sender is the
+  // wrong default. Candidates are supplied by the caller (thread recipients,
+  // addresses written in the body, harvested contacts) — the model only PICKS
+  // from them and never invents an address.
+  app.post('/api/outlook/suggest-send', async (req, res) => {
+    const { subject, sender, senderEmail, body, analysis, candidates, attachmentNames } = req.body as {
+      subject?: string; sender?: string; senderEmail?: string; body?: string; analysis?: string;
+      candidates?: Array<{ name?: string; email: string; why?: string }>;
+      attachmentNames?: string[];
+    };
+    const pool = (candidates || []).filter(c => c && c.email).slice(0, 25);
+    const ai = getGemini();
+    if (!ai) { res.json({ error: 'No Gemini API key — add it in Settings' }); return; }
+
+    const me        = await connectedUserName();
+    const firstName = me ? me.split(' ')[0] : '';
+
+    const prompt = [
+      `An Eaton quote engineer${me ? ' (' + me + ')' : ''} in Budapest is about to send a quote/document out of Outlook.`,
+      ``,
+      `**The email that triggered this:**`,
+      `From: ${sender || ''} <${senderEmail || ''}>`,
+      `Subject: ${subject || ''}`,
+      ``,
+      (body || '').slice(0, 3000),
+      analysis ? `\n**AI summary:**\n${analysis.slice(0, 1200)}` : '',
+      attachmentNames?.length ? `\n**Files being attached:** ${attachmentNames.join(', ')}` : '',
+      ``,
+      `**Address candidates (you MUST pick from this list — never invent an address):**`,
+      ...pool.map(c => `- ${c.email}${c.name ? ` (${c.name})` : ''}${c.why ? ` — ${c.why}` : ''}`),
+      ``,
+      `Decide who should actually RECEIVE the files. If the sender is only asking you to forward something on to someone else, the recipient is that someone else, not the sender.`,
+      `Then write a SHORT covering email (3-5 lines, no waffle) to that person, in the language of the original email.`,
+      ``,
+      `Return STRICT JSON, nothing else:`,
+      `{"to":"<one email from the list>","cc":["<optional emails from the list>"],"subject":"<email subject>","body":"<the covering note>","why":"<one short line on why this recipient>"}`,
+      `- The body must not invent prices, dates or commitments.`,
+      `- No placeholders — sign off as "${firstName ? firstName + ' / Eaton Budapest' : 'Eaton Budapest'}".`,
+    ].filter(Boolean).join('\n');
+
+    try {
+      const response = await generateWithRetry(ai, {
+        model: AI_MODEL_FAST,
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        config: { maxOutputTokens: 2048, temperature: 0.2, responseMimeType: 'application/json' },
+      });
+      let parsed: any = {};
+      try { parsed = JSON.parse((response.text || '{}').replace(/^```(?:json)?|```$/g, '').trim()); }
+      catch { res.json({ error: 'the model did not return usable JSON' }); return; }
+      // Never let a hallucinated address through: the recipient must be one of
+      // the candidates we handed in.
+      const known = new Set(pool.map(c => c.email.toLowerCase()));
+      const to  = String(parsed.to || '').trim();
+      const cc  = (Array.isArray(parsed.cc) ? parsed.cc : []).map((x: any) => String(x || '').trim())
+                    .filter((x: string) => x && known.has(x.toLowerCase()) && x.toLowerCase() !== to.toLowerCase());
+      res.json({
+        to:      known.has(to.toLowerCase()) ? to : '',
+        cc,
+        subject: String(parsed.subject || '').trim(),
+        body:    String(parsed.body || '').trim(),
+        why:     String(parsed.why || '').trim(),
+      });
+    } catch (e: any) {
+      appendLog(`[suggest-send] ${e?.message || e}`);
+      res.json({ error: aiErrorText(e) });
     }
   });
 
@@ -6417,17 +7114,20 @@ async function startServer() {
 
   // ── Send new email (with optional Outlook-sourced attachments) ─────────────
   app.post('/api/outlook/send-new', async (req, res) => {
-    const { to, subject, body: emailBody, attSources } = req.body as {
-      to: string; subject: string; body?: string; attSources?: Array<{ entryId: string; index: number }>;
+    const { to, cc, subject, body: emailBody, attSources, draft } = req.body as {
+      to: string; cc?: string; subject: string; body?: string;
+      attSources?: Array<{ entryId: string; index: number }>; draft?: boolean;
     };
     if (!to || !subject) { res.json({ error: 'fill in both To and Subject' }); return; }
     try {
       res.json(await runOutlookPy([
         '--action', 'send-new',
         '--to', to,
+        ...(cc ? ['--cc', cc] : []),
         '--subject', subject,
         '--body', emailBody || '',
         '--att-sources', JSON.stringify(attSources || []),
+        ...(draft ? ['--draft', '1'] : []),
       ]));
     } catch (e: any) { res.json({ error: e.message }); }
   });

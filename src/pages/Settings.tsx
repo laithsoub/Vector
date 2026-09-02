@@ -464,6 +464,18 @@ export function SettingsPage({
                  'Keys the prior-year country average. This master carries R2321 (UAE) only')}
           {field('lsd_cpq_port',     'CPQ debug port',
                  'Edge remote-debugging port for the Fetch-from-CPQ button. Blank = 9222')}
+          {field('lsd_register',     'Daily register',
+                 'Workbook every priced transaction is logged into — it stays on this machine. Blank = <case root>\\LSD Daily Work - Vector.xlsx. Point it at a copy of the real LSD Daily work sheet to write into its own columns')}
+          {field('lsd_request_type', 'Request type',
+                 'REQUEST TYPE written on every item posted to the Quotations List. Blank = Standard CTO')}
+          {field('lsd_sales_name',   'Sales name',
+                 'Fills the register’s Sales Name column. Blank = the Inside Sales name above')}
+          {field('lsd_bu',           'Business unit',
+                 'Fills the register’s BU column — EL, FIRE or CBS. Blank = guessed from the APRC toggle')}
+          {field('lsd_approver',     'Approver',
+                 'Who a sub-target margin is mailed to. A display name ("Poulose, Kiran") is resolved against the address book. The mail is always drafted, never sent')}
+          {field('lsd_approver_cc',  'Approval cc',
+                 'Copied on every approval mail — usually the pricing analyst')}
         </div>
 
         {/* Language. Scope is stated because it is real: the translations cover the

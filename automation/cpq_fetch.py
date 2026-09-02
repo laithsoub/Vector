@@ -29,10 +29,12 @@ import base64
 import datetime as _dt
 import json
 import os
+import re
 import socket
 import struct
 import sys
 import tempfile
+import time
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
@@ -79,8 +81,12 @@ COL = {"catalog": 8, "material": 9, "description": 10, "group_code": 14, "group"
 
 
 # ── minimal Chrome DevTools Protocol client (stdlib only) ────────────────────
-def _ws_connect(host, port, path):
-    s = socket.create_connection((host, port), timeout=10)
+def _ws_connect(host, port, path, timeout=60):
+    # The socket carries a timeout of its own. Without one, a tab that Edge has
+    # put to sleep (or that has been navigated away) never answers Runtime.evaluate
+    # and the whole fetch hangs until something upstream kills it — which is what
+    # "it keeps timing out" looks like from the outside.
+    s = socket.create_connection((host, port), timeout=timeout)
     key = base64.b64encode(os.urandom(16)).decode()
     s.sendall((f"GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUpgrade: websocket\r\n"
                f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
@@ -149,29 +155,79 @@ def _find_cpq_target(port):
     return pages[0]
 
 
-def _evaluate(port, expr):
-    """Run JS in the CPQ tab's page context and return its value."""
-    target = _find_cpq_target(port)
-    ws = target["webSocketDebuggerUrl"]
-    u = urlparse(ws)
-    s = _ws_connect(u.hostname, u.port or port, u.path)
+def evaluate_on(target, port, expr, socket_timeout=60, js_timeout_ms=45000):
+    """Run JS in one CDP target's page context and return its value."""
+    u = urlparse(target["webSocketDebuggerUrl"])
+    s = _ws_connect(u.hostname, u.port or port, u.path, timeout=socket_timeout)
     try:
-        _ws_send(s, {"id": 1, "method": "Runtime.enable"})
         _ws_send(s, {"id": 2, "method": "Runtime.evaluate", "params": {
             "expression": expr, "returnByValue": True, "awaitPromise": True,
-            "timeout": 30000}})
-        for _ in range(600):
+            "timeout": js_timeout_ms}})
+        for _ in range(4000):
             msg = json.loads(_ws_recv(s))
-            if msg.get("id") == 2:
-                r = msg.get("result", {})
-                if "exceptionDetails" in r:
-                    txt = r["exceptionDetails"].get("exception", {}).get("description") \
-                        or json.dumps(r["exceptionDetails"])[:300]
-                    raise RuntimeError(f"CPQ page script error: {txt}")
-                return r.get("result", {}).get("value")
-        raise RuntimeError("CPQ page did not respond in time")
+            if msg.get("id") != 2:
+                continue                       # page events on a busy tab
+            r = msg.get("result", {})
+            if "exceptionDetails" in r:
+                txt = (r["exceptionDetails"].get("exception", {}) or {}).get("description") \
+                    or json.dumps(r["exceptionDetails"])[:300]
+                raise RuntimeError(f"page script error: {txt}")
+            return r.get("result", {}).get("value")
+        raise RuntimeError("the page did not respond in time")
     finally:
-        s.close()
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def wake_target(target, port, log=None, wait_s=25):
+    """Reload the tab and wait for it to finish loading.
+
+    Edge sleeps background tabs, and a slept tab answers nothing — so rather than
+    ask the user to go and click on the browser, the tab is reloaded on our side
+    and the read is retried. This also renews an SSO session that expired while
+    the tab sat there, which is the other reason a fetch stops working."""
+    u = urlparse(target["webSocketDebuggerUrl"])
+    s = _ws_connect(u.hostname, u.port or port, u.path, timeout=20)
+    try:
+        _ws_send(s, {"id": 10, "method": "Page.enable"})
+        _ws_send(s, {"id": 11, "method": "Page.reload", "params": {"ignoreCache": False}})
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+    if log:
+        log("The tab was not answering — reloaded it, retrying.", "warn")
+
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        time.sleep(1.5)
+        try:
+            state = evaluate_on(target, port, "document.readyState",
+                                socket_timeout=10, js_timeout_ms=8000)
+            if state == "complete":
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _evaluate(port, expr, log=None):
+    """Run JS in the CPQ tab, waking the tab and retrying once if it is asleep."""
+    target = _find_cpq_target(port)
+    try:
+        return evaluate_on(target, port, expr)
+    except Exception as first:
+        # One reload, one retry. A second failure is a real problem (signed out,
+        # CPQ down, the tab closed) and is reported as itself.
+        if not wake_target(target, port, log):
+            raise RuntimeError(
+                f"The CPQ tab did not come back after a reload ({first}). Open CPQ "
+                f"in the debug-rail Edge, make sure it is signed in, and try again.")
+        target = _find_cpq_target(port)
+        return evaluate_on(target, port, expr)
 
 
 # ── the two REST reads, run inside the CPQ tab ───────────────────────────────
@@ -210,7 +266,14 @@ def _lines_js(doc_id, offset, limit):
 
 def fetch_transaction(transaction, port, log):
     log(f"Searching CPQ for {transaction}")
-    res = json.loads(_evaluate(port, _search_js(transaction)))
+    res = json.loads(_evaluate(port, _search_js(transaction), log))
+    if res.get("authError"):
+        # A session that lapsed while the tab sat idle comes back on a reload,
+        # so try that once before telling the user to go and sign in.
+        log(f"CPQ returned {res['authError']} — reloading the tab to renew the session.",
+            "warn")
+        if wake_target(_find_cpq_target(port), port, log):
+            res = json.loads(_evaluate(port, _search_js(transaction), log))
     if res.get("authError"):
         raise RuntimeError(
             f"CPQ returned {res['authError']} — the CPQ tab is not signed in. "
@@ -231,7 +294,7 @@ def fetch_transaction(transaction, port, log):
     # page the line items (a big quote can exceed one page)
     rows, offset, page = [], 0, 100
     while True:
-        chunk = json.loads(_evaluate(port, _lines_js(doc_id, offset, page)))
+        chunk = json.loads(_evaluate(port, _lines_js(doc_id, offset, page), log))
         got = chunk.get("rows", [])
         rows.extend(got)
         if len(got) < page:
@@ -242,16 +305,84 @@ def fetch_transaction(transaction, port, log):
     log(f"Read {len(rows)} line item(s) from CPQ")
 
     tt = doc.get("transactionType_t")
+    extra = _doc_extra(port, doc_id, log)
+
+    # The searched name is capped at 40 characters; prefer the record's, which is
+    # the one the case folder should be named after.
+    name = str(doc.get("transactionName_t") or "").strip()
+    if extra["project"] and len(extra["project"]) > len(name):
+        log(f"The search index cut the name at {len(name)} chars — using {extra['project']!r}")
+        name = extra["project"]
+
     header = {
         "transaction": doc.get("transactionNumber_t") or transaction,
         "customer": _digits(doc.get("customerNumber_t")),
         "customer_name": doc.get("customerName_t") or "",
-        "project": doc.get("transactionName_t") or "",
+        "project": name,
         "crm": doc.get("opportunityID_t") or "",
         "doc_id": str(doc_id),
         "transaction_type": tt.get("value") if isinstance(tt, dict) else tt,
+        # For the daily register: who prepared it and where CPQ thinks it stands.
+        "sales_name": _label(doc.get("preparedByName_t")),
+        "cpq_status": _label(doc.get("status_t")),
+        "cpq_updated": extra["updated"],
     }
     return header, rows
+
+
+def _label(v):
+    """CPQ returns some attributes as {value, displayValue}; take what a human
+    would read."""
+    if isinstance(v, dict):
+        return str(v.get("displayValue") or v.get("value") or "").strip()
+    return str(v or "").strip()
+
+
+def _doc_js(doc_id):
+    # No `fields` filter — CPQ's last-updated attribute is not consistently named
+    # across instances, so read the whole document and find it by shape.
+    return f"""(async () => {{
+      const r = await fetch("{REST}/commerceDocumentsOraclecpqoTransaction/{doc_id}",
+                            {{headers:{{Accept:"application/json"}}, credentials:"include"}});
+      if (!r.ok) return JSON.stringify({{err:r.status}});
+      const j = await r.json();
+      const val = v => (v && typeof v==='object' && 'value' in v) ? v.value : v;
+      const o = {{}}; for (const k of Object.keys(j)) if (k!=='links') o[k] = val(j[k]);
+      return JSON.stringify({{doc:o}});
+    }})()"""
+
+
+def _doc_extra(port, doc_id, log):
+    """CPQ's own 'last updated' stamp (ISO date) and the FULL transaction name.
+    The search index cuts transactionName_t at 40 characters, and that name goes
+    on to name the case folder, so the whole one has to come off the document
+    record. Best-effort: a quote still registers without either, so a failure
+    here is a warning, never an error."""
+    out = {"updated": "", "project": ""}
+    try:
+        res = json.loads(_evaluate(port, _doc_js(doc_id), log))
+        doc = res.get("doc") or {}
+        best = ""
+        for k, v in doc.items():
+            if not re.search(r"(update|modif)", k, re.I):
+                continue
+            s = str(v or "").strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}", s) and s > best:
+                best = s
+        out["updated"] = best[:10]
+        if not best:
+            log("CPQ carries no last-updated stamp on this document.", "warn")
+        # The record names the field without the search index's _t suffix, and
+        # instances differ; take the longest transactionName* string there is.
+        for k, v in doc.items():
+            if not re.match(r"^transactionname", k, re.I):
+                continue
+            s = str(v or "").strip()
+            if len(s) > len(out["project"]):
+                out["project"] = s
+    except Exception as e:
+        log(f"Could not read the CPQ document record: {e}", "warn")
+    return out
 
 
 def _digits(v):

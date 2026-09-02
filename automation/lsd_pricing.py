@@ -13,16 +13,31 @@ The Working File is the real master CPQ model with this transaction pasted into
 Add. Discount written into column R — every derived column left LIVE, so the file
 shows how the feedback was produced rather than just asserting it.
 
-THE RULE (LSD Daily Work Procedure, 2026-08-05 — measured on 165 case models /
-2148 priced lines, reproduces the analyst's own number on 42% of lines and 58%
-of lines with no prior-year history):
+THE RULE — "requested" (default, Dalia, 2026-09-02). Holding the target E2E was
+pushing prices far above the prior year: on W262217374E chasing 40% E2E took the
+overall and total RPI to 17%. The target E2E is therefore NOT priced to; the
+customer's own request is:
+
+    Add. Discount = Requested Discount            (the 20% cap does not apply)
+    then, if the line still prices under the RPI gate for the half-year
+    (H1 3.5% / H2 6%),  unit net = customer prior-year average x (1 + rate)
+                        (country average when the customer has no history)
+
+A line that lands below its target E2E is PRICED THAT WAY and flagged for
+approval — on this case that is 34% against a 40% target, which Kiran has to
+agree to. The engine does not raise the price to hide it.
+
+THE OLD RULE — "e2e" (LSD Daily Work Procedure, 2026-08-05; pass rule="e2e" in
+the job to get it back). Measured on 165 case models / 2148 priced lines, it
+reproduced the analyst's own number on 42% of lines and 58% of lines with no
+prior-year history:
 
     Add. Discount = MIN( Requested Discount , Add. Discount @Target E2E , 20% )
 
 then every line that has a country prior-year reference is pulled up to the RPI
-floor for the half-year (H1 3.5% / H2 6%) if it sits below it. Target E2E is a
-FLOOR, not a value to match — comfortable lines are left alone — and the result
-is never rounded (rounding was measured and it makes the match worse).
+floor, solved algebraically (see _rpi_target). Target E2E is a FLOOR, not a value
+to match — comfortable lines are left alone. Neither rule rounds the result
+(rounding was measured and it makes the match worse).
 
 The RPI solve is algebraic, not iterative, because Mix Variance does not move
 with price. Mirrors the model's own formulas exactly (see _rpi_target):
@@ -48,7 +63,8 @@ job.json:
      "cases_root": "<folder the case folder is created in>",   (build only)
      "customer": "74895", "country": "UAE", "customer_name": "...",
      "project": "MOPA Project", "transaction": "W262168503E", "crm": "...",
-     "ledger": "R2321", "half": "H1"|"H2"|"auto", "aprc": "525"|"530-535"|"auto"}
+     "ledger": "R2321", "half": "H1"|"H2"|"auto", "aprc": "525"|"530-535"|"auto",
+     "rule": "requested" (default) | "e2e"}
 
 `preview` needs no Excel — it prices the lines and returns them as JSON.
 `build` needs Excel (pywin32 COM) because only Excel can write a .xlsb.
@@ -74,6 +90,18 @@ EPS = 1e-9
 
 # Ledger geometry (V2 master). Data rows 13..500 feed Feedback 12..634.
 LEDGER_SHEET = "Model Ledger "
+# The Approved Offer as the analyst hands it over: the price build-up hidden
+# (F List Price → J Add. Discount), leaving SAP/description/group/qty and the
+# net price, and column C wide enough to read the customer name off.
+FB_HIDE_FROM, FB_HIDE_TO = "F", "J"
+FB_FIT_COL, FB_FIT_MAX = "C", 60.0
+# Reading a previous revision back out of its Approved Offer. The header row is
+# found rather than assumed — see prior_prices — so only how far to look for it.
+FB_HEAD_SCAN = 20
+# Trimming the offer's empty tail: lines start on row 12, the SAP number is in
+# column B, and the table itself ends at M — everything right of that is the
+# terms-and-conditions block, which outlives the line items and must survive.
+OFFER_FIRST_ROW, OFFER_COL_SAP, OFFER_TABLE_COLS = 12, 2, 13
 FIRST_ROW = 13
 MAX_LINES = 500 - FIRST_ROW            # 487 lines before the ledger runs out of formulas
 
@@ -405,10 +433,127 @@ def _rpi_pct(s, w, y, qty, py_ctry_qty, py_cust_qty):
     return (ae / (total - ae)) if abs(total - ae) > EPS else None
 
 
+def _rpi_gate(w, y, qty, py_ctry_qty, rate):
+    """The 'requested' rule's RPI gate: the prior-year average this line is
+    measured against, lifted by the half-year rate. The analyst's own manual
+    check — customer average x 1.06 — not the algebraic mix-variance solve, which
+    over-corrects because it also pays for the mix offset."""
+    if py_ctry_qty and qty and (qty / py_ctry_qty) > FIVEX:
+        return None, "5x qty - the model forces RPI to 0"
+    if w:
+        return w * (1 + rate), "customer avg x (1 + rate)"
+    if y:
+        return y * (1 + rate), "country avg x (1 + rate)"
+    return None, None
+
+
+def _variance(lines, price_key):
+    """(AG, AE) — price variance and price+mix variance — over `lines` at the
+    unit price in `price_key`. The ledger's own AB/AD chain, so the same code
+    serves the proposed price and the customer's target price."""
+    ag = ae = 0.0
+    for l in lines:
+        price = l.get(price_key)
+        if not l["qty"] or price is None:
+            continue
+        if l["ctry_qty"] and (l["qty"] / l["ctry_qty"]) > FIVEX:
+            continue                                   # 5x: the model zeroes both
+        if l["cust_avg"]:
+            pv_ = (price - l["cust_avg"]) * l["qty"]
+            ag += pv_
+            qfc = ((l["cust_qty"] / l["ctry_qty"]) * l["qty"]
+                   if (l["cust_qty"] and l["ctry_qty"]) else 0.0)
+            ae += pv_ + ((l["qty"] - qfc) * (l["cust_avg"] - l["ctry_avg"])
+                         if l["ctry_avg"] else 0.0)
+        elif l["ctry_avg"]:
+            ae += (price - l["ctry_avg"]) * l["qty"]
+    return ag, ae
+
+
+def _by_group(lines):
+    """The mail's table: one row per pricing group, in the order the groups first
+    appear on the transaction. Add. Discount is derived from the totals, not
+    averaged across lines — an average would not reproduce the net price."""
+    rows, seen = [], {}
+    for l in lines:
+        g = str(l["group"] or "").strip() or "(no group)"
+        if g not in seen:
+            seen[g] = {"group": g, "_lines": []}
+            rows.append(seen[g])
+        seen[g]["_lines"].append(l)
+    for r in rows:
+        ls = r.pop("_lines")
+        net = sum(l["total_net"] or 0 for l in ls)
+        std = sum(l["total_std"] or 0 for l in ls)
+        cost = sum(l["total_cost"] or 0 for l in ls)
+        _, ae = _variance(ls, "unit_net")
+        tgts = [l["target_e2e"] for l in ls if l["target_e2e"] is not None]
+        r.update({
+            "lines": len(ls),
+            "add_disc": round(1 - net / std, 4) if std else None,
+            "net": round(net, 2),
+            "e2e": round(1 - cost / net, 4) if net else None,
+            "target_e2e": round(max(tgts), 4) if tgts else None,
+            "rpi_pct": round(ae / (net - ae), 4) if abs(net - ae) > EPS else None,
+            "rpi_value": round(ae, 2),
+        })
+    return rows
+
+
+def headline(summary, meta, diff):
+    """One sentence saying what this transaction IS, for someone who will not
+    read the table: what changed, what it costs, and whether anyone has to
+    decide anything. It goes in the log, on the screen and into the register's
+    Notes, so the same words follow the case everywhere."""
+    ccy = summary.get("currency") or "USD"
+    rev = str(meta.get("revision") or "").strip().upper()
+    money_ = f"{summary['grand_total']:,.2f} {ccy}"
+    e2e = f"{summary['overall_e2e']:.1%}" if summary.get("overall_e2e") is not None else "n/a"
+    rpi = f"{summary['total_rpi']:.1%}" if summary.get("total_rpi") is not None else "n/a"
+
+    if diff:
+        bits = []
+        if diff["qty_changed"]:
+            bits.append(f"{len(diff['qty_changed'])} quantity change"
+                        f"{'s' if len(diff['qty_changed']) != 1 else ''}")
+        if diff["added"]:
+            bits.append(f"{len(diff['added'])} NEW item"
+                        f"{'s' if len(diff['added']) != 1 else ''}")
+        if diff["removed"]:
+            bits.append(f"{len(diff['removed'])} removed")
+        what = ", ".join(bits) if bits else "no changes to the lines"
+        if diff["qty_changed"] and not diff["added"]:
+            what += " — quantities only, every price held from " + diff["prior"]
+        elif diff["added"]:
+            what += f" — the new item(s) are priced by the rule, the rest held from {diff['prior']}"
+        head = f"{rev or 'Revision'} of {diff['prior']}: {what}."
+    else:
+        head = (f"{'First version' if not rev else rev}: "
+                f"{summary['lines']} line{'s' if summary['lines'] != 1 else ''} priced.")
+
+    head += f" {money_}, E2E {e2e}, total RPI {rpi}."
+    if summary.get("below_target"):
+        head += (f" Margin {e2e} against a "
+                 f"{summary['target_e2e']:.0%} target — needs approval.")
+    elif diff and not diff["added"]:
+        head += " Nothing to approve: no price on this revision is new."
+    elif summary.get("action"):
+        head += f" {summary['action']} line(s) need a decision."
+    else:
+        head += " No line needs a decision."
+    return head
+
+
 def price_lines(lines, ref, meta):
     """Apply the rule to every line. Returns (priced, summary)."""
     half = meta["half"]
     rate = RPI_RATE[half]
+    rule = str(meta.get("rule") or "requested").strip().lower()
+    if rule not in ("requested", "e2e"):
+        rule = "requested"
+    # Prices carried forward from the previous revision, keyed on material.
+    carry = meta.get("_carry") or {}
+    carry_label = meta.get("_carry_label") or "the previous revision"
     fx = float(meta.get("fx") or 1.12522)
     usd = meta.get("aprc") != "525"
     customer = canon(meta.get("customer"))
@@ -462,8 +607,14 @@ def price_lines(lines, ref, meta):
 
         flags = []
 
-        # ── THE DECISION: MIN(requested, @target E2E, 20%) ───────────────────
-        candidates = [c for c in (req_disc, disc_at_tgt, ADD_DISC_CAP) if c is not None]
+        # ── THE DECISION ─────────────────────────────────────────────────────
+        # 'requested': the customer's own discount, AS REQUESTED — neither the
+        # target E2E nor the 20% cap holds the price up; the RPI gate below is the
+        # only thing that lifts it. 'e2e': the old MIN(requested, @target, 20%).
+        if rule == "requested" and req_disc is not None:
+            candidates = [req_disc]
+        else:
+            candidates = [c for c in (req_disc, disc_at_tgt, ADD_DISC_CAP) if c is not None]
         add_disc = min(candidates) if candidates else 0.0
         if add_disc < 0:
             # Target E2E is a FLOOR: when cost outruns the standard price the
@@ -482,6 +633,20 @@ def price_lines(lines, ref, meta):
         # typically EL spares on a FIRE quote; the analyst prices them elsewhere.)
         unit_net = unit_std * (1 - add_disc) if unit_std else None
 
+        # ── a revision: hold what was already quoted ─────────────────────────
+        # The customer changed a quantity, not a price. Repricing the line would
+        # move a number they have already seen, so the previous revision's unit
+        # net wins outright — no target, no gate. Only lines that are NEW on this
+        # revision fall through to the rule above.
+        carried = carry.get(mat)
+        if carried is not None and unit_std:
+            add_disc = 1 - carried / unit_std
+            unit_net = carried
+            binds = f"held from {carry_label}"
+        elif carry and unit_std:
+            flags.append(("verify", f"new on this revision - priced by the rule, "
+                                    f"not carried from {carry_label}"))
+
         # ── the RPI floor ────────────────────────────────────────────────────
         # Keys are CONCATENATE(customer|ledger, material). With a blank prefix the
         # key degenerates to the bare material and could collide with a real row,
@@ -493,7 +658,12 @@ def price_lines(lines, ref, meta):
             ctry_avg = ctry_avg / fx if ctry_avg else ctry_avg
 
         rpi_before = _rpi_pct(unit_net, cust_avg, ctry_avg, qty, ctry_qty, cust_qty) if unit_net else None
-        rpi_floor, rpi_mode = _rpi_target(cust_avg, ctry_avg, qty, ctry_qty, cust_qty, rate)
+        if carried is not None:
+            rpi_floor, rpi_mode = None, f"held from {carry_label}"
+        elif rule == "requested":
+            rpi_floor, rpi_mode = _rpi_gate(cust_avg, ctry_avg, qty, ctry_qty, rate)
+        else:
+            rpi_floor, rpi_mode = _rpi_target(cust_avg, ctry_avg, qty, ctry_qty, cust_qty, rate)
         raised = False
         if rpi_floor is not None and unit_net is not None and rpi_floor > unit_net + 1e-6:
             unit_net = rpi_floor
@@ -524,9 +694,25 @@ def price_lines(lines, ref, meta):
             flags.append(("verify", "no prior-year reference - new item, negotiation room "
                                     "(the analyst usually caps these near 20%)"))
         if e2e is not None and tgt_e2e and e2e < tgt_e2e - 1e-6:
-            flags.append(("action", f"below target E2E ({e2e:.0%} < {tgt_e2e:.0%})"))
+            if carried is not None:
+                # Held from the previous revision, so this margin was signed off
+                # once already — flagging it again sends the analyst back to an
+                # approver who has nothing new to decide.
+                flags.append(("info", f"margin {e2e:.0%} against a {tgt_e2e:.0%} target - "
+                                      f"held from {carry_label}, already approved"))
+            else:
+                # Under the 'requested' rule this is the expected outcome, not a
+                # pricing error — but it is the margin somebody has to sign off.
+                flags.append(("action",
+                              f"margin {e2e:.0%} against a {tgt_e2e:.0%} target - needs approval"
+                              if rule == "requested" else
+                              f"below target E2E ({e2e:.0%} < {tgt_e2e:.0%})"))
         if req_disc is not None and req_disc > ADD_DISC_CAP + EPS:
-            flags.append(("info", f"requested {req_disc:.1%} flattened to the {ADD_DISC_CAP:.0%} cap"))
+            flags.append(("info",
+                          f"requested {req_disc:.1%} is over the {ADD_DISC_CAP:.0%} guideline "
+                          f"- applied as requested"
+                          if rule == "requested" else
+                          f"requested {req_disc:.1%} flattened to the {ADD_DISC_CAP:.0%} cap"))
 
         sev = ("action" if any(f[0] == "action" for f in flags) else
                "verify" if any(f[0] == "verify" for f in flags) else
@@ -543,6 +729,7 @@ def price_lines(lines, ref, meta):
             "rpi_floor": rpi_floor, "rpi_before": rpi_before, "rpi_after": rpi_after,
             "add_disc": add_disc, "unit_net": unit_net, "total_net": total_net,
             "e2e": e2e, "binds": binds, "raised": raised, "severity": sev,
+            "carried": carried is not None,
             "flags": "; ".join(t for _, t in flags),
         })
 
@@ -554,29 +741,52 @@ def price_lines(lines, ref, meta):
     #     reads 0 when no line has a customer prior-year average;
     #   "Total RPI" = AE-based, price + mix variance — the number the procedure's
     #     6% gate is quoted against.
-    ag = ae = 0.0
-    for l in out:
-        if not l["qty"] or l["unit_net"] is None:
-            continue
-        if l["ctry_qty"] and (l["qty"] / l["ctry_qty"]) > FIVEX:
-            continue                                   # 5x: the model zeroes both
-        if l["cust_avg"]:
-            pv_ = (l["unit_net"] - l["cust_avg"]) * l["qty"]
-            ag += pv_
-            qfc = ((l["cust_qty"] / l["ctry_qty"]) * l["qty"]
-                   if (l["cust_qty"] and l["ctry_qty"]) else 0.0)
-            ae += pv_ + ((l["qty"] - qfc) * (l["cust_avg"] - l["ctry_avg"])
-                         if l["ctry_avg"] else 0.0)
-        elif l["ctry_avg"]:
-            ae += (l["unit_net"] - l["ctry_avg"]) * l["qty"]
+    ag, ae = _variance(out, "unit_net")
+
+    # The approval mail quotes TWO stages, and they are different numbers:
+    #   "Target Price"  = what the customer asked for (the requested prices), and
+    #                     the E2E / RPI that price would land — the RPI is usually
+    #                     NEGATIVE, which is the whole reason for the ask;
+    #   "Proposed Price"= after the RPI gate lifted the lines. Everything in the
+    #                     mail's table is this stage, broken out per pricing group.
+    tgt_total = sum((l["requested"] if l["requested"] is not None else l["unit_net"] or 0)
+                    * (l["qty"] or 0) for l in out)
+    tgt_ag, tgt_ae = _variance(out, "requested")
+    at_target = {
+        "target_price": round(tgt_total, 2),
+        "e2e": round(1 - cost_tot / tgt_total, 4) if tgt_total else None,
+        "rpi_pct": round(tgt_ae / (tgt_total - tgt_ae), 4) if abs(tgt_total - tgt_ae) > EPS else None,
+        "rpi_value": round(tgt_ae, 2),
+        "pv_value": round(tgt_ag, 2),
+    }
+
+    # Only a line priced ON THIS revision can need an approval. A carried line's
+    # margin was approved when it was set, whatever the quantity does to it now.
+    below = [l for l in out if l["e2e"] is not None and l["target_e2e"]
+             and l["e2e"] < l["target_e2e"] - 1e-6 and not l["carried"]]
     summary = {
         "lines": len(out),
+        "rule": rule,
+        "half": half,
+        "rpi_rate": rate,          # the mail quotes it: "increased prices by 6% on LY price"
+        # How far the quote sits under target, for the approval ask.
+        "below_target": len(below),
+        "target_e2e": (round(max(l["target_e2e"] for l in below), 4) if below else None),
         "grand_total": round(grand, 2),
         "total_standard": round(std_tot, 2),
         "overall_add_disc": round(1 - grand / std_tot, 4) if std_tot else None,
         "overall_e2e": round(1 - cost_tot / grand, 4) if grand else None,
         "overall_rpi": round(ag / (grand - ag), 4) if abs(grand - ag) > EPS else None,
         "total_rpi": round(ae / (grand - ae), 4) if abs(grand - ae) > EPS else None,
+        # The two variance VALUES behind those percentages. The daily register
+        # asks for "RPI Value" in money, not just the ratio, so carry both out
+        # rather than making the caller re-derive them from the lines.
+        "pv_value": round(ag, 2),
+        "rpi_value": round(ae, 2),
+        # Everything the approval mail needs, in its own shape.
+        "at_target": at_target,
+        "groups": _by_group(out),
+        "carried": sum(1 for l in out if str(l["binds"]).startswith("held from")),
         "raised": sum(1 for l in out if l["raised"]),
         "action": sum(1 for l in out if l["severity"] == "action"),
         "verify": sum(1 for l in out if l["severity"] == "verify"),
@@ -594,15 +804,22 @@ def _excel():
         raise RuntimeError(
             "pywin32 is not installed, so the Working File cannot be written. "
             "Run:  pip install pywin32")
+    # DispatchEx, never Dispatch: Dispatch attaches to the Excel the analyst
+    # already has open, and then hiding it or closing books fights the human at
+    # the keyboard — a visible instance refuses Visible=False outright
+    # ("Property 'Excel.Application.Visible' can not be set."). A private
+    # instance leaves their session alone.
     try:
-        app = w.Dispatch("Excel.Application")
+        app = w.DispatchEx("Excel.Application")
     except Exception as e:
         raise RuntimeError(f"Excel could not be started ({e}). The Working File is the "
                            f"master model itself, so Excel is required to produce it.")
-    app.Visible = False
-    app.DisplayAlerts = False
-    app.ScreenUpdating = False
-    app.AskToUpdateLinks = False
+    for prop, val in (("Visible", False), ("DisplayAlerts", False),
+                      ("ScreenUpdating", False), ("AskToUpdateLinks", False)):
+        try:
+            setattr(app, prop, val)
+        except Exception:
+            pass                      # cosmetic only; the build still runs
     return app
 
 
@@ -619,13 +836,20 @@ def _com_value(v):
 
 def build_case(bom_path, priced, summary, meta, log):
     """Copy the master, fill it with this transaction, write the case folder."""
-    root = meta["cases_root"]
-    folder_name = safe_name(f"{meta['transaction']} - {meta['project']}"
-                            if meta.get("transaction") and meta.get("project")
-                            else (meta.get("transaction") or meta.get("project") or "case"))
-    case_dir = os.path.join(root, folder_name)
+    case_dir = case_folder(meta)
     os.makedirs(case_dir, exist_ok=True)
     log(f"Case folder: {case_dir}")
+
+    # A revision keeps the transaction's folder and prefixes its files R1, R2,
+    # R3 … — the analyst's own convention, and it keeps every version of a deal
+    # in one place instead of scattering near-identical folders.
+    rev = str(meta.get("revision") or "").strip().upper()
+    if rev and not re.fullmatch(r"R\d+", rev):
+        rev = "R" + re.sub(r"\D", "", rev)
+    pre = f"{rev} " if rev else ""
+    if rev:
+        log(f"Revision {rev} — files are written beside the previous version, not "
+            f"into a new folder.")
 
     # 1 ── the transaction, exactly as dropped. The uploader stages it behind a
     # timestamp so two drops of the same export cannot collide; the case folder
@@ -637,27 +861,55 @@ def build_case(bom_path, priced, summary, meta, log):
     log(f"Saved the transaction: {os.path.basename(bom_copy)}")
 
     tag = meta.get("transaction") or safe_name(meta.get("project") or "case", 40)
-    work_path = os.path.join(case_dir, f"Working File ({safe_name(tag, 60)}).xlsb")
-    fb_path = os.path.join(case_dir, f"Approved Offer - Approved ({safe_name(tag, 60)}).xlsx")
+    work_path = os.path.join(case_dir, f"{pre}Working File ({safe_name(tag, 60)}).xlsb")
+    fb_path = os.path.join(case_dir, f"{pre}Approved Offer - Approved ({safe_name(tag, 60)}).xlsx")
+    # Named the way the approver already receives it, so the attachment on the
+    # mail looks like every other one he has been sent.
+    led_path = os.path.join(
+        case_dir, f"{pre}Working file - {safe_name(meta.get('project') or tag, 60)}.xlsm")
 
     # 2 ── the Working File: the master model, filled and toggled
-    shutil.copy2(meta["master"], work_path)
+    try:
+        shutil.copy2(meta["master"], work_path)
+    except PermissionError:
+        # Almost always the analyst has the previous build open while rebuilding.
+        raise RuntimeError(
+            f"{os.path.basename(work_path)} is open in Excel — close it and build again.")
     log("Copied the master model → Working File")
 
+    _check_cancel(meta, "before opening Excel")
     app = _excel()
     wb = None
     try:
         wb = app.Workbooks.Open(os.path.abspath(work_path), UpdateLinks=0)
         _fill_working(wb, priced, meta, log)
+        _check_cancel(meta, "after filling the ledger")
 
         ledger = wb.Worksheets(LEDGER_SHEET)
         app.CalculateFullRebuild()
+        # The summary table is a PivotTable and does not follow a recalculation:
+        # without this it shows whatever the template was left holding, minus any
+        # pricing group the template had filtered out.
+        _refresh_pivots(wb, ledger, log)
         t11 = num(ledger.Range("T11").Value) or 0.0
+        v11 = num(ledger.Range("V11").Value)
         k6 = num(ledger.Range("K6").Value)
         k7 = num(ledger.Range("K7").Value)
         log(f"Ledger recalculated — total net {t11:,.2f}, "
             f"overall RPI {('%.2f%%' % (k6 * 100)) if k6 is not None else 'n/a'}, "
             f"overall E2E {('%.2f%%' % (k7 * 100)) if k7 is not None else 'n/a'}")
+
+        # 1 - V11/T11 off the ledger's own totals. Once the decided discount is
+        # written, T11 is the PROPOSED price, so this is the mail's "E2E% @
+        # Proposed Price" column. The mail's "E2E @ Target Price" is a different
+        # number — the customer's requested price, before the RPI gate lifted
+        # anything — and comes from summary['at_target'].
+        e2e_at_proposed = (1 - v11 / t11) if (v11 is not None and t11) else None
+        if e2e_at_proposed is not None:
+            log(f"E2E @ Proposed Price {e2e_at_proposed:.2%} — proposed {t11:,.2f}, "
+                f"total cost {v11:,.2f} (ledger T11 / V11)")
+        else:
+            log("Ledger T11/V11 carry no total — E2E not available from the ledger.", "warn")
 
         # 3 ── the three-way total check (procedure, PART 3)
         fb = wb.Worksheets("Feedback")
@@ -665,6 +917,14 @@ def build_case(bom_path, priced, summary, meta, log):
         checks = {"ledger_T11": round(t11, 2),
                   "feedback_L10": round(fb_total, 2),
                   "python": summary["grand_total"]}
+        # What the approval mail quotes, both stages, straight off the ledger for
+        # the proposed side so the mail matches the file Kiran opens.
+        approval = {"proposed_price": round(t11, 2),
+                    "total_cost": round(v11, 2) if v11 is not None else None,
+                    "e2e_at_proposed": round(e2e_at_proposed, 4) if e2e_at_proposed is not None else None,
+                    "at_target": summary.get("at_target"),
+                    "target_e2e": summary.get("target_e2e"),
+                    "currency": summary.get("currency")}
         spread = max(checks.values()) - min(checks.values())
         checks["agree"] = spread < 0.05
         if checks["agree"]:
@@ -673,11 +933,15 @@ def build_case(bom_path, priced, summary, meta, log):
             log(f"Three-way total check FAILED — ledger {t11:,.2f}, feedback "
                 f"{fb_total:,.2f}, engine {summary['grand_total']:,.2f}.", "warn")
 
+        _check_cancel(meta, "before saving the Working File")
         wb.Save()
         log(f"Saved {os.path.basename(work_path)}")
 
         # 4 ── the Feedback file: the Feedback sheet, values only
         _export_feedback(app, wb, fb_path, log)
+
+        # 5 ── the ledger on its own, for the approval mail
+        _export_ledger(app, wb, led_path, log)
     finally:
         try:
             if wb is not None:
@@ -690,7 +954,8 @@ def build_case(bom_path, priced, summary, meta, log):
             pass
 
     return {"case_dir": case_dir, "bom": bom_copy, "working": work_path,
-            "feedback": fb_path, "checks": checks}
+            "feedback": fb_path, "ledger": led_path, "checks": checks,
+            "approval": approval}
 
 
 def _fill_working(wb, priced, meta, log):
@@ -764,6 +1029,347 @@ def _fill_working(wb, priced, meta, log):
         log(f"Highlighted {flagged} line(s) that need a human decision")
 
 
+class Cancelled(Exception):
+    """The user pressed Cancel."""
+
+
+def _check_cancel(meta, where=""):
+    """Cooperative cancellation.
+
+    The caller drops a flag file when the user hits Cancel. Killing the process
+    instead would leave the Excel instance this run started alive and invisible —
+    with the master model open — so the run stops at a checkpoint and unwinds
+    through its own `finally`, closing Excel behind it."""
+    flag = meta.get("cancel_file") if isinstance(meta, dict) else None
+    if flag and os.path.exists(flag):
+        raise Cancelled(f"Cancelled{(' at ' + where) if where else ''}.")
+
+
+def case_folder(meta):
+    """Where this transaction's case lives. A revision does NOT get its own
+    folder — the analyst keeps one folder per transaction and prefixes the files
+    R1, R2, R3 …, so a revision lands beside the version it supersedes."""
+    name = safe_name(f"{meta['transaction']} - {meta['project']}"
+                     if meta.get("transaction") and meta.get("project")
+                     else (meta.get("transaction") or meta.get("project") or "case"))
+    return os.path.join(meta["cases_root"], name)
+
+
+def revision_diff(lines, prior, label, log):
+    """What actually changed between the previous revision and this one.
+
+    This is the first question on a revision and nobody should have to answer it
+    by opening two workbooks side by side: which lines only moved quantity (the
+    price is carried, so nothing to decide), which are NEW (priced by the rule,
+    and the only lines that can move the margin), and which the customer dropped.
+    """
+    cur = {}
+    for ln in lines:
+        mat = str(ln["material"] or "").strip()
+        if not mat:
+            continue
+        e = cur.setdefault(mat, {"qty": 0.0, "description": ln["description"]})
+        e["qty"] += ln["qty"] or 0.0
+
+    same, changed, added = [], [], []
+    for mat, e in cur.items():
+        was = prior.get(mat)
+        if not was:
+            added.append({"material": mat, "description": e["description"], "qty": e["qty"]})
+        elif abs((was.get("qty") or 0) - e["qty"]) > 1e-9:
+            changed.append({"material": mat, "description": e["description"],
+                            "old_qty": was.get("qty"), "new_qty": e["qty"],
+                            "delta": e["qty"] - (was.get("qty") or 0),
+                            "unit_net": was.get("net")})
+        else:
+            same.append(mat)
+    removed = [{"material": m, "qty": (v.get("qty") or 0), "unit_net": v.get("net")}
+               for m, v in prior.items() if m not in cur]
+
+    diff = {"prior": label, "prior_lines": len(prior), "lines": len(cur),
+            "unchanged": len(same), "qty_changed": changed,
+            "added": added, "removed": removed}
+
+    log(f"{label} → this revision: {len(same)} line(s) unchanged, "
+        f"{len(changed)} quantity change(s), {len(added)} new item(s), "
+        f"{len(removed)} removed.",
+        "warn" if (added or removed) else "info")
+    for c in changed:
+        log(f"  qty  {c['material']}: {c['old_qty']:,.0f} → {c['new_qty']:,.0f} "
+            f"({c['delta']:+,.0f}) — price held at {c['unit_net']:,.4f}"
+            if c.get("unit_net") else
+            f"  qty  {c['material']}: {c['old_qty']:,.0f} → {c['new_qty']:,.0f}")
+    for a in added:
+        log(f"  NEW  {a['material']} x{a['qty']:,.0f} — {a['description'] or ''} "
+            f"(priced by the rule; this is what can move the margin)", "warn")
+    for r in removed:
+        log(f"  GONE {r['material']} (was x{r['qty']:,.0f})", "warn")
+    return diff
+
+
+def prior_prices(case_dir, log, before=None):
+    """{material: {net, qty}} from the newest revision already in the folder.
+
+    `before` is this run's own revision number: R5 must carry from R4, never from
+    an earlier attempt at R5 sitting in the same folder — otherwise a rebuild
+    quietly reads its own output and the diff against R4 disappears.
+
+    A revision usually only changes quantities, and a quantity change must not
+    move the price the customer was already quoted — so the previous revision's
+    Approved Offer is the reference, and it is read from the file rather than
+    recomputed. Returns (label, prices); ('', {}) when there is nothing to carry.
+    """
+    if not os.path.isdir(case_dir):
+        return "", {}
+    offers = []
+    for f in os.listdir(case_dir):
+        # 'approved', not 'approved offer': the analyst's own file is named
+        # 'R4 Approved <project>.xlsx', Vector's is 'R4 Approved Offer - …'.
+        if not f.lower().endswith((".xlsx", ".xlsm")) or "approved" not in f.lower():
+            continue
+        if f.startswith("~$"):
+            continue
+        m = re.match(r"^R(\d+)\b", f)
+        n = int(m.group(1)) if m else 0
+        if before is not None and n >= before:
+            continue                      # this revision, or a later one: not a source
+        offers.append((n, f))
+    if not offers:
+        return "", {}
+    rev, fname = max(offers)
+    label = f"R{rev}" if rev else "the first version"
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(os.path.join(case_dir, fname), data_only=True)
+        ws = wb[wb.sheetnames[0]]
+        # Columns are found by HEADER, never by position. Vector hides the price
+        # build-up and leaves Unit Net Price in K; the analyst DELETES those
+        # columns, which slides the same field to F. Both files still label it.
+        head_row = col_sap = col_net = col_qty = None
+        for row in range(1, min(FB_HEAD_SCAN, ws.max_row) + 1):
+            for c in range(1, min(30, ws.max_column) + 1):
+                v = str(ws.cell(row, c).value or "").strip().lower()
+                if v.startswith("sap no"):
+                    head_row, col_sap = row, c
+                elif v.startswith("unit net price"):
+                    col_net = c
+                elif v.startswith("qty"):
+                    col_qty = c
+            if head_row and col_net:
+                break
+        if not (head_row and col_sap and col_net):
+            log(f"{fname} does not look like an Approved Offer (no 'SAP No' / "
+                f"'Unit Net Price' header) — nothing carried.", "warn")
+            return "", {}
+        prices = {}
+        for row in range(head_row + 1, ws.max_row + 1):
+            mat = ws.cell(row, col_sap).value
+            net = num(ws.cell(row, col_net).value)
+            if mat and str(mat).strip() not in ("0", "") and net:
+                prices[str(mat).strip()] = {
+                    "net": net,
+                    "qty": num(ws.cell(row, col_qty).value) if col_qty else None,
+                }
+        from openpyxl.utils import get_column_letter
+        log(f"Carrying {len(prices)} price(s) from {label} ({fname}), read from "
+            f"column {get_column_letter(col_net)}")
+        return label, prices
+    except Exception as e:
+        log(f"Could not read the previous revision ({fname}): {e}", "warn")
+        return "", {}
+
+
+def _strip_macro_shapes(ws, log):
+    """Drop the master's macro buttons from an exported sheet, keep the logo.
+
+    The V2 master carries two shapes on both the ledger and the Feedback sheet:
+    'Picture 1' (the Eaton logo, no macro) and 'Graphic 2' (an icon wired to
+    'CPQ Pricing Model LSD - V2.xlsb'!WorkingFile / !OfferLetter). Copy the sheet
+    out and the icon comes along as a dead image pointing at a macro in a
+    workbook the recipient does not have. So the test is the macro, not the name:
+    anything with an OnAction goes, anything without it stays."""
+    dropped = []
+    for i in range(ws.Shapes.Count, 0, -1):            # backwards: deleting reindexes
+        shp = ws.Shapes(i)
+        try:
+            action = str(shp.OnAction or "").strip()
+        except Exception:
+            action = ""
+        if not action:
+            continue
+        try:
+            name = shp.Name
+            shp.Delete()
+            dropped.append(name)
+        except Exception as e:
+            log(f"Could not remove the shape {shp.Name!r}: {e}", "warn")
+    if dropped:
+        log(f"Removed the macro shape(s): {', '.join(dropped)}")
+
+
+def _values_only(ws, log):
+    """Every formula on the sheet replaced by what it currently shows.
+
+    PasteSpecial alone left the first data row still carrying ='[1]Model Ledger '
+    external links — the file then asks the recipient to update links to a
+    workbook they do not have, and reads #REF when it moves. Assigning a range
+    to itself is total and does not depend on the clipboard."""
+    used = ws.UsedRange
+    used.Value = used.Value
+    log(f"Formulas flattened to values across {used.Address} "
+        f"(no links back to the model)")
+
+
+# Pivot items that are template debris, not pricing groups. Everything else is
+# forced visible — see _refresh_pivots.
+PIVOT_JUNK = {"", "x", "#n/a", "#ref!", "(blank)"}
+
+
+def _refresh_pivots(wb, ws, log, relink=False):
+    """Make the sheet's summary table tell the truth.
+
+    Two faults, both from the master template:
+
+    1. The master's pivot carries a SAVED ITEM FILTER — 'Voice System UL' is set
+       invisible. A deal containing that group is then summarised without it, and
+       the summary's Overall silently disagrees with the ledger's own total (on
+       W262089818E R5, by 9,511.21 USD). So every item that is a real pricing
+       group is forced visible and only the debris stays hidden.
+    2. `relink` — copying a sheet out repoints its pivot cache at the workbook it
+       came from, so Refresh on the copy fails with 'the source range cannot be
+       accessed'. The cache is rebuilt against the copy's own data.
+    """
+    try:
+        count = ws.PivotTables().Count
+    except Exception:
+        return
+    for i in range(1, count + 1):
+        pt = ws.PivotTables(i)
+        try:
+            if relink:
+                src = str(pt.PivotCache().SourceData)
+                m = re.search(r"!\s*(R\d+C\d+:R\d+C\d+)\s*$", src)
+                if not m:
+                    log(f"Pivot {pt.Name!r} has an unexpected source ({src[:60]}) — "
+                        f"left as is.", "warn")
+                else:
+                    pt.ChangePivotCache(wb.PivotCaches().Create(
+                        SourceType=1, SourceData=f"'{ws.Name}'!{m.group(1)}"))
+                    log(f"Pivot {pt.Name!r} repointed at this workbook's own {m.group(1)}")
+            pt.RefreshTable()
+
+            shown = []
+            for f in pt.PivotFields():
+                if f.Orientation == 0:               # not on the report
+                    continue
+                for it in f.PivotItems():
+                    want = str(it.Name).strip().lower() not in PIVOT_JUNK
+                    try:
+                        if bool(it.Visible) != want:
+                            it.Visible = want
+                            if want:
+                                shown.append(str(it.Name))
+                    except Exception:
+                        pass                          # last visible item cannot be hidden
+            if shown:
+                log(f"Pivot {pt.Name!r}: un-hid {', '.join(shown)} — the template had "
+                    f"them filtered out of the summary", "warn")
+        except Exception as e:
+            log(f"Could not refresh the pivot {pt.Name!r}: {e}", "warn")
+
+
+def _drop_links(wb, log):
+    """Remove the workbook's stored link to the model.
+
+    Flattening the formulas is not enough on its own: the link DEFINITION
+    survives in the file, so Excel still greets the recipient with 'this workbook
+    contains links to other data sources — update?'. BreakLink deletes it."""
+    try:
+        sources = wb.LinkSources(1)          # xlExcelLinks
+    except Exception:
+        sources = None
+    for src in list(sources or []):
+        try:
+            wb.BreakLink(Name=src, Type=1)   # xlLinkTypeExcelLinks
+            log(f"Broke the link to {os.path.basename(str(src))}")
+        except Exception as e:
+            log(f"Could not break the link to {src}: {e}", "warn")
+
+
+def _export_ledger(app, wb, out_path, log):
+    """The ledger ALONE, values only, as .xlsm — the file that goes to the
+    approver. The Working File is the whole master model (~7 MB of reference
+    sheets nobody outside pricing needs); Dalia strips it to the ledger before
+    mailing, so this does the same. Values, not formulas: every XLOOKUP in the
+    ledger points at sheets that are not coming along, and a live formula would
+    arrive as #REF."""
+    led = wb.Worksheets(LEDGER_SHEET)
+    led.Copy()                                   # → a new single-sheet workbook
+    new = app.ActiveWorkbook
+    ws = new.Worksheets(1)
+    _values_only(ws, log)
+    # Shapes BEFORE links: the macro shape is identified by its OnAction, and
+    # that OnAction points into the master — breaking the link first blanks it
+    # and the icon then looks like an innocent picture and survives.
+    _strip_macro_shapes(ws, log)
+    # Pivots BEFORE links too: their cache is an external reference to the
+    # workbook this sheet was copied from, and it has to be rebuilt, not broken.
+    _refresh_pivots(new, ws, log, relink=True)
+    _drop_links(new, log)
+    ws.Range("A1").Select()
+    if os.path.exists(out_path):
+        os.remove(out_path)
+    new.SaveAs(os.path.abspath(out_path), FileFormat=52)  # xlOpenXMLWorkbookMacroEnabled
+    new.Close(SaveChanges=False)
+    size = os.path.getsize(out_path) / 1_048_576
+    log(f"Saved {os.path.basename(out_path)} — the ledger only, values, {size:.1f} MB "
+        f"(this is what the approval mail attaches)")
+
+
+def _trim_offer(ws, log):
+    """Drop the template's empty tail.
+
+    The Feedback sheet carries a line for every ledger row — 620-odd of them —
+    each holding the string '0' in a column formatted 0.00E+00, so an offer for
+    two lines renders a wall of '0.00E+00' underneath it, plus an 'x' sentinel on
+    the last row. They cannot simply be deleted: the terms and conditions sit in
+    the note columns to the right and run further down than the line items do. So
+    the table columns are cleared beside the notes, and only the rows past
+    everything are removed."""
+    scan_to = ws.UsedRange.Row + ws.UsedRange.Rows.Count - 1
+    last_line = OFFER_FIRST_ROW - 1
+    for r in range(OFFER_FIRST_ROW, scan_to + 1):
+        v = str(ws.Cells(r, OFFER_COL_SAP).Value or "").strip()
+        if v and v not in ("0", "x"):
+            last_line = r
+
+    # How far the notes to the right of the table reach. Scanned by absolute row
+    # and column — UsedRange.Rows.Count is a COUNT, and the sheet's used range
+    # does not have to start at A1, so counting is not the same as the last row.
+    used = ws.UsedRange
+    first_row = used.Row
+    first_col = used.Column
+    end_row = first_row + used.Rows.Count - 1
+    end_col = first_col + used.Columns.Count - 1
+    last_note = 0
+    for c in range(OFFER_TABLE_COLS + 1, end_col + 1):
+        for r in range(end_row, 0, -1):
+            if str(ws.Cells(r, c).Value or "").strip():
+                last_note = max(last_note, r)
+                break
+
+    end = end_row
+    keep = max(last_line, last_note)
+    if last_line < last_note:
+        ws.Range(ws.Cells(last_line + 1, 1),
+                 ws.Cells(last_note, OFFER_TABLE_COLS)).ClearContents()
+    if end > keep:
+        ws.Range(f"{keep + 1}:{end}").EntireRow.Delete()
+    log(f"Trimmed the empty tail — {end - keep} row(s) deleted, "
+        f"{max(0, last_note - last_line)} cleared beside the terms "
+        f"(last line row {last_line}, terms reach row {last_note})")
+
+
 def _export_feedback(app, wb, out_path, log):
     """Copy the Feedback sheet to its own workbook and paste values over it —
     the procedure's manual output step (both model macros are broken in V2)."""
@@ -771,10 +1377,29 @@ def _export_feedback(app, wb, out_path, log):
     fb.Copy()                                    # → a new single-sheet workbook
     new = app.ActiveWorkbook
     ws = new.Worksheets(1)
-    used = ws.UsedRange
-    used.Copy()
-    ws.Range(used.Address).PasteSpecial(Paste=-4163)   # xlPasteValues
-    app.CutCopyMode = False
+
+    # The offer that leaves the building: numbers, not formulas, and none of the
+    # model's machinery. Unit Net Price (K) is a value like every other cell.
+    _values_only(ws, log)
+    _strip_macro_shapes(ws, log)      # before _drop_links — see _export_ledger
+    _refresh_pivots(new, ws, log, relink=True)   # no-op on Feedback, which has none
+    _drop_links(new, log)
+    _trim_offer(ws, log)
+
+    # The customer never sees how the price was built: list, standard discount,
+    # unit standard and total standard, and the add. discount that got there.
+    ws.Range(f"{FB_HIDE_FROM}:{FB_HIDE_TO}").EntireColumn.Hidden = True
+    log(f"Hid columns {FB_HIDE_FROM}:{FB_HIDE_TO} (the build-up)")
+
+    # Column C carries both the customer name and the line descriptions, and the
+    # template's width truncates the name. Autofit reads the widest cell, so it
+    # is capped — a 90-character description must not push the offer off a page.
+    col_c = ws.Columns(FB_FIT_COL)
+    col_c.AutoFit()
+    if col_c.ColumnWidth > FB_FIT_MAX:
+        col_c.ColumnWidth = FB_FIT_MAX
+    log(f"Autofitted column {FB_FIT_COL} to {col_c.ColumnWidth:.1f}")
+
     ws.Range("A1").Select()
     if os.path.exists(out_path):
         os.remove(out_path)
@@ -813,7 +1438,9 @@ def main():
         except Exception:
             pass
 
-    with open(args.job, "r", encoding="utf-8") as fh:
+    # utf-8-sig: a job file written by anything Windows (PowerShell included)
+    # carries a BOM, and json.load refuses it outright.
+    with open(args.job, "r", encoding="utf-8-sig") as fh:
         job = json.load(fh)
 
     log_lines = []
@@ -833,6 +1460,7 @@ def main():
         if not bom or not os.path.exists(bom):
             raise RuntimeError("The transaction file was not found.")
 
+        _check_cancel(job, "before reading the transaction")
         lines, header, rows = read_bom(bom)
         if len(lines) > MAX_LINES:
             raise RuntimeError(f"{len(lines)} lines — the model's ledger only carries "
@@ -846,6 +1474,27 @@ def main():
         meta = resolve_meta(job, lines, bom, ref)
         log(f"Half-year {meta['half']} (RPI floor {RPI_RATE[meta['half']]:.1%}) · "
             f"APRC {meta['aprc']} · ledger {meta['ledger']}")
+        log("Rule: requested discount as asked, then the prior-year average "
+            f"x {1 + RPI_RATE[meta['half']]:.2f} where the line prices under the gate — "
+            "the target E2E does not hold the price up."
+            if str(meta.get("rule") or "requested").lower() != "e2e" else
+            "Rule: MIN(requested, @target E2E, 20%) with the algebraic RPI solve (old).")
+
+        # A revision of a transaction already priced: carry the prices forward so
+        # a quantity change moves no number the customer has already seen.
+        rev = str(meta.get("revision") or "").strip().upper()
+        diff = None
+        if rev and meta.get("cases_root"):
+            mine = int(re.sub(r"\D", "", rev) or 0) or None
+            lbl, prior = prior_prices(case_folder(meta), log, before=mine)
+            meta["_carry"] = {m: v["net"] for m, v in prior.items()}
+            meta["_carry_label"] = lbl
+            if prior:
+                # What changed comes FIRST — it is the question a revision asks.
+                diff = revision_diff(lines, prior, lbl, log)
+            else:
+                log(f"{rev}: no previous Approved Offer in the case folder — every "
+                    f"line is priced from scratch.", "warn")
 
         # This master's MV Ledger 2025 carries R2321 (UAE) only, so a customer
         # outside the UAE gets the UAE ledger as its "country" prior-year base.
@@ -855,6 +1504,7 @@ def main():
             log(f"Country is {meta['country']} but the only ledger in this master is R2321 "
                 f"(UAE) — prior-year country averages come from the UAE ledger.", "warn")
 
+        _check_cancel(meta, "before pricing")
         priced, summary = price_lines(lines, ref, meta)
         log(f"Priced {summary['lines']} line(s) — total {summary['grand_total']:,.2f} "
             f"{summary['currency']}")
@@ -862,16 +1512,30 @@ def main():
             log(f"Overall E2E {summary['overall_e2e']:.1%} · overall RPI "
                 f"{summary['overall_rpi']:.1%}" if summary["overall_rpi"] is not None
                 else f"Overall E2E {summary['overall_e2e']:.1%}")
+        if summary.get("total_rpi") is not None:
+            log(f"Total RPI {summary['total_rpi']:.1%}")
+        if summary.get("carried"):
+            log(f"{summary['carried']} line(s) held at the price from "
+                f"{meta.get('_carry_label')}, {summary['lines'] - summary['carried']} "
+                f"priced fresh")
         if summary["raised"]:
             log(f"{summary['raised']} line(s) pulled up to the {meta['half']} RPI floor")
+        if summary.get("below_target"):
+            log(f"{summary['below_target']} line(s) price under their target E2E "
+                f"(overall {summary['overall_e2e']:.0%} against "
+                f"{summary['target_e2e']:.0%}) — this margin needs approval.", "warn")
         if summary["action"] or summary["verify"]:
             log(f"{summary['action']} line(s) need a decision, {summary['verify']} need a "
                 f"reference check", "warn")
         else:
             log("No line needs a human decision.", "ok")
 
+        # The one-liner that follows this case everywhere.
+        summary["headline"] = headline(summary, meta, diff)
+        log(summary["headline"], "ok")
+
         result = {"ok": True, "mode": job.get("mode", "preview"), "lines": priced,
-                  "summary": summary,
+                  "summary": summary, "diff": diff,
                   "meta": {k: v for k, v in meta.items() if not k.startswith("_")}}
 
         if job.get("mode") == "build":
@@ -882,6 +1546,11 @@ def main():
             built = build_case(bom, priced, summary, meta, log)
             result.update(built)
             log("Done.", "ok")
+    except Cancelled as e:
+        # Not a failure: the case folder may hold a half-written Working File, so
+        # say so plainly rather than reporting an error the analyst has to read.
+        log(str(e), "warn")
+        result = {"ok": False, "cancelled": True, "error": str(e), "lines": []}
     except Exception as e:
         log(str(e), "error")
         result = {"ok": False, "error": str(e), **({"lines": []} if True else {})}

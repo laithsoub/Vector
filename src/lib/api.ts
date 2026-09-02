@@ -15,6 +15,35 @@ import type {
 // server.ts and outlook_reader.py.
 export type MatchMode = 'part' | 'word' | 'start';
 
+// Which text the terms are matched against. 'all' is the whole message, 'meta'
+// everything but the body; the rest narrow to one field, for a term that is a
+// common word everywhere except where it matters. Mirrors SEARCH_SCOPES.
+export type SearchScope = 'all' | 'meta' | 'subject' | 'from' | 'recipients' | 'atts' | 'body';
+
+// Narrowing that runs alongside the terms rather than inside them: who it is
+// from, when it landed, where it sits, what it carried. All optional — with none
+// set the search is exactly the one it always ran.
+export interface SearchFilters {
+  from?:   string;                            // sender name or address, substring
+  since?:  string;                            // YYYY-MM-DD, inclusive
+  until?:  string;                            // YYYY-MM-DD, inclusive
+  folder?: string;                            // folder path, substring
+  att?:    'any' | 'yes' | 'no' | 'pdf';
+  read?:   'any' | 'read' | 'unread';
+  sort?:   'new' | 'old';
+}
+
+// One address the index has actually seen, with how much of the mail is theirs.
+export interface SearchFacets {
+  built: boolean;
+  total?: number;
+  senders: { name: string; email: string; count: number }[];
+  folders: { folder: string; count: number }[];
+  oldest?: string | null;
+  newest?: string | null;
+  error?: string;
+}
+
 // Where one term was found: the field it landed in, plus the text around it.
 export interface SearchMatch { field: string; text: string; }
 
@@ -46,20 +75,107 @@ export interface LsdSummary {
   lines: number; grand_total: number; total_standard: number;
   overall_add_disc: number | null; overall_e2e: number | null;
   overall_rpi: number | null; total_rpi: number | null;
+  // The money behind those two ratios — what the daily register calls RPI Value.
+  pv_value: number | null; rpi_value: number | null;
+  // Lines held at the previous revision's price.
+  carried?: number;
   raised: number; action: number; verify: number; no_py: number;
   currency: 'USD' | 'EUR';
+  // One sentence saying what this transaction is — what changed, what it costs,
+  // and whether anyone has to decide anything.
+  headline?: string;
+  rule?: 'requested' | 'e2e'; half?: 'H1' | 'H2'; rpi_rate?: number;
+  // Lines priced under their target E2E — the reason an approval is asked for.
+  below_target?: number; target_e2e?: number | null;
+  // The two stages the approval mail quotes. `at_target` is the CUSTOMER's
+  // requested price and what it would land; the table is the proposed price.
+  at_target?: { target_price: number; e2e: number | null; rpi_pct: number | null;
+                rpi_value: number; pv_value: number };
+  groups?: Array<{ group: string; lines: number; add_disc: number | null;
+                   net: number; e2e: number | null; target_e2e: number | null;
+                   rpi_pct: number | null; rpi_value: number }>;
+}
+
+// One line of the LSD daily register, in the analyst's own column order. Every
+// field is optional because the workbook is authoritative: a register swapped
+// for a sheet that lacks a column simply never fills it.
+export interface LsdRegisterRow {
+  country?: string; bu?: string;
+  transaction?: string; transaction_name?: string;
+  customer?: string | number; customer_name?: string;
+  status?: string; sales_name?: string; cpq_updated?: string;
+  total_value?: number | null; out_date?: string; notes?: string;
+  rpi_comment?: string; rpi_comment_2?: string;
+  pv_pct?: number | null; rpi_pct?: number | null; rpi_value?: number | null;
+  _row?: number;
+}
+
+export interface LsdRegister {
+  ok: boolean; error?: string;
+  register: string; name: string; exists?: boolean;
+  rows?: LsdRegisterRow[]; total?: number; sheet?: string;
+  headers?: Array<{ key: string; header: string; present: boolean }>;
+  // Where the transactions get posted — the quotes' own list, not a folder.
+  sp: { site: string; list: string; requestType: string };
+  connected: boolean;
+}
+
+// What one push did, per transaction. `skipped` carries the reason — a BU with
+// no DIVISION mapping, an INSIDE SALES name that could not be resolved.
+export interface LsdPushResult {
+  ok: boolean; error?: string;
+  site?: string; list?: string;
+  added?: number; updated?: number; skipped?: number; failed?: number;
+  results?: Array<{ transaction: string; id?: number; reason?: string;
+                    action: 'added' | 'updated' | 'skipped' | 'failed' | 'dry-run' }>;
+  log?: Array<{ kind: 'info' | 'ok' | 'warn' | 'error'; msg: string }>;
+}
+
+// What the analyst's OneDrive already holds for this transaction, looked up the
+// moment it is fetched — the first question on any deal is whether it has been
+// priced before.
+export interface LsdRevisions {
+  ok: boolean; error?: string;
+  latest?: number;            // 4 when R4 is the newest on file, 0 when only a first version
+  next?: string;              // 'R5'
+  files?: Array<{ name: string; path: string; type: string; modified: string; size: number }>;
+  pulled?: { name: string; path: string; revision: number } | null;
+}
+
+// R4 → R5, line by line. Quantity moves carry their price; only a NEW item can
+// move the margin, and a dropped one is worth seeing before it is missed.
+export interface LsdDiff {
+  prior: string; prior_lines: number; lines: number; unchanged: number;
+  qty_changed: Array<{ material: string; description?: string; old_qty: number;
+                       new_qty: number; delta: number; unit_net?: number }>;
+  added: Array<{ material: string; description?: string; qty: number }>;
+  removed: Array<{ material: string; qty: number; unit_net?: number }>;
 }
 
 export interface LsdResult {
   ok: boolean;
   error?: string;
+  // The run was stopped from the tab, not a failure.
+  cancelled?: boolean;
   mode?: 'preview' | 'build';
   lines?: LsdLine[];
   summary?: LsdSummary;
+  diff?: LsdDiff | null;
   meta?: Record<string, string>;
   log?: Array<{ kind: 'info' | 'ok' | 'warn' | 'error'; msg: string }>;
   case_dir?: string; bom?: string; working?: string; feedback?: string;
+  // The ledger alone, values only — what the approval mail attaches.
+  ledger?: string;
   checks?: { ledger_T11: number; feedback_L10: number; python: number; agree: boolean };
+  approval?: { proposed_price: number; total_cost: number | null;
+               e2e_at_proposed: number | null; target_e2e: number | null;
+               currency: string;
+               at_target?: { target_price: number; e2e: number | null;
+                             rpi_pct: number | null; rpi_value: number;
+                             pv_value: number } };
+  // What the build wrote into the daily register, if anything.
+  register?: { ok: boolean; error?: string; action?: 'appended' | 'updated';
+               path: string; skipped: string[] };
 }
 
 export interface LsdCase {
@@ -75,6 +191,15 @@ export interface LsdMeta {
   half: 'auto' | 'H1' | 'H2';
   aprc: 'auto' | '525' | '530-535';
   ledger: string;
+  // R1, R2, R3 … — a revision of a transaction already priced. Files are written
+  // into the same case folder with that prefix, and every line the previous
+  // revision already carried keeps its price.
+  revision?: string;
+  // Register fields. They ride along with the build, which registers the case
+  // as soon as it is written; `register: false` builds without registering.
+  bu?: string; status?: string; sales_name?: string; cpq_updated?: string;
+  notes?: string; rpi_comment?: string;
+  register?: boolean;
 }
 
 export const api = {
@@ -122,17 +247,43 @@ export const api = {
     return r.json() as Promise<{ ok: boolean; file?: string; name?: string; error?: string }>;
   },
   // Pricing is pure Python and quick; the build drives Excel, so it gets minutes.
-  lsdPreview: (meta: LsdMeta) =>
-    axios.post<LsdResult>('/api/lsd/preview', meta, { timeout: 180_000 }).then(r => r.data),
-  lsdBuild:   (meta: LsdMeta) =>
-    axios.post<LsdResult>('/api/lsd/build', meta, { timeout: 600_000 }).then(r => r.data),
+  // `job_id` is the handle Cancel uses; the AbortSignal only drops the client's
+  // interest in the answer, it cannot stop Excel — /api/lsd/cancel does that.
+  lsdPreview: (meta: LsdMeta & { job_id?: string }, signal?: AbortSignal) =>
+    axios.post<LsdResult>('/api/lsd/preview', meta, { timeout: 180_000, signal }).then(r => r.data),
+  lsdBuild:   (meta: LsdMeta & { job_id?: string; rebuild?: boolean }, signal?: AbortSignal) =>
+    axios.post<LsdResult>('/api/lsd/build', meta, { timeout: 600_000, signal }).then(r => r.data),
+  lsdCancel:  (jobId: string) =>
+    axios.post<{ ok: boolean; error?: string }>('/api/lsd/cancel', { job_id: jobId },
+      { timeout: 15_000 }).then(r => r.data),
   // Pull a transaction from Oracle CPQ (drives the logged-in debug-rail tab).
   lsdCpqFetch: (transaction: string) =>
-    axios.post<LsdResult & { header?: Record<string, string>; file?: string; lines?: number }>(
-      '/api/lsd/cpq-fetch', { transaction }, { timeout: 120_000 }).then(r => r.data),
+    axios.post<LsdResult & { header?: Record<string, string>; file?: string; lines?: number;
+                             revisions?: LsdRevisions }>(
+      // CPQ (up to a reload and retry) plus the OneDrive revision check. The
+      // server caps both well below this, so this only ever fires if the box
+      // itself has stopped answering.
+      '/api/lsd/cpq-fetch', { transaction }, { timeout: 300_000 }).then(r => r.data),
+  // The approval ask. Always a DRAFT — it opens in Outlook and a human sends it.
+  lsdApprovalMail: (body: { summary: unknown; meta: unknown; attach?: string[];
+                            to?: string; cc?: string; subject?: string; intro?: string }) =>
+    axios.post<{ ok: boolean; error?: string; draft?: boolean; to?: string; cc?: string;
+                 subject?: string; attached?: string[];
+                 log?: Array<{ kind: 'info' | 'ok' | 'warn' | 'error'; msg: string }> }>(
+      '/api/lsd/approval-mail', body, { timeout: 180_000 }).then(r => r.data),
   lsdCases:   () => axios.get<{ root: string; cases: LsdCase[]; error?: string }>('/api/lsd/cases').then(r => r.data),
   lsdReveal:  (p: string) => axios.post<{ ok: boolean; error?: string }>('/api/lsd/reveal', { path: p }).then(r => r.data),
   lsdFileUrl: (p: string) => `/api/lsd/file?path=${encodeURIComponent(p)}`,
+  // The daily register: read it, correct a row by hand, push it to SharePoint.
+  lsdRegister:       () => axios.get<LsdRegister>('/api/lsd/register').then(r => r.data),
+  lsdRegisterSave:   (row: LsdRegisterRow) =>
+    axios.post<{ ok: boolean; error?: string; action?: string; rows?: LsdRegisterRow[] }>(
+      '/api/lsd/register', { row }, { timeout: 60_000 }).then(r => r.data),
+  // Post register rows to the Quotations List. No transactions = post them all.
+  lsdRegisterPush:   (transactions: string[] = []) =>
+    axios.post<LsdPushResult>('/api/lsd/register/push', { transactions },
+      { timeout: 300_000 }).then(r => r.data),
+  lsdRegisterFileUrl: () => '/api/lsd/register/file',
 
   // Doc Packs (user-uploaded, persisted)
   docsUser:       () => axios.get<UserDoc[]>('/api/docs/user').then(r => r.data),
@@ -191,13 +342,28 @@ export const api = {
   // a live Outlook sweep while the index is still cold.
   // `mode` decides what counts as a hit for each term: 'part' (substring, the
   // default), 'word' (the term on its own) or 'start' (the term starting a word).
+  // `scope` decides which text the terms are matched against, and `filters`
+  // narrow the hits by sender, date, folder, attachments and read state — a
+  // filter is a question on its own, so a filtered search runs with an empty box.
   // Every hit comes back with `matches` — the field it landed in and the text
   // around it, so a body/recipient/attachment hit can be shown, not just claimed.
-  outlookSearch:      (q: string, opts: { limit?: number; fields?: 'all' | 'meta'; since?: string; source?: 'auto' | 'index' | 'live'; mode?: MatchMode } = {}, signal?: AbortSignal) =>
-                        axios.get<{ emails: any[]; total?: number; source?: string; indexTotal?: number; lastSync?: string | null; folders?: number; truncated?: boolean; degraded?: number; mode?: MatchMode; error?: string }>(
+  outlookSearch:      (q: string, opts: { limit?: number; fields?: 'all' | 'meta'; scope?: SearchScope; source?: 'auto' | 'index' | 'live'; mode?: MatchMode; filters?: SearchFilters } = {}, signal?: AbortSignal) =>
+                        axios.get<{ emails: any[]; total?: number; source?: string; indexTotal?: number; lastSync?: string | null; folders?: number; truncated?: boolean; degraded?: number; mode?: MatchMode; scope?: SearchScope; sort?: 'new' | 'old'; filters?: Record<string, string>; error?: string }>(
                           '/api/outlook/search',
-                          { params: { q, limit: opts.limit ?? 200, fields: opts.fields || 'all', since: opts.since || '', source: opts.source || 'auto', mode: opts.mode || 'part' },
+                          { params: { q, limit: opts.limit ?? 200, fields: opts.fields || 'all',
+                                      scope: opts.scope || '', source: opts.source || 'auto', mode: opts.mode || 'part',
+                                      from:   opts.filters?.from   || '',
+                                      since:  opts.filters?.since  || '',
+                                      until:  opts.filters?.until  || '',
+                                      folder: opts.filters?.folder || '',
+                                      att:    opts.filters?.att    || 'any',
+                                      read:   opts.filters?.read   || 'any',
+                                      sort:   opts.filters?.sort   || 'new' },
                             timeout: 300_000, signal }).then(r => r.data),
+  // The values the filters offer — senders the mailbox has actually seen, the
+  // folders covered, and how far back the index reaches.
+  outlookSearchFacets: (signal?: AbortSignal) =>
+                        axios.get<SearchFacets>('/api/outlook/search/facets', { timeout: 20_000, signal }).then(r => r.data),
   outlookIndexStatus: (signal?: AbortSignal) =>
                         axios.get<{ built: boolean; total: number; lastSync?: string | null; syncing?: boolean; folders: { folder: string; items: number; lastSync: string }[]; error?: string }>(
                           '/api/outlook/index/status', { timeout: 20_000, signal }).then(r => r.data),
@@ -211,6 +377,13 @@ export const api = {
   outlookGetSummary:     (entryId: string, signal?: AbortSignal) => axios.get<{ summary: string | null; includedIndices?: number[]; ts?: string }>(`/api/outlook/summary/${encodeURIComponent(entryId)}`, { timeout: 15_000, signal }).then(r => r.data),
   outlookSaveAttachment: (entryId: string) => axios.post<{ saved: any[]; count: number; error?: string }>('/api/outlook/save-attachment', { entryId }, { timeout: 30_000 }).then(r => r.data),
   outlookDraftReply:     (payload: any, signal?: AbortSignal) => axios.post<{ draft: string | null; error?: string }>('/api/outlook/draft-reply', payload, { timeout: 150_000, signal }).then(r => r.data),
+  // Rewrites text the USER wrote — the Reply box never fills itself in.
+  outlookPolishReply:    (payload: { text: string; mode?: 'polish' | 'shorten' | 'formalize' | 'rewrite'; subject?: string; sender?: string; senderEmail?: string; body?: string; analysis?: string }, signal?: AbortSignal) =>
+                           axios.post<{ text: string | null; error?: string }>('/api/outlook/polish-reply', payload, { timeout: 150_000, signal }).then(r => r.data),
+  // Picks the real recipient (often NOT the sender) out of supplied candidates
+  // and writes the covering note that goes with the attached quote.
+  outlookSuggestSend:    (payload: { subject?: string; sender?: string; senderEmail?: string; body?: string; analysis?: string; candidates: Array<{ name?: string; email: string; why?: string }>; attachmentNames?: string[] }, signal?: AbortSignal) =>
+                           axios.post<{ to?: string; cc?: string[]; subject?: string; body?: string; why?: string; error?: string }>('/api/outlook/suggest-send', payload, { timeout: 120_000, signal }).then(r => r.data),
   outlookSendReply:      (entryId: string, body: string) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/send-reply', { entryId, body }, { timeout: 30_000 }).then(r => r.data),
   outlookFeedback:       (payload: any) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/feedback', payload, { timeout: 10_000 }).then(r => r.data),
   feedback:              (payload: { message: string; category?: string; page?: string; userName?: string | null; userEmail?: string | null }) =>
@@ -237,7 +410,9 @@ export const api = {
   outlookCategorize:     (entryId: string, category: string) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/categorize', { entryId, category }, { timeout: 15_000 }).then(r => r.data),
   outlookSuggestAtts:    (q: string) => axios.get<{ results: any[]; error?: string }>('/api/outlook/suggest-attachments', { params: { q }, timeout: 30_000 }).then(r => r.data),
   outlookReplyWithAtts:  (entryId: string, body: string, attSources: any[]) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/reply-with-attachments', { entryId, body, attSources }, { timeout: 30_000 }).then(r => r.data),
-  outlookSendNew:        (to: string, subject: string, body: string, attSources: any[]) => axios.post<{ ok?: boolean; error?: string }>('/api/outlook/send-new', { to, subject, body, attSources }, { timeout: 30_000 }).then(r => r.data),
+  // draft:true stops in the Outlook Drafts folder and pops the composer.
+  outlookSendNew:        (to: string, subject: string, body: string, attSources: any[], opts: { cc?: string; draft?: boolean } = {}) =>
+                           axios.post<{ ok?: boolean; draft?: boolean; error?: string }>('/api/outlook/send-new', { to, subject, body, attSources, cc: opts.cc, draft: opts.draft }, { timeout: 60_000 }).then(r => r.data),
 
   // D&Q Store full-text search (file name + PDF/email content via SharePoint index)
   dqSearch: (q: string, mine = true) =>

@@ -46,6 +46,16 @@ export interface Config {
   lsd_cases_root?:   string;   // blank = Desktop\LSD Pricing Doc when it exists
   lsd_ledger?:       string;   // MV Ledger code for the country prior-year lookup
   lsd_cpq_port?:     string;   // Edge remote-debugging port for Fetch-from-CPQ (blank = 9222)
+  // The daily register: one row per priced transaction, shaped like the
+  // analyst's "LSD Daily work" sheet, uploaded to SharePoint like the quotes.
+  lsd_register?:     string;   // blank = <case root>\LSD Daily Work - Vector.xlsx
+  lsd_request_type?: string;   // REQUEST TYPE choice used on posted list items (blank = Standard CTO)
+  lsd_sales_name?:   string;   // default "Sales Name" column (blank = inside_sales)
+  lsd_bu?:           string;   // default BU column (blank = guessed from the APRC)
+  // Who a sub-target margin is mailed to. Display names are GAL-resolved, and
+  // the mail is always drafted — never sent by Vector.
+  lsd_approver?:     string;
+  lsd_approver_cc?:  string;
 }
 
 // ─── Quick check-up: quote mail vs the Quotations List ───────────────────────
