@@ -8,7 +8,7 @@ import {
   Play, ArrowLeft, Zap, Eye, X, Image as ImageIcon, ChevronLeft,
   Pin, PinOff, Search, FolderOpen, MoreHorizontal, Star, ExternalLink,
   Forward, MessageSquare, PenLine, Plus, GripVertical, Battery, Lock, Check, FileSpreadsheet, FileDown,
-  Flag, Archive, Globe,
+  Flag, Archive, Globe, SlidersHorizontal,
 } from 'lucide-react';
 import { runTask, isCancel } from '../lib/tasks';
 import { QuickQuotePanel } from './QuickQuote';
@@ -69,7 +69,7 @@ let _selectedId = '';
 let _detail: EmailDetail | null = null;
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
-import type { MatchMode, SearchMatch } from '../lib/api';
+import type { MatchMode, SearchMatch, SearchScope, SearchFilters, SearchFacets } from '../lib/api';
 import { useSalesmen } from '../lib/salesmen';
 import { failed, plural } from '../lib/errors';
 import { fmtGBP } from '../lib/ui';
@@ -117,7 +117,14 @@ interface EmailDetail extends EmailSummary {
   cc:       string;
   body:     string;
   htmlBody?: string;
+  // Real SMTP addresses of everyone on the thread (to/cc). `to`/`cc` above are
+  // display names only, which cannot be put in a To field.
+  recipients?: Array<{ name: string; email: string; type: 'to' | 'cc' }>;
 }
+
+// How the assistant reshapes text: 'polish' turns the user's raw note into an
+// email; the other three act on whatever it produced last.
+type PolishMode = 'polish' | 'shorten' | 'formalize' | 'rewrite';
 
 interface AttachSuggestion {
   sourceEntryId:   string;
@@ -354,6 +361,288 @@ function termPattern(term: string, mode: MatchMode): string {
   return esc;
 }
 
+// ─── Search filters ──────────────────────────────────────────────────────────
+// Narrowing that runs ALONGSIDE the terms instead of inside them. A query is one
+// question ("QW28237"); who it came from, when it landed and whether it carried
+// a PDF are separate axes, and folding them into the term list only ever
+// produced accidental body hits. Mirrors index_where() in outlook_reader.py, so
+// the loaded-list filter and the server search narrow by the same rules.
+type DatePreset = 'any' | '7d' | '30d' | '90d' | '12m' | 'custom';
+
+interface FilterState {
+  scope:      SearchScope;
+  from:       string;
+  datePreset: DatePreset;
+  since:      string;          // YYYY-MM-DD, only read when datePreset is 'custom'
+  until:      string;
+  folder:     string;
+  att:        'any' | 'yes' | 'no' | 'pdf';
+  read:       'any' | 'read' | 'unread';
+  sort:       'new' | 'old';
+}
+
+// Deliberately NOT persisted, unlike the match mode: a date filter left over
+// from last week would silently answer a different question than the one typed.
+const EMPTY_FILTERS: FilterState = {
+  scope: 'all', from: '', datePreset: 'any', since: '', until: '',
+  folder: '', att: 'any', read: 'any', sort: 'new',
+};
+
+// Which text the terms are matched against.
+const SCOPE_OPTIONS: { id: SearchScope; label: string; hint: string }[] = [
+  { id: 'all',        label: 'Everything',  hint: 'Subject, sender, recipients, attachment names and the body.' },
+  { id: 'meta',       label: 'Not body',    hint: 'Everything except the body — the fastest way past a term that appears in every signature.' },
+  { id: 'subject',    label: 'Subject',     hint: 'The subject line only.' },
+  { id: 'from',       label: 'From',        hint: 'Sender name and address only.' },
+  { id: 'recipients', label: 'To/CC',       hint: 'The To and CC lines only.' },
+  { id: 'atts',       label: 'Files',       hint: 'Attachment filenames only.' },
+  { id: 'body',       label: 'Body',        hint: 'The message body only.' },
+];
+
+// Folder is a substring of the path the index stores ("UKQuoteFactoryEL\Inbox").
+const FOLDER_OPTIONS: { id: string; label: string }[] = [
+  { id: '',                   label: 'Both' },
+  { id: 'inbox',              label: 'Inbox' },
+  { id: 'completed by laith', label: 'Completed' },
+];
+
+const ATT_OPTIONS: { id: FilterState['att']; label: string }[] = [
+  { id: 'any', label: 'Any' }, { id: 'yes', label: 'Has files' },
+  { id: 'pdf', label: 'PDF' }, { id: 'no',  label: 'None' },
+];
+
+const READ_OPTIONS: { id: FilterState['read']; label: string }[] = [
+  { id: 'any', label: 'Any' }, { id: 'unread', label: 'Unread' }, { id: 'read', label: 'Read' },
+];
+
+const DATE_PRESETS: { id: DatePreset; label: string; days: number | null }[] = [
+  { id: 'any',    label: 'Any time',  days: null },
+  { id: '7d',     label: '7 days',    days: 7 },
+  { id: '30d',    label: '30 days',   days: 30 },
+  { id: '90d',    label: '3 months',  days: 90 },
+  { id: '12m',    label: '12 months', days: 365 },
+  { id: 'custom', label: 'Custom',    days: null },
+];
+
+const isoDay = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// The preset resolved to real dates. A preset is stored as the preset, not as a
+// pair of dates, so "30 days" still means 30 days from today tomorrow.
+function dateBounds(f: FilterState): { since: string; until: string } {
+  if (f.datePreset === 'custom') return { since: f.since, until: f.until };
+  const days = DATE_PRESETS.find(p => p.id === f.datePreset)?.days;
+  if (!days) return { since: '', until: '' };
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return { since: isoDay(d), until: '' };
+}
+
+function toApiFilters(f: FilterState): SearchFilters {
+  const { since, until } = dateBounds(f);
+  return { from: f.from.trim(), since, until, folder: f.folder, att: f.att, read: f.read, sort: f.sort };
+}
+
+// Sort is an ordering, not a narrowing, so it never counts as an active filter —
+// the badge has to mean "these hits are not everything".
+function activeFilterPills(f: FilterState): { key: string; label: string; patch: Partial<FilterState> }[] {
+  const out: { key: string; label: string; patch: Partial<FilterState> }[] = [];
+  if (f.scope !== 'all')
+    out.push({ key: 'scope', label: `in ${SCOPE_OPTIONS.find(o => o.id === f.scope)?.label}`, patch: { scope: 'all' } });
+  if (f.from.trim())
+    out.push({ key: 'from', label: `from ${f.from.trim()}`, patch: { from: '' } });
+  if (f.datePreset !== 'any') {
+    const { since, until } = dateBounds(f);
+    const label = f.datePreset === 'custom'
+      ? (since && until ? `${since} → ${until}` : since ? `since ${since}` : `until ${until}`)
+      : `last ${DATE_PRESETS.find(p => p.id === f.datePreset)?.label}`;
+    if (f.datePreset !== 'custom' || since || until)
+      out.push({ key: 'date', label, patch: { datePreset: 'any', since: '', until: '' } });
+  }
+  if (f.folder)
+    out.push({ key: 'folder', label: FOLDER_OPTIONS.find(o => o.id === f.folder)?.label || f.folder, patch: { folder: '' } });
+  if (f.att !== 'any')
+    out.push({ key: 'att', label: ATT_OPTIONS.find(o => o.id === f.att)?.label || f.att, patch: { att: 'any' } });
+  if (f.read !== 'any')
+    out.push({ key: 'read', label: READ_OPTIONS.find(o => o.id === f.read)?.label || f.read, patch: { read: 'any' } });
+  return out;
+}
+
+// 'YYYY-MM-DD' for a received timestamp, so a date filter can be applied to the
+// loaded list with the same bounds the server uses on the index.
+function dayKey(received: string): string {
+  const d = new Date(received);
+  if (!isNaN(d.getTime())) return isoDay(d);
+  return (received || '').slice(0, 10);
+}
+
+// The same filters, applied to an email already in hand. Folder is skipped:
+// only a search hit knows which folder it came from.
+function passesFilters(e: EmailSummary, f: FilterState): boolean {
+  const from = f.from.trim().toLowerCase();
+  if (from && !`${e.sender || ''} ${e.senderEmail || ''}`.toLowerCase().includes(from)) return false;
+  const { since, until } = dateBounds(f);
+  if (since || until) {
+    const day = dayKey(e.received);
+    if (since && day < since) return false;
+    if (until && day > until) return false;
+  }
+  const nAtts = e.attachments?.length || 0;
+  if (f.att === 'yes' && !nAtts) return false;
+  if (f.att === 'no'  && nAtts)  return false;
+  if (f.att === 'pdf' && !e.hasPdf) return false;
+  if (f.read === 'unread' && !e.unread) return false;
+  if (f.read === 'read'   &&  e.unread) return false;
+  return true;
+}
+
+// The text one scope covers on a loaded email. The body is not held locally
+// beyond the preview, so 'all'/'body' search what there is of it.
+function scopeHaystack(e: EmailSummary, scope: SearchScope): string {
+  const attNames = (e.attachments || []).map(a => a.name).join(' ');
+  switch (scope) {
+    case 'subject':    return e.subject || '';
+    case 'from':       return `${e.sender || ''} ${e.senderEmail || ''}`;
+    case 'recipients': return (e.matches || []).filter(m => m.field === 'To/CC').map(m => m.text).join(' ');
+    case 'atts':       return attNames;
+    case 'body':       return `${e.bodyPreview || ''} ${(e.matches || []).filter(m => m.field === 'Body').map(m => m.text).join(' ')}`;
+    case 'meta':       return [e.subject, e.sender, e.senderEmail, attNames].join(' \u0000 ');
+    default:           return [e.subject, e.sender, e.senderEmail, e.bodyPreview, attNames,
+                               ...(e.matches || []).map(m => m.text)].join(' \u0000 ');
+  }
+}
+
+// ─── Filter panel ────────────────────────────────────────────────────────────
+// One compact row per axis in a 344 px pane: a label, then wrapping chips. Chips
+// rather than <select>s because the whole point is seeing what is set without
+// opening anything.
+function FilterChips<V extends string>({ value, onChange, options, title }: {
+  value: V;
+  onChange: (v: V) => void;
+  options: { id: V; label: string; hint?: string }[];
+  title?: string;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1" title={title}>
+      {options.map(o => (
+        <button key={o.id} onClick={() => onChange(o.id)} title={o.hint}
+          className={cn(
+            'h-[22px] px-2 rounded-[7px] text-[10.5px] font-medium transition-colors',
+            value === o.id
+              ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]'
+              : 'text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+          )}>{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
+function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2">
+      <span className="w-[42px] shrink-0 pt-[4px] text-[9px] font-semibold uppercase tracking-[0.06em] text-[var(--t4)]">{label}</span>
+      <div className="flex-1 min-w-0">{children}</div>
+    </div>
+  );
+}
+
+function SearchFilterPanel({ filters, setFilters, matchMode, setMatchMode, facets, onReset, pillCount }: {
+  filters: FilterState;
+  setFilters: (patch: Partial<FilterState>) => void;
+  matchMode: MatchMode;
+  setMatchMode: (m: MatchMode) => void;
+  facets: SearchFacets | null;
+  onReset: () => void;
+  pillCount: number;
+}) {
+  return (
+    <div className="shrink-0 border-b border-[var(--line)] bg-[var(--s2)] px-2.5 py-2.5 flex flex-col gap-2">
+
+      <FilterRow label="Match">
+        {/* Short labels: at this width "part of a word" wraps the row on its
+            own. The full rule stays one hover away. */}
+        <FilterChips value={matchMode} onChange={setMatchMode}
+          options={MATCH_MODE_OPTIONS.map(o => ({ id: o.id, label: o.short, hint: o.hint }))} />
+      </FilterRow>
+
+      <FilterRow label="In">
+        <FilterChips value={filters.scope} onChange={v => setFilters({ scope: v })} options={SCOPE_OPTIONS} />
+      </FilterRow>
+
+      <FilterRow label="From">
+        <div className="flex items-center gap-1.5">
+          <input
+            list="inbox-sender-facets"
+            value={filters.from}
+            onChange={e => setFilters({ from: e.target.value })}
+            placeholder={facets?.senders?.length ? `Any of ${facets.senders.length}+ senders` : 'Any sender'}
+            title="Part of a sender's name or address. The list offers who the index has actually seen."
+            className="flex-1 min-w-0 h-[24px] px-2 rounded-[7px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[11px] text-[var(--t2)] placeholder:text-[var(--t4)] outline-none focus:ring-violet-400/60"
+          />
+          {filters.from && (
+            <button aria-label="Clear the sender filter" onClick={() => setFilters({ from: '' })}
+              className="shrink-0 text-[var(--t3)] hover:text-[var(--t1)]"><X className="w-3 h-3" /></button>
+          )}
+          <datalist id="inbox-sender-facets">
+            {(facets?.senders || []).map(s => (
+              <option key={s.email || s.name} value={s.name}>{`${s.count} email${s.count === 1 ? '' : 's'}`}</option>
+            ))}
+          </datalist>
+        </div>
+      </FilterRow>
+
+      <FilterRow label="When">
+        <div className="flex flex-col gap-1.5">
+          <FilterChips value={filters.datePreset} onChange={v => setFilters({ datePreset: v })} options={DATE_PRESETS} />
+          {filters.datePreset === 'custom' && (
+            <div className="flex items-center gap-1.5">
+              <input type="date" value={filters.since} max={filters.until || undefined}
+                onChange={e => setFilters({ since: e.target.value })}
+                title={facets?.oldest ? `The index reaches back to ${facets.oldest}` : 'Start of the range'}
+                className="flex-1 min-w-0 h-[24px] px-1.5 rounded-[7px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[10.5px] text-[var(--t2)] outline-none focus:ring-violet-400/60" />
+              <span className="text-[10px] text-[var(--t4)]">→</span>
+              <input type="date" value={filters.until} min={filters.since || undefined}
+                onChange={e => setFilters({ until: e.target.value })}
+                title={facets?.newest ? `The newest indexed email is from ${facets.newest}` : 'End of the range'}
+                className="flex-1 min-w-0 h-[24px] px-1.5 rounded-[7px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[10.5px] text-[var(--t2)] outline-none focus:ring-violet-400/60" />
+            </div>
+          )}
+        </div>
+      </FilterRow>
+
+      <FilterRow label="Folder">
+        <FilterChips value={filters.folder} onChange={v => setFilters({ folder: v })}
+          options={FOLDER_OPTIONS.map(o => ({
+            ...o,
+            hint: facets?.folders?.find(fo => fo.folder.toLowerCase().includes(o.id))?.count
+              ? `${facets!.folders.find(fo => fo.folder.toLowerCase().includes(o.id))!.count.toLocaleString()} indexed`
+              : undefined,
+          }))}
+          title="Which of the two searched folders to look in" />
+      </FilterRow>
+
+      <FilterRow label="Files">
+        <FilterChips value={filters.att} onChange={v => setFilters({ att: v })} options={ATT_OPTIONS} />
+      </FilterRow>
+
+      <FilterRow label="State">
+        <FilterChips value={filters.read} onChange={v => setFilters({ read: v })} options={READ_OPTIONS} />
+      </FilterRow>
+
+      <div className="flex items-center gap-2 pt-1.5 border-t border-[var(--line-2)]">
+        <span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-[var(--t4)]">Sort</span>
+        <FilterChips value={filters.sort} onChange={v => setFilters({ sort: v })}
+          options={[{ id: 'new' as const, label: 'Newest' }, { id: 'old' as const, label: 'Oldest' }]} />
+        <div className="flex-1" />
+        <button onClick={onReset} disabled={!pillCount}
+          className="text-[10.5px] font-medium text-[var(--t3)] hover:text-[var(--t1)] disabled:opacity-35 disabled:hover:text-[var(--t3)]">
+          Reset {pillCount ? `(${pillCount})` : ''}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Match highlighting ──────────────────────────────────────────────────────
 // The terms actually searched: "quoted phrases" stay whole, same split the
 // Python side uses, so what is highlighted is what matched.
@@ -517,34 +806,93 @@ function isNearKnownCBU(kva: number) {
   return CBU_KNOWN_KVA.some(k => Math.abs(k - kva) / k <= 0.15);
 }
 
-function extractCBUHints(body: string): { detected: boolean; detectedSystems: Array<{ kva: number; phase: '1PH' | '3PH' }> } {
-  const detected = /\bcbu\b|central battery unit|loadstar(?:-ps)?/i.test(body) ||
-    (/\bups\b/i.test(body) && /\bkva\b/i.test(body));
+// The sizing sheet rates 1 kVA as 950 W, so that — not 1000 — is the divisor
+// that turns a load in watts into the system that carries it.
+const CBU_W_PER_KVA = 950;
+
+// Numbers written next to these words describe losses or draw, never the system
+// size, and used to invent phantom systems ("0.4 kW heat dissipation" → 0.5 kVA).
+const CBU_NOISE_NEAR = /(heat|dissipat|loss|losses|consumption|standby|charg\w*|per\s+luminaire|luminaire|fitting|battery pack|inrush|draw)/i;
+
+// Everything that tells us how many phases a number is about, read from the text
+// AROUND that number rather than from the whole email — a mail can quote a 3PH
+// and a 1PH system in consecutive lines.
+const CBU_3PH_NEAR = /(three[\s-]?phase|3[\s-]?phase|\b3\s?ph\b|\b3ph\b|400\s?v|415\s?v|tp&?n)/i;
+const CBU_1PH_NEAR = /(single[\s-]?phase|1[\s-]?phase|\b1\s?ph\b|\b1ph\b|230\s?v|240\s?v|sp&?n)/i;
+
+export interface CBUHint { kva: number; phase: '1PH' | '3PH'; raw: string; system: string; }
+
+// The phase belongs to whichever cue sits CLOSEST to the number. Taking the
+// first cue that matched the window made "one 3PH 20kVA unit and a single phase
+// 2kVA unit" call both of them three-phase.
+function nearestPhase(hay: string, idx: number): '1PH' | '3PH' | null {
+  const lo  = Math.max(0, idx - 90);
+  const win = hay.slice(lo, idx + 90);
+  const rel = idx - lo;
+  const nearest = (re: RegExp) => {
+    const g = new RegExp(re.source, 'gi');
+    let best = Infinity, m: RegExpExecArray | null;
+    while ((m = g.exec(win)) !== null) best = Math.min(best, Math.abs(m.index - rel));
+    return best;
+  };
+  const d3 = nearest(CBU_3PH_NEAR), d1 = nearest(CBU_1PH_NEAR);
+  if (d3 === Infinity && d1 === Infinity) return null;
+  return d3 <= d1 ? '3PH' : '1PH';
+}
+
+// Pull the CBU system size(s) out of an enquiry. Reads the SUBJECT as well as
+// the body (half of them say "20kVA CBU" in the subject and nowhere else), takes
+// kVA / kW / VA / W, and decides the phase per mention instead of once for the
+// whole email.
+function extractCBUHints(text: string): { detected: boolean; detectedSystems: CBUHint[] } {
+  // 1,600 W / 1.600,5 kVA — strip the thousands separator so the number parses.
+  const hay = (text || '').replace(/(\d)[, \s](\d{3})\b/g, '$1$2');
+
+  const detected = /\bcbu\b|central battery|loadstar(?:[-\s]?ps)?|static inverter|\bcps\b/i.test(hay) ||
+    (/\bups\b/i.test(hay) && /\bk?va\b/i.test(hay));
   if (!detected) return { detected: false, detectedSystems: [] };
 
-  const kvaVals: number[] = [];
-  // explicit kVA mentions
-  const kvaRe = /(\d+(?:\.\d+)?)\s*[kK][vV][aA]/g;
+  const hits: CBUHint[] = [];
+  const unitRe = /(\d+(?:[.,]\d+)?)\s*(kva|kw|va|w(?:atts?)?)\b/gi;
   let m: RegExpExecArray | null;
-  while ((m = kvaRe.exec(body)) !== null) kvaVals.push(parseFloat(m[1]));
-  // watt mentions — only accept if within 15% of a known CBU system capacity
-  // (prevents heat dissipation / current draw values triggering false extra systems)
-  const wRe = /(\d+(?:\.\d+)?)\s*[wW](?:att(?:s)?)?\b/g;
-  while ((m = wRe.exec(body)) !== null) {
-    const kva = Math.round((parseFloat(m[1]) / 1000) * 10) / 10;
-    if (isNearKnownCBU(kva)) kvaVals.push(kva);
+  while ((m = unitRe.exec(hay)) !== null) {
+    const val  = parseFloat(m[1].replace(',', '.'));
+    const unit = m[2].toLowerCase();
+    if (!Number.isFinite(val) || val <= 0) continue;
+
+    const before = hay.slice(Math.max(0, m.index - 45), m.index);
+    if (CBU_NOISE_NEAR.test(before)) continue;
+
+    let kva: number;
+    if (unit === 'kva')                       kva = val;
+    else if (unit === 'kw')                   kva = val / 0.95;      // sheet PF
+    else if (unit === 'va')                   kva = val / 1000;
+    else                                      kva = val / CBU_W_PER_KVA;
+
+    // An explicit kVA figure is the customer telling us the system. Anything
+    // derived from a load only counts when it lands on a system that exists,
+    // which is what keeps currents and heat figures out of the list.
+    if (unit !== 'kva' && !isNearKnownCBU(kva)) continue;
+    if (kva < 0.4 || kva > 70) continue;
+
+    const phase: '1PH' | '3PH' =
+      nearestPhase(hay, m.index)
+      ?? (CBU_3PH_NEAR.test(hay) ? '3PH'
+        : CBU_1PH_NEAR.test(hay) ? '1PH'
+        : kva >= 6 ? '3PH' : '1PH');
+
+    hits.push({ kva, phase, raw: m[0].trim(), system: pickCBUSystem(kva, phase) });
   }
 
-  const phase3 = /three.?phase|3.?ph\b/i.test(body);
-  const phase1 = /single.?phase|1.?ph\b/i.test(body);
-
-  // deduplicate, snap each to nearest CBU system key
+  // One entry per distinct system, explicit kVA mentions winning over derived
+  // ones when both snap to the same box.
   const seen = new Set<string>();
-  const detectedSystems: Array<{ kva: number; phase: '1PH' | '3PH' }> = [];
-  for (const kva of kvaVals) {
-    const phase: '1PH' | '3PH' = phase3 ? '3PH' : phase1 ? '1PH' : kva >= 6 ? '3PH' : '1PH';
-    const key = pickCBUSystem(kva, phase);
-    if (!seen.has(key)) { seen.add(key); detectedSystems.push({ kva, phase }); }
+  const detectedSystems: CBUHint[] = [];
+  for (const h of [...hits.filter(h => /kva/i.test(h.raw)), ...hits.filter(h => !/kva/i.test(h.raw))]) {
+    if (seen.has(h.system)) continue;
+    seen.add(h.system);
+    detectedSystems.push(h);
+    if (detectedSystems.length >= 6) break;
   }
   return { detected, detectedSystems };
 }
@@ -576,14 +924,12 @@ function CBUSystemSelect({ value, onChange }: { value: string; onChange: (v: str
 }
 
 function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: string; emailBody: string; toast: ToastFn }) {
-  const hints = extractCBUHints(emailBody);
+  // Subject first: plenty of enquiries carry the size there and nowhere else.
+  const hints = extractCBUHints(`${emailSubject}\n${emailBody}`);
   const cleanSubject = emailSubject.replace(/^(RE:|FW:|Fwd:)\s*/gi, '').replace(/SR00[A-Z0-9]+\s*/gi, '').trim();
 
-  const [systems,  setSystems]  = useState<string[]>(() => {
-    if (hints.detectedSystems.length > 0)
-      return hints.detectedSystems.map(h => pickCBUSystem(h.kva, h.phase));
-    return [CBU_SYSTEMS[0]];
-  });
+  const [systems,  setSystems]  = useState<string[]>(() =>
+    hints.detectedSystems.length > 0 ? hints.detectedSystems.map(h => h.system) : [CBU_SYSTEMS[0]]);
   const [project, setProject] = useState(cleanSubject);
   const [quote,   setQuote]   = useState('');
   const [smIdx,   setSmIdx]   = useState<number | null>(null);
@@ -636,8 +982,11 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
         <Battery className="w-3.5 h-3.5 text-blue-500 shrink-0" />
         <p className="text-[11.5px] font-semibold text-[var(--t1)] flex-1">CBU Tech Sheet Generator</p>
         {hints.detectedSystems.length > 0 && (
-          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 ring-1 ring-inset ring-blue-200 dark:ring-blue-700">
-            {hints.detectedSystems.map(h => `${h.kva}kVA`).join(' + ')} detected
+          // Show what was READ, not just what was picked — a wrong snap is only
+          // obvious next to the text it came from.
+          <span title={hints.detectedSystems.map(h => `"${h.raw}" → ${h.system}`).join('\n')}
+            className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 ring-1 ring-inset ring-blue-200 dark:ring-blue-700">
+            read {hints.detectedSystems.map(h => h.raw).join(' + ')}
           </span>
         )}
       </div>
@@ -1283,6 +1632,58 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
   );
 }
 
+// ─── Who a quote should actually go to ───────────────────────────────────────
+// The sender is very often NOT the recipient: half the "can you send the quote"
+// mails come from a colleague forwarding a customer's request. So the panel
+// offers every address that appears anywhere on the thread, each labelled with
+// where it came from, and the user picks.
+interface SendCandidate { name?: string; email: string; why: string; }
+
+const NO_REPLY_RE = /^(no[-_.]?reply|do[-_.]?not[-_.]?reply|postmaster|mailer[-_.]?daemon|notifications?)@/i;
+
+function recipientCandidates(d: EmailDetail): SendCandidate[] {
+  const out: SendCandidate[] = [];
+  const seen = new Set<string>();
+  const push = (email: string, name: string, why: string) => {
+    const e = (email || '').trim();
+    if (!e || !e.includes('@') || NO_REPLY_RE.test(e)) return;
+    const key = e.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ email: e, name: name || '', why });
+  };
+
+  push(d.senderEmail, d.sender, 'sent this email');
+  for (const r of d.recipients || []) {
+    push(r.email, r.name, r.type === 'cc' ? 'was in Cc' : 'was in To');
+  }
+  // Addresses written in the body — "please send it to john@customer.com" is the
+  // single most common way the real recipient is named.
+  const bodyAddrs = (d.body || '').match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+  for (const a of bodyAddrs.slice(0, 30)) push(a, '', 'named in the email body');
+  return out.slice(0, 20);
+}
+
+// A covering note that needs no AI call. The AI Suggest button replaces it with
+// something email-specific; this is what the panel opens with.
+function defaultCoverNote(d: EmailDetail, fileNames: string[]): string {
+  const first = (d.sender || '').split(/[ ,]/)[0] || 'all';
+  const what  = fileNames.length ? fileNames.join(', ') : 'the quotation';
+  const ref   = (d.subject || '').replace(/^(RE|FW|FWD)\s*:\s*/gi, '').trim();
+  return [
+    `Hi ${first},`,
+    ``,
+    `Please find attached ${what}${ref ? ` for ${ref}` : ''}.`,
+    ``,
+    `Let me know if you need anything else.`,
+  ].join('\n');
+}
+
+function fwdSubject(subject: string): string {
+  const clean = (subject || '').replace(/^(RE|FW|FWD)\s*:\s*/gi, '').trim();
+  return `FW: ${clean || 'Quotation'}`;
+}
+
 // ─── Email Detail Panel — one instance per open tab ──────────────────────────
 function EmailDetailPanel({
   initialEntryId,
@@ -1312,11 +1713,15 @@ function EmailDetailPanel({
   const [replyText, setReplyText]         = useState(() => {
     try { return localStorage.getItem(`inbox_draft_${initialEntryId}`) || ''; } catch { return ''; }
   });
-  const [editingReply, setEditingReply]   = useState(() => {
-    try { return !!localStorage.getItem(`inbox_draft_${initialEntryId}`); } catch { return false; }
-  });
   const [sendingReply, setSendingReply]             = useState(false);
   const [replySent, setReplySent]                   = useState(false);
+  // Reply composer assist. The reply box itself stays exactly as the user left
+  // it — everything the AI produces lands here first and only reaches the email
+  // body when Insert is pressed.
+  const [assistOpen, setAssistOpen]                 = useState(false);
+  const [assistIdea, setAssistIdea]                 = useState('');
+  const [assistOut,  setAssistOut]                  = useState('');
+  const [assistBusy, setAssistBusy]                 = useState<PolishMode | null>(null);
   const [analysisLiked, setAnalysisLiked]           = useState<'up' | 'down' | null>(null);
   // Which bucket this email was filed under on the To-Do board, if any.
   const [todoBucket, setTodoBucket]                 = useState<TodoBucket | null>(null);
@@ -1331,6 +1736,14 @@ function EmailDetailPanel({
   const [selectedAtts, setSelectedAtts]             = useState<AttachSuggestion[]>([]);
   const [replyAttachText, setReplyAttachText]       = useState('');
   const [sendingWithAtts, setSendingWithAtts]       = useState(false);
+  // Attach panel addressing — who the files actually go to, which is not always
+  // whoever wrote in.
+  const [sendTo, setSendTo]                         = useState('');
+  const [sendCc, setSendCc]                         = useState('');
+  const [sendSubject, setSendSubject]               = useState('');
+  const [sendWhy, setSendWhy]                       = useState('');
+  const [suggestingSend, setSuggestingSend]         = useState(false);
+  const [roster, setRoster]                         = useState<Array<{ name: string; email: string }>>([]);
   const bodyRef    = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
@@ -1412,21 +1825,23 @@ function EmailDetailPanel({
   async function fetchDetail(id: string) {
     setDetail(null);
     setAnalysis(_summaryCache[id] || '');
-    setDraft(''); setReplyText(''); setEditingReply(false);
+    setDraft(''); setReplyText('');
+    setAssistOpen(false); setAssistIdea(''); setAssistOut(''); setAssistBusy(null);
     setReplySent(false); setAnalysisLiked(null);
     setTodoBucket(null);
     setChatMessages([]); setChatInput('');
     setActivePanel(null); setIncluded(new Set());
     setAttachSuggestions([]); setSelectedAtts([]);
+    setSendTo(''); setSendCc(''); setSendSubject(''); setSendWhy(''); setReplyAttachText('');
     setLoadingDetail(true);
     bodyRef.current?.scrollTo({ top: 0 });
     try {
       const r = await api.outlookEmail(id, _storeOf[id]) as EmailDetail & { error?: string };
       if (r.error) { toast('warn', failed('open that email', r.error)); setLoadingDetail(false); return; }
       setDetail(r);
-      // Pre-check the inline photos we'll auto-read, so the panel reflects reality
-      // and the user can uncheck logos or add attachments before summarizing/chatting.
-      setIncluded(new Set(autoInlineIndices(r)));
+      // Nothing visual is fed to the AI unless it is ticked. Reading images is
+      // what makes a summary expensive, and most emails do not need it.
+      setIncluded(new Set());
       onMarkRead(id);
       onLabelChange(r.subject);
       // Pull the persisted summary (survives restart) if we don't have it in-session.
@@ -1444,17 +1859,9 @@ function EmailDetailPanel({
   const prevEmail = emailIdx > 0 ? emailList[emailIdx - 1] : null;
   const nextEmail = emailIdx < emailList.length - 1 ? emailList[emailIdx + 1] : null;
 
-  // Inline body images (photos/screenshots pasted into the email) are fed to the
-  // AI automatically. Tiny inline images (< 12 KB) are almost always logos or
-  // signature icons, so we skip those. Real attachments join only when the user
-  // opts in by clicking them in the Summarize panel.
-  function autoInlineIndices(emailData: EmailDetail): number[] {
-    return emailData.attachments
-      .filter(a => a.isInline && a.isImage && a.size >= 12_000)
-      .map(a => a.index);
-  }
-  // What actually gets fed to the AI = exactly what's checked in the panel
-  // (seeded from autoInlineIndices on load, then user-editable).
+  // What actually gets fed to the AI = exactly what's ticked in the panel, which
+  // starts empty. Images used to be auto-included and quietly burned tokens on
+  // every summary; now reading one is always a deliberate click.
   function effectiveInclude(_emailData: EmailDetail): number[] {
     return Array.from(included).sort((a, b) => a - b);
   }
@@ -1479,9 +1886,12 @@ function EmailDetailPanel({
     setAnalyzing(false);
   }
 
+  // Write a reply from the email alone. The result goes into the assist box, NOT
+  // into the reply body — nothing is ever put in the email the user didn't put
+  // there or explicitly insert.
   async function draftReply(emailData: EmailDetail) {
     setDraftingReply(true);
-    setDraft(''); setReplyText(''); setEditingReply(false); setReplySent(false);
+    setReplySent(false);
     try {
       const r = await runTask('Drafting reply…', s => api.outlookDraftReply({
         subject: emailData.subject, sender: emailData.sender,
@@ -1489,9 +1899,39 @@ function EmailDetailPanel({
         body: emailData.body, analysis,
       }, s));
       if (r.error) { toast('warn', failed('draft a reply', r.error)); }
-      else { setDraft(r.draft || ''); setReplyText(r.draft || ''); }
+      else { setDraft(r.draft || ''); setAssistOut(r.draft || ''); }
     } catch (e: any) { if (!isCancel(e)) toast('err', failed('draft a reply', e)); }
     setDraftingReply(false);
+  }
+
+  // Polish / shorten / formalize / rewrite. 'polish' works on the raw idea the
+  // user typed; the rest chain off the last result so they can keep tightening
+  // it without retyping anything.
+  async function runAssist(mode: PolishMode) {
+    if (assistBusy) return;
+    const source = (mode === 'polish' ? assistIdea : (assistOut || assistIdea)).trim();
+    if (!source) { toast('warn', 'Write your idea in the box first'); return; }
+    setAssistBusy(mode);
+    try {
+      const r = await runTask(mode === 'polish' ? 'Polishing…' : `${mode[0].toUpperCase()}${mode.slice(1)}…`,
+        s => api.outlookPolishReply({
+          text: source, mode,
+          subject: detail?.subject, sender: detail?.sender,
+          senderEmail: detail?.senderEmail, body: detail?.body,
+          analysis,
+        }, s));
+      if (r.error) { toast('warn', failed('polish that text', r.error)); }
+      else if (r.text) { setAssistOut(r.text); setDraft(r.text); }
+    } catch (e: any) { if (!isCancel(e)) toast('err', failed('polish that text', e)); }
+    setAssistBusy(null);
+  }
+
+  // The only path from the assist box into the actual email body.
+  function insertAssist() {
+    if (!assistOut.trim()) return;
+    setReplyText(prev => prev.trim() ? `${prev.trimEnd()}\n\n${assistOut.trim()}` : assistOut.trim());
+    setAssistOpen(false);
+    setAssistIdea(''); setAssistOut('');
   }
 
   async function sendReply() {
@@ -1515,24 +1955,65 @@ function EmailDetailPanel({
     setSendingReply(false);
   }
 
-  async function sendReplyWithAtts() {
-    if (!detail || !replyAttachText.trim()) return;
+  const sendToList = sendTo.split(/[;,]/).map(s => s.trim()).filter(Boolean);
+  // Replying keeps the thread; anything else is a new mail to someone who was
+  // never in this conversation, so it goes to Outlook Drafts for a human check.
+  const isThreadReply = !!detail
+    && sendToList.length === 1
+    && !sendCc.trim()
+    && sendToList[0].toLowerCase() === (detail.senderEmail || '').toLowerCase();
+
+  async function sendWithAtts() {
+    if (!detail || !replyAttachText.trim() || sendToList.length === 0) return;
     setSendingWithAtts(true);
+    const attSources = selectedAtts.map(a => ({ entryId: a.sourceEntryId, index: a.attachmentIndex }));
     try {
-      const r = await api.outlookReplyWithAtts(
-        detail.entryId,
-        replyAttachText.trim(),
-        selectedAtts.map(a => ({ entryId: a.sourceEntryId, index: a.attachmentIndex }))
-      );
-      if (r.error) { toast('err', failed('send the reply with attachments', r.error)); }
-      else {
-        toast('ok', `Reply sent to ${detail.senderEmail} with ${plural(selectedAtts.length, 'attachment')}`);
-        setActivePanel(null);
-        setSelectedAtts([]);
-        setReplyAttachText('');
+      if (isThreadReply) {
+        const r = await api.outlookReplyWithAtts(detail.entryId, replyAttachText.trim(), attSources);
+        if (r.error) { toast('err', failed('send the reply with attachments', r.error)); }
+        else {
+          toast('ok', `Reply sent to ${detail.senderEmail} with ${plural(selectedAtts.length, 'attachment')}`);
+          setActivePanel(null); setSelectedAtts([]); setReplyAttachText('');
+        }
+      } else {
+        if (!sendSubject.trim()) { toast('warn', 'Give the new email a subject'); setSendingWithAtts(false); return; }
+        const r = await api.outlookSendNew(
+          sendToList.join(';'), sendSubject.trim(), replyAttachText.trim(), attSources,
+          { cc: sendCc.split(/[;,]/).map(s => s.trim()).filter(Boolean).join(';'), draft: true },
+        );
+        if (r.error) { toast('err', failed('build that email', r.error)); }
+        else {
+          toast('ok', `Draft ready in Outlook for ${sendToList.join(', ')} — press Send there`);
+          setActivePanel(null); setSelectedAtts([]); setReplyAttachText('');
+        }
       }
-    } catch (e: any) { toast('err', failed('send the reply with attachments', e)); }
+    } catch (e: any) { toast('err', failed('send that email', e)); }
     setSendingWithAtts(false);
+  }
+
+  // Ask the AI who this should go to and what the covering note says. It only
+  // ever picks from the addresses already on the thread — it cannot invent one.
+  async function aiSuggestSend() {
+    if (!detail || suggestingSend) return;
+    setSuggestingSend(true);
+    try {
+      const r = await runTask('Working out who to send to…', s => api.outlookSuggestSend({
+        subject: detail.subject, sender: detail.sender, senderEmail: detail.senderEmail,
+        body: detail.body, analysis,
+        candidates: recipientCandidates(detail),
+        attachmentNames: selectedAtts.map(a => a.attachmentName),
+      }, s));
+      if (r.error) { toast('warn', failed('suggest a recipient', r.error)); }
+      else {
+        if (r.to)      setSendTo(r.to);
+        if (r.cc?.length) setSendCc(r.cc.join('; '));
+        if (r.subject) setSendSubject(r.subject);
+        if (r.body)    setReplyAttachText(r.body);
+        setSendWhy(r.why || '');
+        if (!r.to) toast('warn', 'No recipient could be picked from the thread — type one yourself');
+      }
+    } catch (e: any) { if (!isCancel(e)) toast('err', failed('suggest a recipient', e)); }
+    setSuggestingSend(false);
   }
 
   // Park this email on the To-Do board under the bucket the user picked. The
@@ -1638,12 +2119,20 @@ function EmailDetailPanel({
     if (next === 'summarize' && !_summaryCache[entryId] && detail && !analyzing) {
       runSummarize(detail);
     }
-    if (next === 'reply' && !draft && detail && !draftingReply) {
-      draftReply(detail);
-    }
+    // Reply deliberately does NOT generate anything here — the box opens blank
+    // and stays blank until the user asks for a draft.
     if (next === 'reply-attach' && detail) {
-      setReplyAttachText(replyText || '');
+      if (!sendTo) setSendTo(detail.senderEmail || '');
+      if (!sendSubject) setSendSubject(fwdSubject(detail.subject));
+      if (!replyAttachText.trim()) {
+        setReplyAttachText(replyText.trim() || defaultCoverNote(detail, selectedAtts.map(a => a.attachmentName)));
+      }
       if (attachSuggestions.length === 0 && !loadingSugg) loadAttachSuggestions(detail);
+      if (roster.length === 0) {
+        api.todoRecipients()
+          .then(r => setRoster((r.recipients || []).map(x => ({ name: x.name, email: x.email }))))
+          .catch(() => {});
+      }
     }
   }
 
@@ -1864,16 +2353,19 @@ function EmailDetailPanel({
                       )}
                     </div>
 
-                    {/* Vision controls — check any image/PDF to feed it to the AI
-                        (summary AND follow-up chat). Big inline photos start checked;
-                        tiny inline logos (< 12 KB) are hidden. */}
+                    {/* Vision controls — tick an image/PDF to feed it to the AI
+                        (summary AND follow-up chat). Nothing is ticked by default:
+                        reading images costs real tokens. Tiny inline logos
+                        (< 12 KB) are hidden entirely. */}
                     {(() => {
                       const visual = detail.attachments.filter(a =>
                         (a.isPdf || a.isImage || isImageFile(a.name)) && !(a.isInline && a.size < 12_000));
                       if (visual.length === 0) return null;
                       return (
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="inline-flex items-center gap-1 text-[10.5px] text-[var(--t3)]"><Eye className="w-2.5 h-2.5" />Feed to AI:</span>
+                          <span className="inline-flex items-center gap-1 text-[10.5px] text-[var(--t3)]" title="Text only unless you tick something here — images cost tokens">
+                            <Eye className="w-2.5 h-2.5" />Read images (off):
+                          </span>
                           {visual.map(a => {
                             const on  = included.has(a.index);
                             const img = a.isImage || isImageFile(a.name);
@@ -1907,7 +2399,7 @@ function EmailDetailPanel({
                         ? <Md text={analysis} />
                         : (
                           <div className="py-1">
-                            <p className="text-[12px] text-[var(--t3)] mb-2">No summary yet — reads the email plus any inline photos.</p>
+                            <p className="text-[12px] text-[var(--t3)] mb-2">No summary yet — reads the email text. Tick an image above if the AI needs to see it.</p>
                             <button onClick={() => runSummarize(detail)}
                               className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
                               <Sparkles className="w-3 h-3" /> Summarize
@@ -2001,42 +2493,167 @@ function EmailDetailPanel({
                     </div>
                     {!replySent && (
                       <>
+                        {/* The reply body. Blank on open, and nothing writes into
+                            it except the user and the Insert button below. */}
                         <textarea value={replyText} onChange={e => setReplyText(e.target.value)} rows={5}
-                          placeholder={draftingReply ? 'Drafting AI reply…' : 'Write your reply…'}
+                          placeholder="Write your reply…"
                           className="w-full text-[12.5px] text-[var(--t1)] bg-[var(--s3)] rounded-lg px-3 py-2.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
                         <div className="flex items-center gap-2 flex-wrap">
                           <button onClick={sendReply} disabled={sendingReply || !replyText.trim()}
                             className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
                             {sendingReply ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}Send
                           </button>
-                          <button onClick={() => draftReply(detail)} disabled={draftingReply}
-                            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+                          <button onClick={() => setAssistOpen(o => !o)}
+                            className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+                              assistOpen
+                                ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
+                                : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]')}>
                             <Sparkles className="w-3 h-3" />AI Draft
                           </button>
-                          {draft && (
-                            <button onClick={() => draftReply(detail)} disabled={draftingReply}
-                              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
-                              <RotateCcw className="w-3 h-3" />Regen
-                            </button>
-                          )}
                           {replyText && (
-                            <button onClick={() => { setDraft(''); setReplyText(''); }}
+                            <button onClick={() => setReplyText('')}
                               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-red-500 ring-1 ring-inset ring-red-200 dark:ring-red-700/50 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
                               <Trash2 className="w-3 h-3" />Clear
                             </button>
                           )}
                         </div>
+
+                        {/* ── AI Draft box ──
+                            Write the idea in your own words, the AI turns it into
+                            an email, and it only reaches the reply above when you
+                            press Insert. */}
+                        {assistOpen && (
+                          <div className="mt-1 rounded-lg ring-1 ring-inset ring-violet-200 dark:ring-violet-700/50 bg-violet-50/60 dark:bg-violet-900/15 p-2.5 space-y-2">
+                            <div className="flex items-center gap-2">
+                              <Sparkles className="w-3 h-3 text-violet-500 shrink-0" />
+                              <p className="text-[10.5px] font-semibold text-[var(--t2)] uppercase tracking-wide flex-1">Your idea → polished email</p>
+                              <button aria-label="Close the AI draft box" onClick={() => setAssistOpen(false)}
+                                className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)]">
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+
+                            <textarea value={assistIdea} onChange={e => setAssistIdea(e.target.value)} rows={3}
+                              placeholder="Rough notes are fine — e.g. 'tell him the 8kVA is 12 weeks lead time, quote follows tomorrow'"
+                              className="w-full text-[12px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-2.5 py-2 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <button onClick={() => runAssist('polish')} disabled={!!assistBusy || !assistIdea.trim()}
+                                className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">
+                                {assistBusy === 'polish' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                                Polish
+                              </button>
+                              {(['shorten', 'formalize', 'rewrite'] as PolishMode[]).map(m => (
+                                <button key={m} onClick={() => runAssist(m)} disabled={!!assistBusy || !(assistOut || assistIdea).trim()}
+                                  title={m === 'shorten' ? 'Cut it down, keep every fact'
+                                    : m === 'formalize' ? 'More formal register for an external customer'
+                                    : 'Same meaning, fresh wording'}
+                                  className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t2)] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-40 transition-colors">
+                                  {assistBusy === m ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                                  {m === 'shorten' ? 'Shorten' : m === 'formalize' ? 'Formalize' : 'Rewrite'}
+                                </button>
+                              ))}
+                              <span className="flex-1" />
+                              <button onClick={() => draftReply(detail)} disabled={draftingReply || !!assistBusy}
+                                title="Ignore the box and write a reply straight from the email"
+                                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+                                {draftingReply ? <Loader2 className="w-3 h-3 animate-spin" /> : <PenLine className="w-3 h-3" />}
+                                From email
+                              </button>
+                            </div>
+
+                            {(assistOut || assistBusy || draftingReply) && (
+                              <div className="space-y-1.5">
+                                <p className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Result — edit here, then insert</p>
+                                <textarea value={assistOut} onChange={e => setAssistOut(e.target.value)} rows={6}
+                                  placeholder={assistBusy || draftingReply ? 'Writing…' : ''}
+                                  className="w-full text-[12px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-2.5 py-2 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+                                <div className="flex items-center gap-1.5">
+                                  <button onClick={insertAssist} disabled={!assistOut.trim()}
+                                    className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors">
+                                    <Check className="w-3 h-3" />Insert
+                                  </button>
+                                  <button onClick={() => setAssistOut('')} disabled={!assistOut.trim()}
+                                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-40 transition-colors">
+                                    <RotateCcw className="w-3 h-3" />Discard
+                                  </button>
+                                  <span className="text-[10.5px] text-[var(--t3)]">
+                                    {replyText.trim() ? 'Appends to what you have written' : 'Goes into the reply above'}
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </>
                     )}
                   </div>
                 )}
 
-                {/* ── Reply + Attach panel ── */}
+                {/* ── Attach & send panel ──
+                    Suggests the quote, WHO it should go to (rarely just the
+                    sender) and a short covering note. */}
                 {activePanel === 'reply-attach' && (
                   <div className="px-5 py-3 space-y-2">
-                    <p className="text-[11px] font-semibold text-[var(--t3)]">Reply to {detail.senderEmail} with attachments</p>
-                    <textarea value={replyAttachText} onChange={e => setReplyAttachText(e.target.value)} rows={4}
-                      placeholder="Write your reply…"
+                    <div className="flex items-center gap-2">
+                      <Paperclip className="w-3.5 h-3.5 text-[var(--accent-text)] shrink-0" />
+                      <p className="text-[11.5px] font-semibold text-[var(--t1)] flex-1">Send a quote</p>
+                      <button onClick={aiSuggestSend} disabled={suggestingSend}
+                        title="Work out who this should go to and write the covering note"
+                        className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md text-[10.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">
+                        {suggestingSend ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Sparkles className="w-2.5 h-2.5" />}
+                        AI suggest
+                      </button>
+                    </div>
+
+                    {/* Addressing */}
+                    <div className="grid grid-cols-[38px_1fr] items-center gap-x-2 gap-y-1.5">
+                      <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">To</label>
+                      <input value={sendTo} onChange={e => setSendTo(e.target.value)} list="vector-send-roster"
+                        placeholder="who actually needs the quote…"
+                        className="h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
+                      <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Cc</label>
+                      <input value={sendCc} onChange={e => setSendCc(e.target.value)} list="vector-send-roster"
+                        placeholder="optional — e.g. keep the sender in the loop"
+                        className="h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
+                      {!isThreadReply && (
+                        <>
+                          <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Subj</label>
+                          <input value={sendSubject} onChange={e => setSendSubject(e.target.value)}
+                            placeholder="Subject…"
+                            className="h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
+                        </>
+                      )}
+                    </div>
+                    {/* Autocomplete over everyone you have corresponded with */}
+                    <datalist id="vector-send-roster">
+                      {roster.slice(0, 300).map((c, i) => <option key={i} value={c.email}>{c.name}</option>)}
+                    </datalist>
+
+                    {/* One click per address that appears anywhere on the thread */}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[10px] text-[var(--t3)]">On this thread:</span>
+                      {recipientCandidates(detail).map((c, i) => {
+                        const on = sendToList.some(t => t.toLowerCase() === c.email.toLowerCase());
+                        return (
+                          <button key={i} onClick={() => setSendTo(c.email)} title={`${c.email} — ${c.why}`}
+                            className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors max-w-[200px]',
+                              on ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
+                                 : 'bg-[var(--s3)] text-[var(--t3)] ring-[var(--line-2)] hover:text-[var(--t1)]')}>
+                            {on && <Check className="w-2.5 h-2.5 shrink-0" />}
+                            <span className="truncate">{c.name || c.email}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {sendWhy && (
+                      <p className="text-[10.5px] text-[var(--t3)] italic flex items-start gap-1">
+                        <Sparkles className="w-2.5 h-2.5 mt-[3px] shrink-0 text-violet-400" />{sendWhy}
+                      </p>
+                    )}
+
+                    <textarea value={replyAttachText} onChange={e => setReplyAttachText(e.target.value)} rows={5}
+                      placeholder="Covering note…"
                       className="w-full text-[12.5px] text-[var(--t1)] bg-[var(--s3)] rounded-lg px-3 py-2.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
                     {/* Suggested attachments */}
                     <div>
@@ -2070,12 +2687,19 @@ function EmailDetailPanel({
                         </button>
                       ))}
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button onClick={sendReplyWithAtts} disabled={sendingWithAtts || !replyAttachText.trim()}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button onClick={sendWithAtts} disabled={sendingWithAtts || !replyAttachText.trim() || sendToList.length === 0}
                         className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
-                        {sendingWithAtts ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-                        Send {selectedAtts.length > 0 ? `(${selectedAtts.length} file${selectedAtts.length > 1 ? 's' : ''})` : ''}
+                        {sendingWithAtts ? <Loader2 className="w-3 h-3 animate-spin" />
+                          : isThreadReply ? <Send className="w-3 h-3" /> : <Edit3 className="w-3 h-3" />}
+                        {isThreadReply ? 'Send reply' : 'Draft in Outlook'}
+                        {selectedAtts.length > 0 ? ` (${plural(selectedAtts.length, 'file')})` : ''}
                       </button>
+                      <span className="text-[10.5px] text-[var(--t3)]">
+                        {isThreadReply
+                          ? `Replies in the thread to ${detail.senderEmail}`
+                          : `New email — lands in Outlook Drafts so you press Send there`}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -2105,7 +2729,7 @@ function EmailDetailPanel({
             <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
               <ABtn panel="summarize"    icon={Sparkles}      label="Summarize" color="violet" locked={STRIPPED} />
               <ABtn panel="reply"        icon={Edit3}         label="Reply"     color="ink"    locked={STRIPPED} />
-              <ABtn panel="reply-attach" icon={Paperclip}     label="+ Attach"  color="brand"  locked={STRIPPED} />
+              <ABtn panel="reply-attach" icon={Paperclip}     label="Attach & Send" color="brand" locked={STRIPPED} />
               <ABtn panel="pricer"       icon={Zap}           label="EL Pricer" color="amber"  locked={STRIPPED} />
               <ABtn panel="cbu"         icon={Battery}       label="CBU Sheet" color="blue"   locked={STRIPPED} />
               <ABtn panel="quote"        icon={FileDown}      label="Quick Quote" color="emerald" locked={STRIPPED} />
@@ -2398,11 +3022,22 @@ export function InboxPage({
   // The mode the showing results were fetched with — the marks have to follow
   // what the server matched, not what the picker was moved to afterwards.
   const [deepMode,    setDeepMode]    = useState<MatchMode>('part');
+  const [deepScope,   setDeepScope]   = useState<SearchScope>('all');
   const [deepLoading, setDeepLoading] = useState(false);
   const [deepMeta,    setDeepMeta]    = useState<{ total: number; truncated: boolean; source?: string } | null>(null);
   const [indexInfo,   setIndexInfo]   = useState<{ built: boolean; total: number; lastSync?: string | null; syncing?: boolean } | null>(null);
   const [indexBusy,   setIndexBusy]   = useState(false);
-  const deepAbort = useRef<AbortController | null>(null);
+  // ── Filters ───────────────────────────────────────────────────────────────
+  // The panel is collapsed by default — the box alone answers most questions,
+  // and a search pane that opens with eight rows of controls is the crowding
+  // this replaced. Whether it is open persists; what is set in it does not.
+  const [showFilters, setShowFilters] = useState(() => localStorage.getItem('inboxShowFilters') === '1');
+  const [filters,     setFiltersRaw]  = useState<FilterState>(EMPTY_FILTERS);
+  const [facets,      setFacets]      = useState<SearchFacets | null>(null);
+  const setFilters = useCallback((patch: Partial<FilterState>) => setFiltersRaw(f => ({ ...f, ...patch })), []);
+  const pills      = activeFilterPills(filters);
+  const anyFilter  = pills.length > 0;
+  const deepAbort  = useRef<AbortController | null>(null);
 
   const loadIndexStatus = useCallback(async () => {
     try { setIndexInfo(await api.outlookIndexStatus()); } catch { /* status is cosmetic */ }
@@ -2415,7 +3050,8 @@ export function InboxPage({
       if (r.error) toast('err', failed('rebuild the search index', r.error));
       else toast('ok', `Search index rebuilt — ${plural(r.total ?? 0, 'email')} in ${r.seconds ?? '?'}s`);
       await loadIndexStatus();
-      if (deepQuery) await runDeepSearch(deepQuery);
+      void loadFacets();
+      if (deepActiveRef.current) await runDeepSearch(deepQuery);
     } catch (e: any) { toast('err', failed('rebuild the search index', e)); }
     setIndexBusy(false);
   }
@@ -2431,7 +3067,15 @@ export function InboxPage({
 
   const runDeepSearch = useCallback(async (raw: string) => {
     const q = raw.trim();
-    if (q.length < 2) { toast('warn', 'Type at least 2 characters before searching'); return; }
+    const f = filtersRef.current;
+    const active = activeFilterPills(f).length > 0;
+    // A filter is a question on its own — "everything from Fenton with a PDF
+    // this month" needs no term — so the box only has to carry the search when
+    // nothing else does.
+    if (q.length < 2 && !active) {
+      toast('warn', 'Type at least 2 characters, or set a filter, before searching');
+      return;
+    }
     deepAbort.current?.abort();
     const ctl = new AbortController();
     deepAbort.current = ctl;
@@ -2439,15 +3083,17 @@ export function InboxPage({
     setDeepQuery(q);
     setDeepResults(null);
     setDeepMeta(null);
-    const mode = modeRef.current;
+    const mode  = modeRef.current;
+    const scope = f.scope;
     try {
-      const r = await api.outlookSearch(q, { mode }, ctl.signal);
+      const r = await api.outlookSearch(q, { mode, scope, filters: toApiFilters(f) }, ctl.signal);
       if (ctl.signal.aborted) return;
-      if (r.error) toast('warn', failed(`search for "${q}"`, r.error));
+      if (r.error) toast('warn', failed(q ? `search for "${q}"` : 'filter the quote folders', r.error));
       const list: EmailSummary[] = r.emails || [];
       rememberStores(list);
       setDeepResults(list);
       setDeepMode(r.mode || mode);
+      setDeepScope(r.scope || scope);
       setDeepMeta({ total: r.total ?? list.length, truncated: !!r.truncated, source: r.source });
       if (r.truncated) toast('warn', `Search hit its time limit — showing the first ${plural(list.length, 'match', 'matches')}`);
       // A live answer means the index was cold; the server starts building it,
@@ -2455,31 +3101,56 @@ export function InboxPage({
       if (r.source !== 'index') setTimeout(() => { void loadIndexStatus(); }, 3_000);
     } catch (e: any) {
       if (ctl.signal.aborted || isCancel(e)) return;
-      toast('err', failed(`search for "${q}"`, e));
+      toast('err', failed(q ? `search for "${q}"` : 'filter the quote folders', e));
       setDeepQuery('');
     } finally {
       if (deepAbort.current === ctl) setDeepLoading(false);
     }
   }, [toast, loadIndexStatus]);
 
-  // runDeepSearch reads the mode through a ref so its identity stays stable.
+  // runDeepSearch reads the mode and the filters through refs so its identity
+  // stays stable — every re-run would otherwise restart the in-flight request.
   const modeRef = useRef<MatchMode>(matchMode);
   useEffect(() => { modeRef.current = matchMode; }, [matchMode]);
+  const filtersRef = useRef<FilterState>(filters);
+  useEffect(() => { filtersRef.current = filters; }, [filters]);
+  // Whether results are on screen, for the effects that must not start a search
+  // of their own when there are none.
+  const deepActiveRef = useRef(false);
+
+  // The sender list the From filter offers. Cheap (one GROUP BY over the index)
+  // and only fetched once the pane is up.
+  const loadFacets = useCallback(async () => {
+    try { setFacets(await api.outlookSearchFacets()); } catch { /* the filter still takes free text */ }
+  }, []);
 
   // Changing the rule re-asks the server: 'word' can only be enforced there, and
   // leaving the old hit list up under a stricter rule would show non-matches.
-  const firstModeRender = useRef(true);
+  // The same goes for every filter — the hits on screen were fetched under the
+  // old ones. Debounced, because "From" is typed a letter at a time.
+  useEffect(() => { localStorage.setItem('inboxMatchMode', matchMode); }, [matchMode]);
+  const firstFilterRender = useRef(true);
   useEffect(() => {
-    localStorage.setItem('inboxMatchMode', matchMode);
-    if (firstModeRender.current) { firstModeRender.current = false; return; }
-    if (deepQuery) void runDeepSearch(deepQuery);
-  }, [matchMode]);
+    if (firstFilterRender.current) { firstFilterRender.current = false; return; }
+    if (!deepActiveRef.current) return;
+    const t = setTimeout(() => { void runDeepSearch(emailSearch); }, 350);
+    return () => clearTimeout(t);
+  }, [matchMode, filters]);
 
-  // Index badge: load once when the pane comes up.
-  useEffect(() => { if (available) void loadIndexStatus(); }, [available, loadIndexStatus]);
+  useEffect(() => { localStorage.setItem('inboxShowFilters', showFilters ? '1' : '0'); }, [showFilters]);
 
-  // Emptying the box drops back to the plain (loaded-emails) view.
-  useEffect(() => { if (!emailSearch.trim()) clearDeepSearch(); }, [emailSearch]);
+  // Index badge + filter values: load once when the pane comes up.
+  useEffect(() => {
+    if (!available) return;
+    void loadIndexStatus();
+    void loadFacets();
+  }, [available, loadIndexStatus, loadFacets]);
+
+  // Emptying the box drops back to the plain (loaded-emails) view — unless a
+  // filter is still doing the asking, in which case the hits are still an answer.
+  useEffect(() => {
+    if (!emailSearch.trim() && !activeFilterPills(filtersRef.current).length) clearDeepSearch();
+  }, [emailSearch]);
 
   // Abort an in-flight search when the pane goes away.
   useEffect(() => () => deepAbort.current?.abort(), []);
@@ -2839,24 +3510,25 @@ export function InboxPage({
   ];
 
   const sq = emailSearch.trim().toLowerCase();
-  // The typed-filter path gets the same rule as the server search, so switching
-  // to "Whole word" narrows the loaded list too instead of only the deep hits.
+  // The typed-filter path gets the same rules as the server search — match mode
+  // AND scope — so switching to "Whole word" or "Subject only" narrows the
+  // loaded list too instead of only the deep hits.
   const sqTerms = highlightTerms(emailSearch, 1);
   const sqRegexes = sqTerms.map(t => new RegExp(termPattern(t, matchMode), 'i'));
   // A full-mailbox search replaces the list outright: its hits come from folders
   // and mailboxes the rail knows nothing about, so the rail/archive filters
   // would only hide them.
   const deepActive    = deepLoading || deepResults !== null;
-  const textMatch = (e: EmailSummary, _q: string) => {
-    const hay = [e.subject, e.sender, e.senderEmail, e.bodyPreview,
-                 ...(e.matches || []).map(m => m.text)].join(' \u0000 ');
-    return sqRegexes.every(r => r.test(hay));
-  };
-  const localFiltered = (sq ? emails.filter(e => textMatch(e, sq)) : emails).filter(inFolder);
+  deepActiveRef.current = deepActive;
+  const textMatch = (e: EmailSummary, scope: SearchScope) =>
+    sqRegexes.every(r => r.test(scopeHaystack(e, scope)));
+  const localFiltered = emails
+    .filter(e => (!sq || textMatch(e, filters.scope)) && passesFilters(e, filters))
+    .filter(inFolder);
   // Editing the box after a search narrows the hits already on screen; Enter
   // runs the new text against Outlook again.
   const deepFiltered = (deepResults || []).filter(
-    e => !sq || sq === deepQuery.toLowerCase() || textMatch(e, sq));
+    e => !sq || sq === deepQuery.toLowerCase() || textMatch(e, deepScope));
   const displayEmails = deepActive ? deepFiltered : localFiltered;
   // What to mark up in the rows: the terms the server matched on while search
   // results are showing, otherwise whatever is being typed.
@@ -3025,6 +3697,17 @@ export function InboxPage({
           Unread
         </button>
 
+        {/* Open every PDF in the list as a tab. It acts on the list, not on the
+            search, which is why it sits with the mailbox actions rather than
+            beside the search box it used to crowd. */}
+        <button aria-label="Open all emails with PDFs as tabs"
+          onClick={openAllPdf}
+          title="Open all emails with PDFs as tabs"
+          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] transition-colors">
+          <FolderOpen className="w-3 h-3" />
+          PDFs
+        </button>
+
         {/* Compose */}
         <button
           onClick={() => setComposeOpen(true)}
@@ -3081,7 +3764,12 @@ export function InboxPage({
         {/* ── Email list (left) ────────────────────────────────────────────── */}
         <div ref={listPaneRef} className="shrink-0 flex flex-col border-r border-[var(--line-2)] bg-[var(--s1)]" style={{ width: listWidth }}>
 
-          {/* Search + open-all-PDF toolbar */}
+          {/* ── Search bar ────────────────────────────────────────────────
+              One row: the box, the filter toggle, and the button that goes to
+              the quote folders. Everything else that used to sit here (the
+              match-mode picker, "open every PDF") moved into the filter panel
+              and the header — at 344 px, four controls beside the box left the
+              box itself too narrow to read a query back in. */}
           <div className="shrink-0 px-2 py-1.5 border-b border-[var(--line)] flex items-center gap-1.5">
             <div className="flex-1 flex items-center gap-1.5 h-7 px-2 rounded-md bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] focus-within:ring-violet-400/60">
               <Search className="w-3 h-3 text-[var(--t3)] shrink-0" />
@@ -3103,20 +3791,24 @@ export function InboxPage({
                 </button>
               )}
             </div>
-            {/* What counts as a hit. Sits next to the box because it changes the
-                answer to the query typed in it, not some unrelated setting. */}
-            <select
-              value={matchMode}
-              onChange={e => setMatchMode(e.target.value as MatchMode)}
-              title={MATCH_MODE_OPTIONS.find(o => o.id === matchMode)?.hint}
-              className="shrink-0 h-7 px-1.5 rounded-md bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] text-[10.5px] text-[var(--t2)] outline-none focus:ring-violet-400/60 cursor-pointer">
-              {MATCH_MODE_OPTIONS.map(o => (
-                <option key={o.id} value={o.id} title={o.hint}>{o.short}</option>
-              ))}
-            </select>
+            {/* Filters. The count is the badge: a narrowed search must never
+                look like a plain one. */}
+            <button aria-label={showFilters ? 'Hide the search filters' : 'Show the search filters'}
+              onClick={() => setShowFilters(v => !v)}
+              title={anyFilter ? `Filters — ${pills.map(p => p.label).join(', ')}` : 'Filter by sender, date, folder, attachments or read state'}
+              className={cn(
+                'shrink-0 h-7 pl-1.5 pr-2 rounded-md flex items-center gap-1 text-[10.5px] font-medium transition-colors',
+                anyFilter
+                  ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]'
+                  : showFilters ? 'bg-[var(--s3)] text-[var(--t1)]' : 'text-[var(--t3)] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+              )}>
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              {anyFilter ? pills.length : ''}
+              <ChevronDown className={cn('w-3 h-3 transition-transform', showFilters && 'rotate-180')} />
+            </button>
             <button aria-label={deepLoading ? 'Stop the search' : 'Search UKQuoteFactoryEL — Inbox + Completed by Laith (subject, sender, body, attachment names)'}
               onClick={() => (deepLoading ? clearDeepSearch() : runDeepSearch(emailSearch))}
-              disabled={!deepLoading && emailSearch.trim().length < 2}
+              disabled={!deepLoading && emailSearch.trim().length < 2 && !anyFilter}
               title={deepLoading ? 'Stop the search' : 'Search UKQuoteFactoryEL — Inbox + Completed by Laith (subject, sender, body, attachment names)'}
               className={cn(
                 'shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-colors',
@@ -3125,29 +3817,62 @@ export function InboxPage({
               )}>
               {deepLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Globe className="w-3.5 h-3.5" />}
             </button>
-            <button aria-label="Open all emails with PDFs as tabs"
-              onClick={openAllPdf}
-              title="Open all emails with PDFs as tabs"
-              className="shrink-0 w-7 h-7 rounded-md flex items-center justify-center text-[var(--accent-text)] hover:bg-[var(--accent-soft)] transition-colors">
-              <FolderOpen className="w-3.5 h-3.5" />
-            </button>
           </div>
 
-          {/* Search status bar — scope is fixed (see SEARCH_SCOPE in
-              outlook_reader.py), so it is stated, not chosen. */}
+          {/* ── Filter panel ──────────────────────────────────────────────── */}
+          {showFilters && (
+            <SearchFilterPanel
+              filters={filters}
+              setFilters={setFilters}
+              matchMode={matchMode}
+              setMatchMode={setMatchMode}
+              facets={facets}
+              onReset={() => setFiltersRaw(EMPTY_FILTERS)}
+              pillCount={pills.length}
+            />
+          )}
+
+          {/* What is narrowing the list, when the panel that says so is shut.
+              Each pill drops its own filter. */}
+          {!showFilters && anyFilter && (
+            <div className="shrink-0 px-2 py-1.5 border-b border-[var(--line)] flex flex-wrap items-center gap-1">
+              {pills.map(p => (
+                <button key={p.key} onClick={() => setFilters(p.patch)}
+                  title={`Remove this filter`}
+                  className="inline-flex items-center gap-1 h-[20px] pl-2 pr-1.5 rounded-full text-[10px] font-medium bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)] hover:opacity-80 transition-opacity">
+                  <span className="truncate max-w-[130px]">{p.label}</span>
+                  <X className="w-2.5 h-2.5 shrink-0" />
+                </button>
+              ))}
+              <button onClick={() => setFiltersRaw(EMPTY_FILTERS)}
+                className="text-[10px] font-medium text-[var(--t3)] hover:text-[var(--t1)] px-1">Clear all</button>
+            </div>
+          )}
+
+          {/* ── Search status bar ─────────────────────────────────────────
+              The scope of a search is fixed (SEARCH_SCOPE in outlook_reader.py),
+              so it is stated, not chosen. */}
           {(deepActive || (!!sq && !deepLoading)) && (
             <div className="shrink-0 px-2.5 py-1.5 border-b border-[var(--line)] bg-[var(--s2)] flex items-center gap-2 text-[10.5px]">
               {deepActive ? (
                 <>
                   <Globe className="w-3 h-3 shrink-0 text-[var(--accent-text)]" />
-                  <span className="flex-1 min-w-0 truncate text-[var(--t3)]">
+                  <span className="flex-1 min-w-0 truncate text-[var(--t3)]"
+                    title={[
+                      `Searched ${SEARCH_SCOPE_LABEL}`,
+                      `Rule: ${MATCH_MODE_OPTIONS.find(o => o.id === deepMode)?.label}`,
+                      `In: ${SCOPE_OPTIONS.find(o => o.id === deepScope)?.label}`,
+                      deepMeta?.source === 'index' ? 'Answered from the local index' : 'Read live from Outlook',
+                      deepMeta?.truncated ? 'Partial — the search hit its time limit' : '',
+                    ].filter(Boolean).join('\n')}>
                     {deepLoading
-                      ? <>Searching {SEARCH_SCOPE_LABEL} for “{deepQuery}”…</>
+                      ? <>Searching {SEARCH_SCOPE_LABEL}{deepQuery ? <> for “{deepQuery}”</> : ' '}…</>
                       : <>
                           <span className="font-semibold text-[var(--t2)]">{deepMeta?.total ?? displayEmails.length}</span>
-                          {' '}hit{(deepMeta?.total ?? 0) === 1 ? '' : 's'} for “{deepQuery}”
-                          {' · '}{MATCH_MODE_OPTIONS.find(o => o.id === deepMode)?.label}
-                          {deepMeta?.source === 'index' ? ' · local index' : ' · live Outlook'}
+                          {' '}hit{(deepMeta?.total ?? 0) === 1 ? '' : 's'}{deepQuery ? <> for “{deepQuery}”</> : ''}
+                          {deepScope !== 'all' ? ` · in ${SCOPE_OPTIONS.find(o => o.id === deepScope)?.label}` : ''}
+                          {deepMode !== 'part' ? ` · ${MATCH_MODE_OPTIONS.find(o => o.id === deepMode)?.label}` : ''}
+                          {deepMeta?.source === 'index' ? '' : ' · live Outlook'}
                           {deepMeta?.truncated ? ' · partial' : ''}
                           {deepMeta && deepMeta.total > displayEmails.length ? ` · showing ${displayEmails.length}` : ''}
                         </>}
@@ -3195,11 +3920,24 @@ export function InboxPage({
             <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
               <Mail className="w-8 h-8 text-[var(--t4)]" />
               <p className="text-[12px] text-[var(--t3)]">
-                {deepActive ? `Nothing in the quote folders matches “${deepQuery}”`
+                {deepActive
+                  ? (deepQuery
+                      ? `Nothing in the quote folders matches “${deepQuery}”`
+                      : 'Nothing in the quote folders matches these filters')
                   : emailSearch ? 'No emails match your search'
+                  : anyFilter  ? 'No loaded emails match these filters'
                   : unreadOnly ? 'No unread emails' : 'No emails found'}
               </p>
-              {!deepActive && emailSearch.trim().length >= 2 && (
+              {/* An empty result under filters is usually the filters, not the
+                  mailbox — say which ones are doing it, and offer the way out. */}
+              {anyFilter && (
+                <p className="text-[10.5px] text-[var(--t4)] max-w-[240px] leading-relaxed">
+                  Filtered by {pills.map(p => p.label).join(', ')}.{' '}
+                  <button onClick={() => setFiltersRaw(EMPTY_FILTERS)}
+                    className="font-medium text-[var(--accent-text)] hover:underline">Clear the filters</button>
+                </p>
+              )}
+              {!deepActive && (emailSearch.trim().length >= 2 || anyFilter) && (
                 <button onClick={() => runDeepSearch(emailSearch)}
                   className="text-[11.5px] font-medium text-[var(--accent-text)] hover:underline">
                   Search the quote folders instead

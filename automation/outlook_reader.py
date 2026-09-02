@@ -150,6 +150,57 @@ def resolve_smtp(item):
         return getattr(item, 'SenderEmailAddress', '') or ''
 
 
+def _hdr_recipients(msg, cap=25):
+    """To/CC of an RFC-822 message as [{name, email, type}] (IMAP backend)."""
+    from email.utils import getaddresses
+    out = []
+    for kind, hdr in (('to', 'To'), ('cc', 'Cc')):
+        raw = msg.get_all(hdr, []) or []
+        for name, addr in getaddresses([_decode_hdr(h) for h in raw]):
+            if addr and '@' in addr:
+                out.append({'name': name or '', 'email': addr, 'type': kind})
+    return out[:cap]
+
+
+def item_recipients(item, cap=25):
+    """Everyone on a message's To/CC line, as real SMTP addresses.
+
+    item.To / item.CC only give display names, which are useless when the app
+    needs to put someone in a To field. Recipients[] carries the address entry,
+    so the /O=... DNs resolve through the same cache the sender lookup uses.
+    Type 1 = To, 2 = CC, 3 = BCC (never populated on a received item).
+    """
+    out = []
+    try:
+        n = min(int(item.Recipients.Count), cap)
+    except Exception:
+        return out
+    for k in range(1, n + 1):
+        try:
+            r    = item.Recipients.Item(k)
+            addr = getattr(r, 'Address', '') or ''
+            if addr.upper().startswith('/O=') or addr.upper().startswith('EX:'):
+                hit = _SMTP_CACHE.get(addr)
+                if hit is None:
+                    try:
+                        ex  = r.AddressEntry.GetExchangeUser()
+                        hit = (ex.PrimarySmtpAddress if ex else '') or ''
+                    except Exception:
+                        hit = ''
+                    _SMTP_CACHE[addr] = hit
+                addr = hit
+            if not addr or '@' not in addr:
+                continue
+            out.append({
+                'name':  getattr(r, 'Name', '') or '',
+                'email': addr,
+                'type':  'cc' if int(getattr(r, 'Type', 1) or 1) == 2 else 'to',
+            })
+        except Exception:
+            continue
+    return out
+
+
 def _diag(msg):
     """Diagnostics for the id-recovery path — stderr, so JSON on stdout stays clean."""
     if os.environ.get('MAGIC_OUTLOOK_DIAG', '1') == '0':
@@ -1150,6 +1201,139 @@ INDEX_COLS = ('SELECT entry_id, store, store_id, folder, subject, sender, sender
               ' body_preview, atts, unread, has_pdf, recipients, body_text, meta_blob, blob')
 
 
+# ─── Search filters ──────────────────────────────────────────────────────────
+# Narrowing that runs alongside the text terms rather than inside them. A query
+# is one question ("QW28237"); who it is from, when it landed and whether it
+# carried a PDF are separate axes, and folding them into the term list ("QW28237
+# fenton pdf") only ever produced accidental body hits.
+#
+# Every filter is opt-in: with none set the SQL is exactly what it was before.
+
+# Which text the terms are matched against. 'all'/'meta' are the two the search
+# always had (whole blob vs. everything-but-the-body); the rest narrow to one
+# field, for when a term is a common word everywhere but the subject.
+SEARCH_SCOPES = ('all', 'meta', 'subject', 'from', 'recipients', 'atts', 'body')
+
+# scope -> (SQL expression the LIKE runs on, row indexes the mode re-checks).
+# The expressions are lowercase because meta_blob/blob already are, and LIKE has
+# to see the same case on both sides for a term with an uppercase letter in it.
+_SCOPE_SQL = {
+    'all':        'blob',
+    'meta':       'meta_blob',
+    'subject':    "lower(coalesce(subject, ''))",
+    'from':       "lower(coalesce(sender, '') || ' ' || coalesce(sender_email, ''))",
+    'recipients': "lower(coalesce(recipients, ''))",
+    'atts':       "lower(coalesce(atts, ''))",
+    'body':       "lower(coalesce(body_text, ''))",
+}
+
+
+def _scope_of(args):
+    """The scope to search in. --fields stays the old, coarser way of saying it."""
+    scope = (getattr(args, 'scope', '') or '').strip().lower()
+    if scope in SEARCH_SCOPES:
+        return scope
+    return 'meta' if getattr(args, 'fields', 'all') == 'meta' else 'all'
+
+
+def _scope_text(row, scope):
+    """The same text `_SCOPE_SQL[scope]` selected, for the match-mode re-check.
+
+    Row layout is INDEX_COLS: 4 subject, 5 sender, 6 sender_email, 9 atts,
+    12 recipients, 13 body_text, 14 meta_blob, 15 blob.
+    """
+    if scope == 'all':        return row[15] or ''
+    if scope == 'meta':       return row[14] or ''
+    if scope == 'subject':    return row[4] or ''
+    if scope == 'from':       return f'{row[5] or ""} {row[6] or ""}'
+    if scope == 'recipients': return row[12] or ''
+    if scope == 'atts':       return row[9] or ''
+    if scope == 'body':       return row[13] or ''
+    return row[15] or ''
+
+
+def _norm_date(s):
+    """(y, m, d) from either 'YYYY-MM-DD' (what a date input sends) or
+    'DD/MM/YYYY' (what the live-search flags have always taken)."""
+    s = (s or '').strip()
+    if not s:
+        return None
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})$', s)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            datetime.date(y, mo, d)
+        except ValueError:
+            return None
+        return (y, mo, d)
+    return _parse_ddmmyyyy(s)
+
+
+def _stamp_bounds(since, until):
+    """Index `stamp` bounds ('YYYYMMDDHHMMSS') for a date range, either side
+    optional. The end of the range includes the whole day."""
+    lo = hi = None
+    a = _norm_date(since)
+    b = _norm_date(until)
+    if a:
+        lo = '%04d%02d%02d000000' % a
+    if b:
+        hi = '%04d%02d%02d235959' % b
+    return lo, hi
+
+
+def index_where(args):
+    """The filter half of the WHERE clause: (sql fragments, params, active dict).
+
+    `active` is echoed back to the caller so the UI can state what it applied
+    instead of the user having to trust that a flag survived the round trip.
+    """
+    where, params, active = [], [], {}
+
+    sender = (getattr(args, 'sender', '') or '').strip()
+    if sender:
+        where.append("(lower(coalesce(sender, '')) LIKE ? ESCAPE '\\'"
+                     " OR lower(coalesce(sender_email, '')) LIKE ? ESCAPE '\\')")
+        params += [_like_param(sender), _like_param(sender)]
+        active['from'] = sender
+
+    lo, hi = _stamp_bounds(getattr(args, 'since', ''), getattr(args, 'until', ''))
+    if lo:
+        where.append('stamp >= ?')
+        params.append(lo)
+        active['since'] = lo[:8]
+    if hi:
+        where.append('stamp <= ?')
+        params.append(hi)
+        active['until'] = hi[:8]
+
+    folder = (getattr(args, 'folder', '') or '').strip()
+    if folder:
+        where.append("lower(coalesce(folder, '')) LIKE ? ESCAPE '\\'")
+        params.append(_like_param(folder))
+        active['folder'] = folder
+
+    att = (getattr(args, 'att', '') or '').strip().lower()
+    if att == 'yes':
+        where.append("coalesce(atts, '[]') NOT IN ('[]', '')")
+        active['att'] = 'yes'
+    elif att == 'pdf':
+        where.append('has_pdf = 1')
+        active['att'] = 'pdf'
+    elif att == 'no':
+        where.append("coalesce(atts, '[]') IN ('[]', '')")
+        active['att'] = 'no'
+
+    read = (getattr(args, 'read', '') or '').strip().lower()
+    if read == 'unread':
+        where.append('unread = 1')
+        active['read'] = 'unread'
+    elif read == 'read':
+        where.append('unread = 0')
+        active['read'] = 'read'
+
+    return where, params, active
+
 def index_search(args):
     """Search the local copy. Returns a result dict, or None when the index is
     unusable (missing / empty / wrong schema) so the caller can go live."""
@@ -1157,31 +1341,39 @@ def index_search(args):
     if not os.path.exists(path):
         return None
     tokens = search_tokens(args.query)
-    if not tokens:
-        return {'emails': [], 'error': 'Empty search query'}
     mode    = getattr(args, 'mode', 'part')
     mode    = mode if mode in MATCH_MODES else 'part'
     regexes = compile_terms(tokens, mode)
-    meta_only = args.fields == 'meta'
+    scope   = _scope_of(args)
+    meta_only = scope not in ('all', 'body')
+    fwhere, fparams, active = index_where(args)
+    # A filter is a question on its own — "everything from Fenton with a PDF this
+    # month" is answerable without a term — so only a query with nothing at all
+    # behind it is empty.
+    if not tokens and not fwhere:
+        return {'emails': [], 'error': 'Empty search query'}
+    newest = (getattr(args, 'sort', '') or 'new').lower() != 'old'
     try:
         con  = sqlite3.connect(path)
         rows_total = con.execute('SELECT COUNT(*) FROM mail').fetchone()[0]
         if not rows_total:
             con.close()
             return None
-        col    = 'meta_blob' if meta_only else 'blob'
-        where  = ' AND '.join([f"{col} LIKE ? ESCAPE '\\'"] * len(tokens))
-        params = [_like_param(t) for t in tokens]
-        sql    = f'{INDEX_COLS} FROM mail WHERE {where} ORDER BY stamp DESC LIMIT ?'
+        col    = _SCOPE_SQL.get(scope, 'blob')
+        clauses = [f"{col} LIKE ? ESCAPE '\\'" for _ in tokens] + fwhere
+        where   = ' AND '.join(clauses) if clauses else '1'
+        params  = [_like_param(t) for t in tokens] + fparams
+        order   = 'DESC' if newest else 'ASC'
+        sql     = f'{INDEX_COLS} FROM mail WHERE {where} ORDER BY stamp {order} LIMIT ?'
         truncated = False
-        if mode == 'part':
+        if mode == 'part' or not tokens:
             # LIKE already IS the answer, so the count stays a single cheap query.
             total = con.execute(f'SELECT COUNT(*) FROM mail WHERE {where}', params).fetchone()[0]
             rows  = con.execute(sql, params + [args.limit]).fetchall()
         else:
             cand      = con.execute(sql, params + [INDEX_SCAN_CAP]).fetchall()
             truncated = len(cand) >= INDEX_SCAN_CAP
-            kept      = [r for r in cand if _matches_mode(r[15] if not meta_only else r[14], regexes)]
+            kept      = [r for r in cand if _matches_mode(_scope_text(r, scope), regexes)]
             total     = len(kept)
             rows      = kept[:args.limit]
         last = con.execute("SELECT v FROM meta WHERE k = 'last_sync'").fetchone()
@@ -1215,7 +1407,34 @@ def index_search(args):
         'emails': emails, 'total': total, 'source': 'index',
         'indexTotal': rows_total, 'lastSync': last[0] if last else None,
         'truncated': truncated, 'degraded': 0, 'query': args.query, 'mode': mode,
+        'scope': scope, 'sort': 'new' if newest else 'old', 'filters': active,
     }
+
+
+def index_facets(path, limit=60):
+    """What is actually IN the index — senders, folders, the date range it covers.
+
+    The From filter is a real address, not a guess: offering the 250-odd senders
+    the mailbox has seen beats making someone remember how Outlook spells a name.
+    """
+    path = path or default_index_path()
+    if not os.path.exists(path):
+        return {'built': False, 'senders': [], 'folders': [], 'oldest': None, 'newest': None}
+    try:
+        con = sqlite3.connect(path)
+        total = con.execute('SELECT COUNT(*) FROM mail').fetchone()[0]
+        senders = [{'name': r[0] or '', 'email': r[1] or '', 'count': r[2]} for r in con.execute(
+            'SELECT sender, sender_email, COUNT(*) c FROM mail'
+            ' GROUP BY lower(coalesce(sender_email, sender)) ORDER BY c DESC LIMIT ?', [limit])]
+        folders = [{'folder': r[0] or '', 'count': r[1]} for r in con.execute(
+            'SELECT folder, COUNT(*) c FROM mail GROUP BY folder ORDER BY c DESC')]
+        span = con.execute("SELECT MIN(stamp), MAX(stamp) FROM mail WHERE stamp <> ''").fetchone()
+        con.close()
+        iso = lambda s: f'{s[0:4]}-{s[4:6]}-{s[6:8]}' if s and len(s) >= 8 else None
+        return {'built': total > 0, 'total': total, 'senders': senders, 'folders': folders,
+                'oldest': iso(span[0] if span else None), 'newest': iso(span[1] if span else None)}
+    except Exception as e:
+        return {'built': False, 'senders': [], 'folders': [], 'error': str(e)}
 
 
 def _search_folder_order(root):
@@ -1669,6 +1888,7 @@ def _imap_action(args, cfg):
                 'senderEmail': sender_email,
                 'to':          _decode_hdr(msg.get('To', '')),
                 'cc':          _decode_hdr(msg.get('Cc', '')),
+                'recipients':  _hdr_recipients(msg),
                 'received':    received,
                 'body':        plain,
                 'htmlBody':    html,
@@ -1977,6 +2197,11 @@ def _imap_action(args, cfg):
         if not args.to or not args.subject:
             print(json.dumps({'error': 'to and subject required'}))
             return
+        if args.draft:
+            # No Drafts folder to park it in over plain SMTP — say so rather
+            # than silently sending a mail the user expected to review.
+            print(json.dumps({'error': 'Drafts are not supported on the IMAP backend — use Send'}))
+            return
         try:
             from email.mime.text import MIMEText
             from email.mime.multipart import MIMEMultipart
@@ -1991,6 +2216,8 @@ def _imap_action(args, cfg):
             msg_out['Subject'] = args.subject
             msg_out['From'] = cfg['email']
             msg_out['To'] = args.to
+            if args.cc:
+                msg_out['Cc'] = args.cc.replace(';', ', ')
             if att_sources:
                 imap = _imap_connect(cfg)
                 imap.select('INBOX', readonly=True)
@@ -2026,6 +2253,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--action', required=True, choices=[
         'status', 'mailboxes', 'emails', 'email', 'search', 'index', 'index-status',
+        'search-facets',
         'save-attachment',
         'send-reply', 'get-attachment',
         'flag', 'mark-unread', 'delete', 'forward', 'open-in-outlook',
@@ -2047,6 +2275,7 @@ def main():
     # this one's command line for as long as it is alive.
     parser.add_argument('--body-stdin', dest='body_stdin', type=int, default=0)
     parser.add_argument('--to',         default='')
+    parser.add_argument('--cc',         default='')   # send-new: semicolon-separated CC list
     parser.add_argument('--subject',    default='')
     parser.add_argument('--category',   default='')
     parser.add_argument('--flagged',    type=int, default=1)
@@ -2069,6 +2298,12 @@ def main():
     parser.add_argument('--source',     default='auto', choices=['auto', 'index', 'live'])
     parser.add_argument('--mode',       default='part', choices=list(MATCH_MODES))  # how a term must sit in the text
     parser.add_argument('--full',       type=int, default=0)    # index: re-read every message
+    # Search filters — each narrows the hits without touching the search terms.
+    parser.add_argument('--scope',      default='', choices=[''] + list(SEARCH_SCOPES))  # which text the terms match
+    parser.add_argument('--folder',     default='')   # substring of the folder path, e.g. 'completed by laith'
+    parser.add_argument('--att',        default='', choices=['', 'any', 'yes', 'no', 'pdf'])
+    parser.add_argument('--read',       default='', choices=['', 'any', 'read', 'unread'])
+    parser.add_argument('--sort',       default='new', choices=['new', 'old'])
     args = parser.parse_args()
 
     # Secrets arrive on stdin so they never sit in this process's command line.
@@ -2137,6 +2372,10 @@ def main():
     # ── Local index reads: pure SQLite, no COM, no Outlook contention ─────────
     if args.action == 'index-status':
         print(json.dumps(index_status(args.dest)))
+        return
+
+    if args.action == 'search-facets':
+        print(json.dumps(index_facets(args.dest, args.limit if args.limit > 1 else 60)))
         return
 
     if args.action == 'search' and args.source in ('index', 'auto'):
@@ -2395,16 +2634,29 @@ def _win32_action(args):
     #    (index-dependent, unreliable) search.
     if args.action == 'search':
         tokens = search_tokens(args.query)
-        if not tokens:
-            print(json.dumps({'emails': [], 'error': 'Empty search query'}))
+        scope  = _scope_of(args)
+        # A filter narrows on its own — "everything from Fenton with a PDF" needs
+        # no term — so only a request with neither terms nor filters is empty.
+        if not tokens and not index_where(args)[0]:
+            print(json.dumps({'emails': [], 'error': 'Type something to search for, '
+                                                     'or set a filter'}))
             return
-        with_body  = args.fields != 'meta'
+        with_body  = scope in ('all', 'body')
         # DASL only knows LIKE '%term%', so a narrowing mode is enforced here, on
         # the same text the restriction matched. Keeps live and index answers to
         # the same rule instead of two engines disagreeing about one query.
         mode       = args.mode if args.mode in MATCH_MODES else 'part'
         regexes    = compile_terms(tokens, mode)
         deadline   = time.time() + max(5, args.timeout)
+        # Same filters the index applies, read once. '' / 'any' means no filter,
+        # so an unfiltered live search costs exactly what it always did.
+        folder_want = (getattr(args, 'folder', '') or '').strip().lower()
+        sender_want = (getattr(args, 'sender', '') or '').strip().lower()
+        att_want    = (getattr(args, 'att', '') or '').strip().lower()
+        att_want    = att_want if att_want in ('yes', 'no', 'pdf') else ''
+        read_want   = (getattr(args, 'read', '') or '').strip().lower()
+        read_want   = read_want if read_want in ('read', 'unread') else ''
+        newest_first = (getattr(args, 'sort', '') or 'new').lower() != 'old'
         try:
             _, ns = get_outlook_ns()
 
@@ -2426,12 +2678,73 @@ def _win32_action(args):
                                                          '(is the UKQuoteFactoryEL mailbox open?)'}))
                 return
 
+            # The filter half of the query, applied to the item itself. The
+            # index does this in SQL; live has to read the properties, so it
+            # only ever touches an item the text sweep already matched, and
+            # only for filters that were actually set.
+            def scope_text(item):
+                """Just the text `scope` names, for the fields DASL cannot isolate."""
+                try:
+                    if scope == 'subject':
+                        return item.Subject or ''
+                    if scope == 'from':
+                        return f'{getattr(item, "SenderName", "") or ""} {resolve_smtp(item) or ""}'
+                    if scope == 'recipients':
+                        return ' '.join([getattr(item, 'To', '') or '', getattr(item, 'CC', '') or ''])
+                    if scope == 'atts':
+                        return _att_blob(item)
+                    if scope == 'body':
+                        return item.Body or ''
+                except Exception:
+                    return ''
+                return ''
+
+            def passes_filters(item, fpath):
+                if folder_want and folder_want not in (fpath or '').lower():
+                    return False
+                # DASL matched the whole message; a narrowed scope has to be
+                # re-checked here or live would answer a wider question than
+                # the index does for the same query.
+                if scope not in ('all', 'meta') and tokens:
+                    if not _matches_mode(scope_text(item), regexes):
+                        return False
+                if sender_want:
+                    try:
+                        who = f'{getattr(item, "SenderName", "") or ""} {resolve_smtp(item) or ""}'
+                    except Exception:
+                        who = ''
+                    if sender_want not in who.lower():
+                        return False
+                if att_want:
+                    try:
+                        names = [att_info_light(item.Attachments.Item(k))
+                                 for k in range(1, item.Attachments.Count + 1)]
+                    except Exception:
+                        names = []
+                    if att_want == 'yes' and not names:
+                        return False
+                    if att_want == 'no' and names:
+                        return False
+                    if att_want == 'pdf' and not any(a['isPdf'] for a in names):
+                        return False
+                if read_want:
+                    try:
+                        unread = bool(item.UnRead)
+                    except Exception:
+                        unread = False
+                    if (read_want == 'unread') != unread:
+                        return False
+                return True
+
             def keep(item, fpath, store_name, store_id):
                 try:
                     if item.Class != 43:
                         return
                     eid = item.EntryID
                     if eid in seen:
+                        return
+                    if not passes_filters(item, fpath):
+                        seen.add(eid)      # judged once; never re-tested by pass 2
                         return
                     seen.add(eid)
                     hits.append((_sort_stamp(item), {
@@ -2531,7 +2844,7 @@ def _win32_action(args):
                             pass
 
             # Newest first, then expand only the page being returned.
-            hits.sort(key=lambda h: h[0], reverse=True)
+            hits.sort(key=lambda h: h[0], reverse=newest_first)
             emails = []
             for _stamp, ref in hits[:args.limit]:
                 try:
@@ -2566,6 +2879,9 @@ def _win32_action(args):
                 'degraded':  degraded,
                 'query':     args.query,
                 'mode':      mode,
+                'scope':     _scope_of(args),
+                'sort':      'new' if newest_first else 'old',
+                'filters':   index_where(args)[2],
             }))
         except Exception as e:
             print(json.dumps({'emails': [], 'error': str(e)}))
@@ -3537,6 +3853,9 @@ def _win32_action(args):
                 'senderEmail': resolve_smtp(item),
                 'to':          item.To or '',
                 'cc':          item.CC or '',
+                # Real SMTP addresses for everyone on the thread — the display
+                # names in To/CC cannot be typed into a To field.
+                'recipients':  item_recipients(item),
                 'received':    str(item.ReceivedTime),
                 'body':        (item.Body or '')[:6000],
                 'htmlBody':    item.HTMLBody or '',
@@ -3798,6 +4117,8 @@ def _win32_action(args):
             app_ol, ns = get_outlook_ns()
             mail = app_ol.CreateItem(0)
             mail.To      = args.to
+            if args.cc:
+                mail.CC  = args.cc
             mail.Subject = args.subject
             mail.Body    = args.body or ''
 
@@ -3907,6 +4228,12 @@ def _graph_action(args, token):
                 'senderEmail': frm.get('address', ''),
                 'to':          ', '.join(to_list),
                 'cc':          ', '.join(cc_list),
+                'recipients':  [{'name': r.get('emailAddress', {}).get('name', ''),
+                                 'email': r.get('emailAddress', {}).get('address', ''),
+                                 'type': kind}
+                                for kind, key in (('to', 'toRecipients'), ('cc', 'ccRecipients'))
+                                for r in msg.get(key, [])
+                                if r.get('emailAddress', {}).get('address', '')][:25],
                 'received':    msg.get('receivedDateTime', ''),
                 'body':        plain[:6000],
                 'htmlBody':    html_body,
@@ -4166,8 +4493,18 @@ def _graph_action(args, token):
                 'body':         {'contentType': 'text', 'content': args.body or ''},
                 'toRecipients': to_recip,
             }
+            if args.cc:
+                msg_payload['ccRecipients'] = [{'emailAddress': {'address': a.strip()}}
+                                               for a in args.cc.split(';') if a.strip()]
             if attachments:
                 msg_payload['attachments'] = attachments
+
+            if args.draft:
+                # Park it in Drafts so a human presses Send in Outlook/OWA.
+                r = _gpost(token, '/me/messages', msg_payload)
+                print(json.dumps({'ok': True, 'draft': True,
+                                  'entryId': r.json().get('id', '')}))
+                return
 
             _gpost(token, '/me/sendMail',
                    {'message': msg_payload, 'saveToSentItems': True})
