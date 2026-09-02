@@ -54,6 +54,37 @@ def merge_pdfs(output_path, paths):
     return True, ""
 
 
+def patch_sheet_errors(wb):
+    """Correct the known-wrong rows of the 'Tables' sheet before the brief is
+    rendered from it.
+
+    The calculator is maintained by hand and carries errors from revision to
+    revision. 1PH-12KVA is a 3x 5KVA parallel build (the brief itself prints 3
+    control cabinets), but its supply row still holds the 2x fuse and cable
+    figures copied down from 1PH-10KVA — still wrong in V3.6. Every other
+    multi-cabinet row follows the Nx rule, and automation/cbu_data_gen.py applies
+    the same correction to src/lib/cbuData.ts, so without this the printed brief
+    contradicted the app for the same system.
+
+    Only rewrites cells that still hold the stale value, so the day the sheet is
+    fixed upstream this quietly stops doing anything.
+    """
+    if "Tables" not in wb.sheetnames:
+        return
+    ws = wb["Tables"]
+    for row in ws.iter_rows(min_row=22, max_row=54, max_col=12):
+        if str(row[0].value or "").strip() != "1PH- 12KVA":
+            continue
+        fuse_rect, fuse_bypass, cable_in, cable_out = row[8], row[9], row[10], row[11]
+        for cell in (fuse_rect, fuse_bypass):
+            if str(cell.value or "").strip() == "2x40A":
+                cell.value = "3x40A"
+        for cell in (cable_in, cable_out):
+            if str(cell.value or "").strip().startswith("2x"):
+                cell.value = "3x 10mm²"
+        break
+
+
 def fill_and_convert(template, lo, outdir, idx, system, project, quote, engineer, email, phone):
     """Fill template for one system, convert to PDF.  Returns path to PDF or raises."""
     import openpyxl
@@ -63,6 +94,7 @@ def fill_and_convert(template, lo, outdir, idx, system, project, quote, engineer
     work_file = os.path.join(outdir, f"CBU_Tech_Brief_{idx}.xlsx")
 
     wb = openpyxl.load_workbook(template, keep_vba=True)
+    patch_sheet_errors(wb)
 
     if "Sales Engineer Sheet" in wb.sheetnames:
         ws = wb["Sales Engineer Sheet"]
