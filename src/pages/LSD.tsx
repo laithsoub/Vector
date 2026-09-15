@@ -58,6 +58,8 @@ const EMPTY: Omit<LsdMeta, 'file'> = {
   // These never touch the price — they are the daily register's own columns,
   // filled here because this is the only moment anyone knows them.
   bu: '', status: 'Priced', sales_name: '', cpq_updated: '', notes: '', rpi_comment: '',
+  // The customer's earlier approved offer to carry from, staged by Fetch.
+  history_offer: '', history_label: '',
 };
 
 // Statuses the daily sheet uses. Free text is allowed underneath, but the
@@ -644,6 +646,8 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
       const r = await api.lsdUpload(f);
       if (!r.ok || !r.file) { toast('err', r.error || 'Upload failed.'); return; }
       setFile({ path: r.file, name: r.name || f.name });
+      // A staged history offer belongs to the fetched deal, never to an upload.
+      setMeta(m => ({ ...m, history_offer: '', history_label: '' }));
       // CPQ names the export <number>_<date>; the folder it came from usually
       // carries the W-number, but the file does not — so only prefill silently
       // when the name happens to contain one.
@@ -688,13 +692,29 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
       // Has this been priced before? The lookup runs server-side on every fetch,
       // so the revision number and the file to diff against are already here.
       const rv = r.revisions;
+      // A re-upload under a new number: the server searched the customer's own
+      // history and staged the best-matching approved offer for the build to carry.
+      const hist = r.history;
+      const pick = hist?.ok ? hist.pick : null;
+      setMeta(m => ({ ...m, history_offer: pick?.offer || '', history_label: pick?.label || '' }));
       if (rv?.ok && (rv.latest || 0) > 0) {
         setMeta(m => ({ ...m, revision: rv.next || m.revision }));
         setRevNote(`Priced before — R${rv.latest} is the newest on file, so this is ${rv.next}.`
                    + (rv.pulled ? ` Pulled ${rv.pulled.name} to diff against.`
                                 : ' No approved file found to carry prices from.'));
+      } else if (pick) {
+        setRevNote(`New number, old deal: ${pick.transaction} (${pick.name || 'no name'}, `
+                   + `${pick.cpq_updated || 'undated'}) has an approved offer pricing ${pick.matched ?? '?'} `
+                   + `of these materials${pick.overlap != null ? ` (${Math.round(pick.overlap * 100)}%)` : ''} — `
+                   + `its prices will be carried.`
+                   + (pick.check?.header_total && !pick.check.match
+                      ? ' Its total does not add up to its lines — check it before trusting the carry.' : ''));
       } else if (rv?.ok) {
-        setRevNote('Nothing on file for this transaction — first version.');
+        const n = hist?.ok ? (hist.candidates || []).length : 0;
+        setRevNote(n
+          ? `Nothing on file for this transaction. The customer has ${n} earlier deal(s), none pricing 60% of these materials — first version.`
+          : 'Nothing on file for this transaction — first version.'
+          + (hist && !hist.ok ? ` Customer history not checked: ${hist.error}` : ''));
       } else if (rv?.error) {
         setRevNote(`Could not check for earlier revisions: ${rv.error}`);
       }
@@ -973,7 +993,19 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
         {(cpqNote || revNote) && !runningNow && (
           <p className="text-[10.5px] text-[var(--t3)] mt-2 leading-relaxed flex items-start gap-1.5">
             <Info className="w-3 h-3 shrink-0 mt-[3px]" />
-            <span>{[cpqNote, revNote].filter(Boolean).join('  ·  ')}</span>
+            <span>
+              {[cpqNote, revNote].filter(Boolean).join('  ·  ')}
+              {meta.history_offer && (
+                <button type="button"
+                        className="ml-1.5 underline text-[var(--accent)] hover:opacity-80"
+                        onClick={() => {
+                          setMeta(m => ({ ...m, history_offer: '', history_label: '' }));
+                          setRevNote(n => `${n} Carry switched off — priced from scratch.`);
+                        }}>
+                  Don't carry
+                </button>
+              )}
+            </span>
           </p>
         )}
 
@@ -1386,9 +1418,16 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 <Kpi label="Total RPI" value={pct(s.total_rpi)}
                      tone={s.rpi_rate !== undefined && s.total_rpi !== null && s.total_rpi < s.rpi_rate
                              ? 'var(--warn)' : 'var(--ok)'}
-                     hint={rpiDriver
-                             ? `${pct(rpiDriver.share, 0)} ${rpiDriver.material}`
-                             : 'price + mix variance'} />
+                     hint={[
+                             // Dalia works a normal case to ~6.8% so her yearly 6%
+                             // average survives Kiran's exceptions — show the gap.
+                             s.rpi_working_level != null && s.total_rpi !== null
+                               ? `${s.total_rpi >= s.rpi_working_level ? '+' : ''}`
+                                 + `${((s.total_rpi - s.rpi_working_level) * 100).toFixed(1)} pts vs `
+                                 + `${pct(s.rpi_working_level, 1)} working level`
+                               : null,
+                             rpiDriver ? `${pct(rpiDriver.share, 0)} ${rpiDriver.material}` : null,
+                           ].filter(Boolean).join(' · ') || 'price + mix variance'} />
                 <Kpi label="E2E @ target" value={pct(s.at_target?.e2e)}
                      hint={s.at_target ? `${money(s.at_target.target_price, cur)} · RPI ${pct(s.at_target.rpi_pct)}` : 'as requested'} />
                 {!!s.carried && (

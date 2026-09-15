@@ -128,6 +128,10 @@ warnings.filterwarnings("ignore")
 
 # ─── The rule's locked constants ─────────────────────────────────────────────
 RPI_RATE = {"H1": 0.035, "H2": 0.06}   # half-year RPI floor
+# Dalia's KPI is the 6% as an AVERAGE over all her cases, and Kiran's flat / 4%
+# exceptions pull it down — so a normal case is worked to ~6.8% (2026-09-15).
+# Shown against the case RPI as headroom; the gate itself stays at RPI_RATE.
+RPI_WORKING_LEVEL = 0.068
 ADD_DISC_CAP = 0.20                    # the 20% flatten in the MIN shortcut
 
 # ─── customers the half-year rate does not apply to ──────────────────────────
@@ -189,6 +193,8 @@ FB_HEAD_SCAN = 20
 # column B, and the table itself ends at M — everything right of that is the
 # terms-and-conditions block, which outlives the line items and must survive.
 OFFER_FIRST_ROW, OFFER_COL_SAP, OFFER_TABLE_COLS = 12, 2, 13
+# QTY is E, Unit Net K, Total Net L; the header total sits on row 10.
+OFFER_COL_NET, OFFER_COL_TOTAL, OFFER_TOTAL_ROW = 11, 12, 10
 FIRST_ROW = 13
 MAX_LINES = 500 - FIRST_ROW            # 487 lines before the ledger runs out of formulas
 
@@ -757,13 +763,18 @@ def _rpi_gate(w, y, qty, py_ctry_qty, rate):
     """The 'requested' rule's RPI gate: the prior-year average this line is
     measured against, lifted by the half-year rate. The analyst's own manual
     check — customer average x 1.06 — not the algebraic mix-variance solve, which
-    over-corrects because it also pays for the mix offset."""
-    if py_ctry_qty and qty and (qty / py_ctry_qty) > FIVEX:
-        return None, "5x qty - the model forces RPI to 0"
+    over-corrects because it also pays for the mix offset.
+
+    Over 5x the model reads RPI as 0, but the floor still holds (Dalia,
+    2026-09-15, MTL5561: 101.83 x 1.06 = 107.94): the customer can cut the
+    quantity on the next revision, and then the 6% is read on a price that
+    never had it."""
+    five_x = bool(py_ctry_qty and qty and (qty / py_ctry_qty) > FIVEX)
+    note = " - 5x qty, the model reads RPI 0 but the floor is kept in case qty drops" if five_x else ""
     if w:
-        return w * (1 + rate), "customer avg x (1 + rate)"
+        return w * (1 + rate), "customer avg x (1 + rate)" + note
     if y:
-        return y * (1 + rate), "country avg x (1 + rate)"
+        return y * (1 + rate), "country avg x (1 + rate)" + note
     return None, None
 
 
@@ -829,6 +840,10 @@ def _by_group(lines):
             "net": round(net, 2),
             "e2e": round(1 - cost / net, 4) if net else None,
             "target_e2e": round(max(tgts), 4) if tgts else None,
+            # The summary PIVOT's own calculated field — 'Total RPI Value' /
+            # ('Total Net Price' - 'Total RPI Value') — which is NOT the ledger
+            # totals row's AF11 (that one subtracts RPI Value). This table mirrors
+            # the pivot, so it keeps the pivot's basis. See summary.total_rpi.
             "rpi_pct": round(ae / (net - ae), 4) if abs(net - ae) > EPS else None,
             "rpi_value": round(ae, 2),
         })
@@ -1096,27 +1111,13 @@ def price_lines(lines, ref, meta):
         else:
             rpi_floor, rpi_mode = _rpi_target(cust_avg, ctry_avg, qty, ctry_qty, cust_qty, rate)
         raised = False
-        # The gate measures this CUSTOMER's own prior-year price, but what has to
-        # clear the rate is the TOTAL RPI — price variance plus mix (Dalia, on
-        # the call 2026-09-10). The ledger average blends countries that do not
-        # sell at one level: Jordan, Egypt and Iraq go out under Saudi and the
-        # UAE, so a line can sit below what this customer paid last year and
-        # still clear 6% on the company's reading. "Even if customer gets
-        # negative RPI (lower price), IT CAN PASS." Lifting it would raise a
-        # price nobody needed to raise.
-        #
-        # This can only bite where a CUSTOMER average exists. On a country-only
-        # line the gate is y*(1+rate) and Total RPI reduces to (s-y)/y, so the
-        # two conditions are the same inequality and the branch never fires —
-        # which is the intent: it is the customer-vs-ledger split that is at
-        # issue here, not the no-history case.
-        if (rpi_floor is not None and unit_net is not None
-                and rpi_floor > unit_net + 1e-6
-                and rpi_before is not None and rpi_before >= rate - EPS):
-            rpi_floor = None
-            rpi_mode = (f"total RPI {rpi_before:.1%} already clears {rate:.0%} on the "
-                        f"ledger average, so the price is left under this customer's "
-                        f"own last-year price - passes on the company reading")
+        # The gate is applied PER LINE against this customer's own last-year
+        # price, even when the ledger's Total RPI already clears the rate. The
+        # 2026-09-10 carve-out that let such a line pass was reversed by Dalia on
+        # 2026-09-15 (Khimji W262144615E): "the customer doesn't see the ledger,
+        # he sees his own reference" — he reviews line by line, and a line at
+        # last year's price becomes his argument for every other line. Sales'
+        # requested discount is often exactly last year's price. Laith's call.
         if rpi_floor is not None and unit_net is not None and rpi_floor > unit_net + 1e-6:
             unit_net = rpi_floor
             add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
@@ -1226,7 +1227,11 @@ def price_lines(lines, ref, meta):
             flags.append(("action" if exc else "info",
                           f"raised to last year's price + {exc['rate']:.1%} ({rpi_mode}) - "
                           f"the {exc['label']} rate, which needs approving"
-                          if exc else f"raised to the {half} RPI floor ({rpi_mode})"))
+                          if exc else f"raised to the {half} RPI floor ({rpi_mode})"
+                          # Say when what was asked read NEGATIVE — the reason it
+                          # could not pass as requested (Dalia's 45.77% Universal line).
+                          + (f" - the requested price read total RPI {rpi_before:.1%}"
+                             if rpi_before is not None and rpi_before < -EPS else "")))
         if floored:
             asked = (f"{ln['requested']:,.4f}" if ln["requested"] is not None else
                      f"{req_disc:.1%} off" if req_disc is not None else "nothing")
@@ -1254,14 +1259,37 @@ def price_lines(lines, ref, meta):
         # as it stands. These are usually service-level lines that come out of the
         # calculation altogether, and about nine in ten of them are CBS, not Fire
         # (Dalia, on the call 2026-09-10).
-        if (pv_pct is not None and pv_pct > rate + EPS
+        # `>=`, not `>`: since 2026-09-15 the gate lands these lines at EXACTLY the
+        # rate on the customer, and a strict test let every one of them through
+        # unflagged (Khimji: five lines at +6.0% customer, -5% to -17% total).
+        if (pv_pct is not None and pv_pct >= rate - EPS
                 and rpi_after is not None and rpi_after < -EPS):
             flags.append(("action",
-                          f"price variance {pv_pct:.0%} on this customer but total RPI "
-                          f"{rpi_after:.0%} - the mix against the ledger average is what "
+                          f"price variance {pv_pct:.1%} on this customer but total RPI "
+                          f"{rpi_after:.1%} - the mix against the ledger average is what "
                           f"is negative. If the margin is right this goes for approval as "
                           f"it stands; check first whether it is a service-level line that "
                           f"belongs outside the calculation"))
+        # NEGATIVE RPI ON THE CUSTOMER — the price is under what this customer paid
+        # last year. Dalia, 2026-09-15: "I absolutely can't give the customer last
+        # year's price", let alone less. The gate prevents it on a priced line, so
+        # it can only arrive two ways, and both are said out loud:
+        #  * a CARRIED price (revision or customer history) — never gated, and an
+        #    approved offer older than the PY data can sit under it;
+        #  * anything else is a line the gate could not lift (safety net).
+        if cust_avg and unit_net is not None and unit_net < cust_avg - 1e-6:
+            neg = unit_net / cust_avg - 1
+            if carried is not None:
+                flags.append(("action",
+                              f"held from {carry_label} at {unit_net:,.4f}, which is {neg:.1%} "
+                              f"under this customer's own last-year price {cust_avg:,.4f} - "
+                              f"negative RPI on the customer; confirm the carried price or "
+                              f"raise it to last year + {rate:.1%} ({cust_avg * (1 + rate):,.4f})"))
+            else:
+                flags.append(("action",
+                              f"priced {neg:.1%} under this customer's own last-year price "
+                              f"{cust_avg:,.4f} - negative RPI on the customer, which must not "
+                              f"go out as it stands"))
         if cheaper:
             flags.append(("verify",
                           f"{cheaper['material']} is the same part at "
@@ -1346,7 +1374,8 @@ def price_lines(lines, ref, meta):
     at_target = {
         "target_price": round(tgt_total, 2),
         "e2e": round(1 - cost_tot / tgt_total, 4) if tgt_total else None,
-        "rpi_pct": round(tgt_ae / (tgt_total - tgt_ae), 4) if abs(tgt_total - tgt_ae) > EPS else None,
+        # Same basis as the ledger's AF11 — see total_rpi below.
+        "rpi_pct": round(tgt_ae / (tgt_total - tgt_ag), 4) if abs(tgt_total - tgt_ag) > EPS else None,
         "rpi_value": round(tgt_ae, 2),
         "pv_value": round(tgt_ag, 2),
     }
@@ -1394,7 +1423,14 @@ def price_lines(lines, ref, meta):
         "overall_add_disc": round(1 - grand / std_tot, 4) if std_tot else None,
         "overall_e2e": round(1 - cost_tot / grand, 4) if grand else None,
         "overall_rpi": round(ag / (grand - ag), 4) if abs(grand - ag) > EPS else None,
-        "total_rpi": round(ae / (grand - ae), 4) if abs(grand - ae) > EPS else None,
+        # The ledger's totals row is NOT the per-line formula summed: AF11 is
+        # =AE11/(T11-AG11) — Total RPI value over (Total Net - RPI VALUE), where
+        # a line's AF13 is AE13/(T13-AE13). Read off the master 2026-09-16 (and
+        # on Dalia's R2 screen as AG11/(V11-AI11), two columns inserted).
+        "total_rpi": round(ae / (grand - ag), 4) if abs(grand - ag) > EPS else None,
+        # The level a normal case is worked to so the yearly average survives the
+        # approver's exceptions. None under a customer exception — its rate is agreed.
+        "rpi_working_level": None if exc else RPI_WORKING_LEVEL,
         # The two variance VALUES behind those percentages. The daily register
         # asks for "RPI Value" in money, not just the ratio, so carry both out
         # rather than making the caller re-derive them from the lines.
@@ -1867,9 +1903,20 @@ def prior_prices(case_dir, log, before=None):
         return "", {}
     rev, fname = max(offers)
     label = f"R{rev}" if rev else "the first version"
+    prices, _ = read_offer_prices(os.path.join(case_dir, fname), label, log)
+    return (label, prices) if prices else ("", {})
+
+
+def read_offer_prices(path, label, log):
+    """{material: {net, qty}} from one Approved Offer, plus the total check.
+
+    The check is Dalia's before she carries anything (2026-09-15): the approved
+    total must be the lines' own Unit x QTY, or something was edited after the
+    offer went to sales. Returns (prices, check); ({}, None) when unreadable."""
+    fname = os.path.basename(path)
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(os.path.join(case_dir, fname), data_only=True)
+        wb = openpyxl.load_workbook(path, data_only=True)
         ws = wb[wb.sheetnames[0]]
         # Columns are found by HEADER, never by position. Vector hides the price
         # build-up and leaves Unit Net Price in K; the analyst DELETES those
@@ -1889,23 +1936,32 @@ def prior_prices(case_dir, log, before=None):
         if not (head_row and col_sap and col_net):
             log(f"{fname} does not look like an Approved Offer (no 'SAP No' / "
                 f"'Unit Net Price' header) — nothing carried.", "warn")
-            return "", {}
-        prices = {}
+            return {}, None
+        prices, lines_total = {}, 0.0
         for row in range(head_row + 1, ws.max_row + 1):
             mat = ws.cell(row, col_sap).value
             net = num(ws.cell(row, col_net).value)
             if mat and str(mat).strip() not in ("0", "") and net:
-                prices[str(mat).strip()] = {
-                    "net": net,
-                    "qty": num(ws.cell(row, col_qty).value) if col_qty else None,
-                }
+                qty = num(ws.cell(row, col_qty).value) if col_qty else None
+                prices[str(mat).strip()] = {"net": net, "qty": qty}
+                lines_total += net * (qty or 0)
+        # Total Net sits right of Unit Net in both layouts (Vector's K→L, the
+        # analyst's F→G), and its header total two rows above the header.
+        header_total = num(ws.cell(head_row - 1, col_net + 1).value)
+        check = {"lines_total": round(lines_total, 2),
+                 "header_total": round(header_total, 2) if header_total else None,
+                 "match": bool(header_total and abs(header_total - lines_total) <= 1.0)}
         from openpyxl.utils import get_column_letter
         log(f"Carrying {len(prices)} price(s) from {label} ({fname}), read from "
             f"column {get_column_letter(col_net)}")
-        return label, prices
+        if check["header_total"] and not check["match"]:
+            log(f"{fname}: its header total {check['header_total']:,.2f} is not the lines' "
+                f"own {check['lines_total']:,.2f} — the offer was edited after it was "
+                f"approved; check which prices are real before trusting the carry.", "warn")
+        return prices, check
     except Exception as e:
-        log(f"Could not read the previous revision ({fname}): {e}", "warn")
-        return "", {}
+        log(f"Could not read the previous offer ({fname}): {e}", "warn")
+        return {}, None
 
 
 def _strip_macro_shapes(ws, log):
@@ -2099,6 +2155,29 @@ def _trim_offer(ws, log):
         f"(last line row {last_line}, terms reach row {last_note})")
 
 
+def _live_totals(ws, log):
+    """Put Total Net back as a formula: Unit Net (K) stays a pasted value, Total
+    Net (L) becomes =K*E and the header total (L10) a SUM.
+
+    Sales change quantities with the customer ("200 → 150 to reach his budget"),
+    and a pasted total does not move with them (Dalia, 2026-09-15). Written after
+    _trim_offer so the SUM covers exactly the line rows that survived."""
+    last = OFFER_FIRST_ROW - 1
+    for r in range(OFFER_FIRST_ROW, ws.UsedRange.Row + ws.UsedRange.Rows.Count):
+        sap = str(ws.Cells(r, OFFER_COL_SAP).Value2 or "").strip()
+        if not sap or sap in ("0", "x"):
+            continue
+        # Value2, not Value: a currency-formatted cell comes back through .Value as
+        # a Decimal, which is not an int/float, and every line was skipped.
+        if isinstance(ws.Cells(r, OFFER_COL_NET).Value2, (int, float)):
+            ws.Cells(r, OFFER_COL_TOTAL).Formula = f"=K{r}*E{r}"
+            last = r
+    if last >= OFFER_FIRST_ROW:
+        ws.Cells(OFFER_TOTAL_ROW, OFFER_COL_TOTAL).Formula = f"=SUM(L{OFFER_FIRST_ROW}:L{last})"
+        log(f"Total Net kept live: L{OFFER_FIRST_ROW}:L{last} = Unit Net x QTY, "
+            f"L{OFFER_TOTAL_ROW} = SUM — a quantity change by sales updates the total")
+
+
 def _export_feedback(app, wb, out_path, log):
     """Copy the Feedback sheet to its own workbook and paste values over it —
     the procedure's manual output step (both model macros are broken in V2)."""
@@ -2114,6 +2193,7 @@ def _export_feedback(app, wb, out_path, log):
     _refresh_pivots(new, ws, log, relink=True)   # no-op on Feedback, which has none
     _drop_links(new, log)
     _trim_offer(ws, log)
+    _live_totals(ws, log)
 
     # The customer never sees how the price was built: list, standard discount,
     # unit standard and total standard, and the add. discount that got there.
@@ -2234,6 +2314,18 @@ def main():
             else:
                 log(f"{rev}: no previous Approved Offer in the case folder — every "
                     f"line is priced from scratch.", "warn")
+        elif meta.get("history_offer") and os.path.exists(str(meta["history_offer"])):
+            # Not a revision of THIS number, but the same customer's earlier deal:
+            # sales re-uploaded it under a new transaction (Khimji W262144615E was
+            # W262142622E in July, all 25 materials the same). Dalia carries the
+            # last approved prices exactly as she would for a revision.
+            lbl = str(meta.get("history_label") or "the customer's last approved offer")
+            prices, check = read_offer_prices(str(meta["history_offer"]), lbl, log)
+            if prices:
+                meta["_carry"] = {m: v["net"] for m, v in prices.items()}
+                meta["_carry_label"] = lbl
+                meta["_history_check"] = check
+                diff = revision_diff(lines, prices, lbl, log)
 
         # This master's MV Ledger 2025 carries R2321 (UAE) only, so a customer
         # outside the UAE gets the UAE ledger as its "country" prior-year base.

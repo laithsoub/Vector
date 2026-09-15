@@ -80,6 +80,9 @@ export interface LsdSummary {
   lines: number; grand_total: number; total_standard: number;
   overall_add_disc: number | null; overall_e2e: number | null;
   overall_rpi: number | null; total_rpi: number | null;
+  // The level a normal case is worked to (6.8%) so the yearly 6% average survives
+  // exceptions. Null under a customer RPI exception.
+  rpi_working_level?: number | null;
   // The money behind those two ratios — what the daily register calls RPI Value.
   pv_value: number | null; rpi_value: number | null;
   // Lines held at the previous revision's price.
@@ -201,6 +204,22 @@ export interface LsdRevisions {
   pulled?: { name: string; path: string; revision: number } | null;
 }
 
+// A new transaction number with no case of its own: the same customer's earlier
+// deals from Dalia's daily sheet, each scored by how much of this BOM its
+// approved offer prices. `pick` is the newest one pricing at least 60%.
+export interface LsdHistoryCandidate {
+  transaction: string; name: string; status: string; notes?: string;
+  cpq_updated: string | null; value?: number | null;
+  offer: string | null; offer_name?: string; label?: string;
+  matched?: number; overlap: number | null;
+  check?: { lines_total: number; header_total: number | null; match: boolean } | null;
+}
+export interface LsdHistory {
+  ok: boolean; error?: string;
+  pick?: LsdHistoryCandidate | null;
+  candidates?: LsdHistoryCandidate[];
+}
+
 // R4 → R5, line by line. Quantity moves carry their price; only a NEW item can
 // move the margin, and a dropped one is worth seeing before it is missed.
 export interface LsdDiff {
@@ -256,6 +275,11 @@ export interface LsdMeta {
   // into the same case folder with that prefix, and every line the previous
   // revision already carried keeps its price.
   revision?: string;
+  // Not a revision of this number but the customer's earlier deal re-uploaded
+  // under a new one: that deal's approved offer (staged by Fetch) and its label.
+  // Its prices are carried exactly as a revision's would be.
+  history_offer?: string;
+  history_label?: string;
   // The first draft: a second Working File holding the master with nothing in
   // it but the transaction — every ledger column still its own formula, no
   // decided discount. It separates a model number from an engine number, so it
@@ -326,11 +350,11 @@ export const api = {
   // Pull a transaction from Oracle CPQ (drives the logged-in debug-rail tab).
   lsdCpqFetch: (transaction: string) =>
     axios.post<LsdResult & { header?: Record<string, string>; file?: string; lines?: number;
-                             revisions?: LsdRevisions }>(
-      // CPQ (up to a reload and retry) plus the OneDrive revision check. The
-      // server caps both well below this, so this only ever fires if the box
-      // itself has stopped answering.
-      '/api/lsd/cpq-fetch', { transaction }, { timeout: 300_000 }).then(r => r.data),
+                             revisions?: LsdRevisions; history?: LsdHistory }>(
+      // CPQ (up to a reload and retry) plus the OneDrive revision check and, on a
+      // new number, the customer-history search. The server caps each well below
+      // this, so this only ever fires if the box itself has stopped answering.
+      '/api/lsd/cpq-fetch', { transaction }, { timeout: 480_000 }).then(r => r.data),
   // Which of the work tabs are open and still signed in, and a sweep on demand.
   lsdKeepalive: () => axios.get<LsdKeepalive>('/api/lsd/keepalive').then(r => r.data),
   lsdKeepaliveRun: () =>

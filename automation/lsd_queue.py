@@ -244,6 +244,58 @@ def parse(data, today=None, bus=("FIRE",)):
             "other_bu": other_bu, "bu_filter": sorted(bus), "rows": rows}
 
 
+def customer_rows(data, customer="", customer_name="", exclude=""):
+    """Every row for one customer, Done ones included, newest first.
+
+    parse() lists open work; this is the other question — what has this customer
+    had priced before? A re-uploaded deal carries a new transaction number, so the
+    history is found the way Dalia finds it (2026-09-15): filter her sheet on the
+    customer number (or name) and take the latest. Matched on digits with leading
+    zeros dropped; the name only when no number was given."""
+    import openpyxl
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    digits = lambda v: re.sub(r"\D", "", _text(v)).lstrip("0")
+    want_no, want_name = digits(customer), _text(customer_name).lower()
+    skip = re.sub(r"\s+", "", str(exclude or "")).upper()
+    if not (want_no or want_name):
+        return []
+    out = []
+    for ws in wb.worksheets:
+        hdr_row, cols = None, {}
+        for r in range(1, 6):
+            names = {c.column: _text(c.value).lower() for c in ws[r]}
+            if "transaction number" in names.values():
+                hdr_row = r
+                for col, name in names.items():
+                    if HEADERS.get(name) and HEADERS[name] not in cols:
+                        cols[HEADERS[name]] = col
+                break
+        if not hdr_row:
+            continue
+        for r in range(hdr_row + 1, ws.max_row + 1):
+            cell = lambda k: ws.cell(r, cols[k]).value if k in cols else None
+            no, name = digits(cell("customer")), _text(cell("customer_name")).lower()
+            if want_no and no != want_no:
+                continue
+            if not want_no and (not name or want_name not in name):
+                continue
+            txn = re.sub(r"\s+", "", _text(cell("transaction"))).upper()
+            if not W_RE.match(txn) or txn == skip:
+                continue
+            upd = cell("cpq_updated")
+            upd_d = upd.date() if isinstance(upd, dt.datetime) else upd if isinstance(upd, dt.date) else None
+            out.append({"row": r, "transaction": txn, "name": _text(cell("name")),
+                        "status": _text(cell("status")), "notes": _text(cell("notes")),
+                        "cpq_updated": upd_d.isoformat() if upd_d else None,
+                        "value": cell("value") if isinstance(cell("value"), (int, float)) else None})
+        break
+    # Newest first: her latest rows sit at the bottom, and the date breaks ties.
+    out.sort(key=lambda x: (x["cpq_updated"] or "", x["row"]), reverse=True)
+    return out
+
+
 def run(job, log):
     port = int(job.get("port") or 9222)
     ref = str(job.get("file") or "").strip() or DEFAULT_FILE

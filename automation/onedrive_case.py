@@ -176,6 +176,94 @@ def run(job, log):
     return out
 
 
+MAX_HISTORY = 6          # the customer's newest earlier deals worth opening
+MIN_OVERLAP = 0.6        # share of this BOM's materials the old offer must price
+
+
+def history(job, log):
+    """The customer's earlier deal, when this transaction number has no case.
+
+    Dalia's own steps (2026-09-15): filter her daily sheet on the customer, take
+    the latest transactions, open that case's approved offer, check its total,
+    carry the prices. Each candidate's newest approved offer is downloaded into
+    `out_dir` and scored by how many of THIS BOM's materials it prices; the first
+    (newest) one pricing at least MIN_OVERLAP of them is the pick. A stock order is
+    ~90% the same items as the last one, so a real match is not borderline.
+    READ-ONLY against her drive, like run()."""
+    import lsd_queue as lq
+    from lsd_pricing import read_bom, read_offer_prices
+
+    port = int(job.get("port") or 9222)
+    customer = str(job.get("customer") or "").strip()
+    name = str(job.get("customer_name") or "").strip()
+    current = str(job.get("transaction") or "").strip().upper()
+    if not (customer or name):
+        raise RuntimeError("No customer to search the history for.")
+
+    log(f"Nothing on file under {current} — looking for {customer or name}'s earlier "
+        f"deals in Dalia's daily sheet (a re-upload carries a new number).")
+    got = json.loads(lq._evaluate(port, lq._download_js(lq.DEFAULT_FILE), log) or "{}")
+    if not got.get("b64"):
+        raise RuntimeError(f"Could not read Dalia's daily sheet: {got.get('error') or 'empty reply'}")
+    rows = [r for r in lq.customer_rows(base64.b64decode(got["b64"]), customer, name, current)
+            if not r["status"].lower().startswith("cancel")]
+    out = {"ok": True, "customer": customer, "candidates": [], "pick": None}
+    if not rows:
+        log(f"{customer or name} has no earlier transaction in her sheet — a genuinely new deal.")
+        return out
+    log(f"{len(rows)} earlier transaction(s) for this customer; opening the newest "
+        f"{min(len(rows), MAX_HISTORY)}.")
+
+    mats = set()
+    if job.get("bom") and os.path.exists(str(job["bom"])):
+        lines, _, _ = read_bom(job["bom"])
+        mats = {l["material"] for l in lines if l.get("material")}
+    scope = ANALYST_PATH.lower()
+    os.makedirs(job["out_dir"], exist_ok=True)
+
+    for r in rows[:MAX_HISTORY]:
+        cand = {**r, "offer": None, "overlap": None}
+        out["candidates"].append(cand)
+        res = json.loads(_evaluate(port, _search_js(r["transaction"]), log=log) or "{}")
+        if res.get("error"):
+            log(f"{r['transaction']}: OneDrive search failed ({res['error']})", "warn")
+            continue
+        files = [f for f in res.get("files", [])
+                 if f.get("type") and scope in (f.get("path") or "").lower()
+                 and "approved" in (f.get("name") or "").lower()
+                 and f["type"].lower() in ("xlsx", "xlsm")]
+        if not files:
+            log(f"{r['transaction']} ({r['name']}): no approved offer in her case folders.")
+            continue
+        files.sort(key=lambda f: (revision_of(f["name"]), f.get("modified") or ""))
+        f = files[-1]
+        dl = json.loads(_evaluate(port, _download_js(f["path"]), 120000) or "{}")
+        if dl.get("error") or not dl.get("b64"):
+            log(f"{r['transaction']}: could not download {f['name']} ({dl.get('error')})", "warn")
+            continue
+        local = os.path.join(job["out_dir"], f"{r['transaction']} - {f['name']}.{f['type']}")
+        with open(local, "wb") as fh:
+            fh.write(base64.b64decode(dl["b64"]))
+        rev = revision_of(f["name"])
+        label = (f"{r['transaction']}{(' R%d' % rev) if rev else ''} "
+                 f"({r['cpq_updated'] or f.get('modified')}, customer history)")
+        prices, check = read_offer_prices(local, label, log)
+        hit = len(mats & prices.keys())
+        overlap = (hit / len(mats)) if mats else None
+        cand.update(offer=local, offer_name=f["name"], label=label, check=check,
+                    matched=hit, overlap=round(overlap, 3) if overlap is not None else None)
+        log(f"{label}: prices {hit} of this BOM's {len(mats)} material(s)"
+            + (f" ({overlap:.0%})" if overlap is not None else ""))
+        if overlap is not None and overlap >= MIN_OVERLAP:
+            out["pick"] = cand
+            log(f"Carrying from {label} — {f['name']}", "ok")
+            break
+    if not out["pick"]:
+        log(f"None of the customer's earlier offers prices {MIN_OVERLAP:.0%} of this BOM — "
+            f"priced from scratch.")
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--job", required=True)
@@ -198,7 +286,7 @@ def main():
         print(f"[{kind}] {msg}", flush=True)
 
     try:
-        result = run(job, log)
+        result = history(job, log) if job.get("mode") == "history" else run(job, log)
     except Exception as e:
         log(str(e), "error")
         result = {"ok": False, "error": str(e)}

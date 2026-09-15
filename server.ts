@@ -4869,6 +4869,24 @@ async function startServer() {
           ? { ok: true, latest: od.latest_revision, next: od.next_revision,
               files: od.files, pulled: od.downloaded }
           : { ok: false, error: od.error };
+
+        // Nothing under this number is not the same as never priced: sales
+        // re-upload an old deal under a NEW transaction (Khimji W262144615E was
+        // W262142622E in July). So the customer's own history is searched too —
+        // Dalia's sheet by customer, then that deal's approved offer — and the
+        // best-matching one is staged for the build to carry from.
+        if (od.ok && !(od.latest_revision > 0) && !(od.files || []).length && h.customer) {
+          const hist = await runOneDrive({
+            mode: 'history',
+            customer: h.customer, customer_name: h.customer_name || '',
+            transaction: h.transaction || transaction,
+            bom: out.xlsx,
+            out_dir: path.join(lsdCaseDir(h.transaction || transaction, h.project || ''), '_history'),
+          }, 150_000);
+          out.history = hist.ok
+            ? { ok: true, pick: hist.pick || null, candidates: hist.candidates || [] }
+            : { ok: false, error: hist.error };
+        }
       }
       if (!res.headersSent) res.json(out);
     });
