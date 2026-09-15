@@ -8,7 +8,8 @@ import {
   Play, ArrowLeft, Zap, Eye, X, Image as ImageIcon, ChevronLeft,
   Pin, PinOff, Search, FolderOpen, MoreHorizontal, Star, ExternalLink,
   Forward, MessageSquare, PenLine, Plus, GripVertical, Battery, Lock, Check, FileSpreadsheet, FileDown,
-  Flag, Archive, Globe, SlidersHorizontal,
+  Flag, Archive, Globe, SlidersHorizontal, BookMarked, History as HistoryIcon, Trophy, CircleSlash,
+  AArrowUp, AArrowDown,
 } from 'lucide-react';
 import { runTask, isCancel } from '../lib/tasks';
 import { QuickQuotePanel } from './QuickQuote';
@@ -69,9 +70,10 @@ let _selectedId = '';
 let _detail: EmailDetail | null = null;
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
-import type { MatchMode, SearchMatch, SearchScope, SearchFilters, SearchFacets } from '../lib/api';
+import type { MatchMode, SearchMatch, SearchScope, SearchFilters, SearchFacets, Snippet, CustomerHistory } from '../lib/api';
 import { useSalesmen } from '../lib/salesmen';
 import { failed, plural } from '../lib/errors';
+import { sendToPricer } from '../lib/pricerHandoff';
 import { fmtGBP } from '../lib/ui';
 import type { TodoBucket } from '../types';
 import type { ToastFn } from '../App';
@@ -211,11 +213,21 @@ function inline(text: string): React.ReactNode {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Outlook COM (str(item.ReceivedTime)) hands back LOCAL wall-clock time stamped
+// "+00:00", so parsing it as UTC put every email two hours in the future and the
+// list read "-116m ago". That shape has a space separator; Graph/IMAP isoformat()
+// uses "T" and is genuinely UTC, so only the COM shape is re-read as local.
+function parseReceived(s: string): Date {
+  const m = /^(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)(?:\.\d+)?\+00:00$/.exec(s || '');
+  return m ? new Date(`${m[1]}T${m[2]}`) : new Date(s);
+}
+
 function fmtDate(iso: string) {
   try {
-    const d = new Date(iso);
+    const d = parseReceived(iso);
     const now = new Date();
     const diff = (now.getTime() - d.getTime()) / 1000;
+    if (diff < 60)    return 'just now';
     if (diff < 3600)  return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
     if (diff < 86400 * 7) return `${Math.floor(diff / 86400)}d ago`;
@@ -246,6 +258,337 @@ function isExcelFile(name: string) {
 }
 function attViewUrl(entryId: string, index: number) {
   return `/api/outlook/attachment-view/${encodeURIComponent(entryId)}/${index}`;
+}
+
+// An attachment chip that says "photo.jpg" next to a generic picture icon tells
+// you nothing — the whole question is which photo. The server hands back a
+// downscaled copy (?thumb=), so this is a few KB per chip rather than the whole
+// attachment, and the browser is never asked to decode a 12 MP phone photo to
+// paint 20 pixels. Falls back to the icon if the image can't be fetched.
+const CHIP_THUMB_PX = 96;
+
+function AttThumb({ entryId, index }: { entryId: string; index: number }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <ImageIcon className="w-2.5 h-2.5 shrink-0" />;
+  return (
+    <img
+      src={`${attViewUrl(entryId, index)}?thumb=${CHIP_THUMB_PX}`}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailed(true)}
+      className="w-5 h-5 shrink-0 rounded object-cover bg-[var(--s3)] ring-1 ring-black/10 dark:ring-white/10"
+    />
+  );
+}
+
+// ─── Customer history ────────────────────────────────────────────────────────
+// What this account was quoted before, beside the email being answered. The
+// alternative was leaving the app mid-reply to dig through D&Q or old mail.
+//
+// Everything shown is already synced from the Quotations List; nothing here
+// fetches from SharePoint. When no account matches the panel says so plainly
+// rather than guessing — a wrong customer's history next to a reply box would
+// be worse than none.
+function fmtMoney(n: number): string {
+  if (!n) return '—';
+  return n >= 1000
+    ? `£${Math.round(n).toLocaleString('en-GB')}`
+    : `£${n.toFixed(0)}`;
+}
+
+function CustomerHistoryPanel({ senderEmail, senderName, toast }: {
+  senderEmail: string; senderName: string; toast: ToastFn;
+}) {
+  const [data, setData]       = useState<CustomerHistory | null>(null);
+  const [loading, setLoading] = useState(false);
+  // Set once the user names the customer themselves; from then on the lookup is
+  // by that name rather than by whatever could be read off the sender.
+  const [picked, setPicked]   = useState('');
+
+  useEffect(() => { setPicked(''); }, [senderEmail, senderName]);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true); setData(null);
+    api.customerHistory({ email: senderEmail, name: senderName, q: picked || undefined, limit: 12 })
+      .then(r => { if (live) setData(r); })
+      .catch(e => { if (live) toast('err', failed('load the customer history', e)); })
+      .finally(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [senderEmail, senderName, picked]);
+
+  if (loading) {
+    return <p className="text-[11.5px] text-[var(--t3)] flex items-center gap-1.5 px-1 py-3">
+      <Loader2 className="w-3 h-3 animate-spin" />Looking this sender up…
+    </p>;
+  }
+  if (!data) return null;
+
+  // Could not tell who this is. Offering the busiest customers to pick from is
+  // deliberate: a confidently wrong history beside a reply box is worse than
+  // none, so nothing here falls back to a fuzzy best guess.
+  if (!data.matched) {
+    return (
+      <div className="px-1 py-2">
+        <p className="text-[11.5px] text-[var(--t2)] font-medium">Couldn’t tell which customer this is</p>
+        <p className="text-[10.5px] text-[var(--t3)] mt-1 leading-relaxed">
+          Nothing in {senderName || senderEmail || 'this sender'} matched a customer on your Quotations List.
+          Pick one to see their history:
+        </p>
+        <div className="flex flex-wrap gap-1 mt-2">
+          {data.suggestions.map(s => (
+            <button key={s.customer} onClick={() => setPicked(s.customer)}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium bg-[var(--s3)] text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent-text)] transition-colors">
+              {s.customer}<span className="opacity-50">{s.count}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const { totals } = data;
+  const decided = totals.won + totals.lost;
+  const winRate = decided > 0 ? Math.round((totals.won / decided) * 100) : null;
+
+  return (
+    <div className="space-y-2.5">
+      {/* Who this is, and on what evidence */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[12.5px] font-semibold text-[var(--t1)] truncate">{data.customer}</p>
+          <p className="text-[10px] text-[var(--t3)] mt-0.5">
+            {data.matchedOn === 'picked'      ? 'you picked this customer'
+             : data.matchedOn === 'domain'     ? 'matched on the email domain'
+             : 'matched on the sender name'}
+            {data.spellings.length > 1 && ` · ${data.spellings.length} spellings merged`}
+            {data.matchedOn !== 'picked' && ' · '}
+            {data.matchedOn !== 'picked' && (
+              <button onClick={() => setPicked('')} className="underline hover:text-[var(--t2)]"
+                title="Clear and pick a different customer">not them?</button>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--s3)] text-[var(--t2)] font-medium">
+            {totals.count} quote{totals.count === 1 ? '' : 's'}
+          </span>
+          {winRate != null && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/25 text-emerald-700 dark:text-emerald-300 font-medium">
+              {winRate}% won
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* The relationship in four numbers */}
+      <div className="grid grid-cols-4 gap-1.5">
+        {([
+          ['Won',  totals.won,  'text-emerald-600 dark:text-emerald-400'],
+          ['Lost', totals.lost, 'text-red-500 dark:text-red-400'],
+          ['Open', totals.open, 'text-[var(--t2)]'],
+        ] as const).map(([label, n, tone]) => (
+          <div key={label} className="rounded-lg bg-[var(--s3)] px-2 py-1.5">
+            <p className={cn('text-[14px] font-semibold leading-none', tone)}>{n}</p>
+            <p className="text-[9.5px] text-[var(--t3)] mt-1">{label}</p>
+          </div>
+        ))}
+        <div className="rounded-lg bg-[var(--s3)] px-2 py-1.5">
+          {/* Total quoted, not won: won/lost is only tracked once someone marks
+              it in the CRM, so a zero here means unmarked, not lost. */}
+          <p className="text-[14px] font-semibold leading-none text-[var(--t1)]">{fmtMoney(totals.value)}</p>
+          <p className="text-[9.5px] text-[var(--t3)] mt-1">Quoted</p>
+        </div>
+      </div>
+
+      {/* What they buy for */}
+      {data.projects.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {data.projects.map(p => (
+            <span key={p.name}
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-[var(--s3)] text-[var(--t3)] max-w-[200px]">
+              <span className="truncate">{p.name}</span><span className="opacity-60 shrink-0">{p.count}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* The quotes themselves, newest first */}
+      {data.quotes.length > 0 ? (
+        <div className="space-y-0.5">
+          {data.quotes.map((q, i) => (
+            <div key={i} className="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-[var(--s3)] transition-colors">
+              {q.state === 'won'  ? <Trophy className="w-3 h-3 shrink-0 text-emerald-500" />
+               : q.state === 'lost' ? <CircleSlash className="w-3 h-3 shrink-0 text-red-400" />
+               : <span className="w-3 h-3 shrink-0 rounded-full ring-1 ring-inset ring-[var(--line-2)]" />}
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] text-[var(--t1)] truncate">
+                  {q.account || q.quoteName || q.title || q.sfId || 'Untitled quote'}
+                </p>
+                <p className="text-[9.5px] text-[var(--t3)] truncate">
+                  {q.arrivedOn ? fmtDate(q.arrivedOn) : '—'}
+                  {q.salesman ? ` · ${q.salesman}` : ''}
+                  {q.status ? ` · ${q.status}` : ''}
+                </p>
+              </div>
+              <span className="text-[10.5px] font-medium text-[var(--t2)] shrink-0 num">
+                {q.price ? fmtMoney(q.price) : '—'}
+              </span>
+            </div>
+          ))}
+          {totals.count > data.quotes.length && (
+            <p className="text-[10px] text-[var(--t3)] px-1.5 pt-1">
+              Showing the {data.quotes.length} most recent of {totals.count}.
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="text-[11px] text-[var(--t3)] px-1 py-2">No quotes synced against this customer yet.</p>
+      )}
+    </div>
+  );
+}
+
+// ─── Reply snippets ──────────────────────────────────────────────────────────
+// The fixed wordings typed every week — lead times, commissioning terms, the
+// standard questions back. Distinct from AI Draft on purpose: that regenerates
+// prose each time, these come out identical every time, which is what a term or
+// a lead time needs to do.
+function SnippetPicker({ onInsert, toast }: {
+  onInsert: (body: string) => void;
+  toast: ToastFn;
+}) {
+  const [open, setOpen]         = useState(false);
+  const [items, setItems]       = useState<Snippet[]>([]);
+  const [loading, setLoading]   = useState(false);
+  const [filter, setFilter]     = useState('');
+  const [editing, setEditing]   = useState<{ id?: number; title: string; body: string } | null>(null);
+  const boxRef                  = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setItems((await api.snippets()).snippets || []); }
+    catch (e: any) { toast('err', failed('load your snippets', e)); }
+    finally { setLoading(false); }
+  }, [toast]);
+
+  useEffect(() => { if (open && items.length === 0 && !loading) void load(); }, [open]);
+
+  // Click-away closes, but never while the editor is open — losing a half-typed
+  // snippet to a stray click is worse than an extra Escape.
+  useEffect(() => {
+    if (!open || editing) return;
+    const h = (e: MouseEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open, editing]);
+
+  async function insert(s: Snippet) {
+    onInsert(s.body);
+    setOpen(false);
+    // Ordering is by use, so record it — but a failed count must never look
+    // like a failed insert.
+    try { await api.snippetUsed(s.id); setItems(prev => prev.map(x => x.id === s.id ? { ...x, useCount: x.useCount + 1 } : x)); }
+    catch { /* the text is already in the box */ }
+  }
+
+  async function save() {
+    if (!editing) return;
+    const { id, title, body } = editing;
+    if (!title.trim() || !body.trim()) { toast('warn', 'A snippet needs a title and a body'); return; }
+    try {
+      const r = await api.snippetSave({ id, title: title.trim(), body: body.trim() });
+      if (!r.ok) { toast('err', failed('save the snippet', r.error || '')); return; }
+      setEditing(null);
+      await load();
+      toast('ok', id ? 'Snippet updated' : 'Snippet saved');
+    } catch (e: any) { toast('err', failed('save the snippet', e)); }
+  }
+
+  async function remove(s: Snippet) {
+    try { await api.snippetDelete(s.id); setItems(prev => prev.filter(x => x.id !== s.id)); }
+    catch (e: any) { toast('err', failed('delete the snippet', e)); }
+  }
+
+  const shown = filter.trim()
+    ? items.filter(s => (s.title + ' ' + s.body).toLowerCase().includes(filter.trim().toLowerCase()))
+    : items;
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <button onClick={() => setOpen(o => !o)}
+        className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+          open
+            ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300 ring-sky-300 dark:ring-sky-600'
+            : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]')}>
+        <BookMarked className="w-3 h-3" />Snippets
+      </button>
+
+      {open && (
+        <div className="absolute z-30 bottom-full mb-1.5 left-0 w-[380px] max-w-[86vw] rounded-xl bg-[var(--s1)] ring-1 ring-[var(--line-2)] shadow-xl p-2">
+          {editing ? (
+            <div className="space-y-1.5">
+              <input autoFocus value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })}
+                placeholder="Title — e.g. Standard lead time"
+                className="w-full text-[12px] bg-[var(--s3)] rounded-md px-2.5 py-1.5 ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-sky-400 text-[var(--t1)] placeholder:text-[var(--t3)]" />
+              <textarea value={editing.body} onChange={e => setEditing({ ...editing, body: e.target.value })}
+                rows={5} placeholder="The exact wording to insert…"
+                className="w-full text-[12px] bg-[var(--s3)] rounded-md px-2.5 py-1.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-sky-400 text-[var(--t1)] placeholder:text-[var(--t3)] leading-relaxed" />
+              <div className="flex items-center gap-1.5">
+                <button onClick={save}
+                  className="h-6 px-2.5 rounded-md text-[11px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90">Save</button>
+                <button onClick={() => setEditing(null)}
+                  className="h-6 px-2.5 rounded-md text-[11px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)]">Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center gap-1.5 mb-1.5">
+                <input value={filter} onChange={e => setFilter(e.target.value)}
+                  placeholder="Filter snippets…"
+                  className="flex-1 text-[11.5px] bg-[var(--s3)] rounded-md px-2 py-1 ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-sky-400 text-[var(--t1)] placeholder:text-[var(--t3)]" />
+                <button onClick={() => setEditing({ title: '', body: '' })} title="New snippet"
+                  className="shrink-0 h-6 w-6 rounded-md ring-1 ring-inset ring-[var(--line-2)] text-[var(--t3)] hover:bg-[var(--s3)] flex items-center justify-center">
+                  <Plus className="w-3 h-3" />
+                </button>
+              </div>
+
+              <div className="max-h-[260px] overflow-y-auto -mx-0.5 px-0.5">
+                {loading && <p className="text-[11px] text-[var(--t3)] px-1 py-2">Loading…</p>}
+                {!loading && shown.length === 0 && (
+                  <p className="text-[11px] text-[var(--t3)] px-1 py-3 leading-relaxed">
+                    {items.length === 0
+                      ? 'No snippets yet. Save the sentences you retype — lead times, commissioning terms, the questions you always ask back.'
+                      : 'Nothing matches that filter.'}
+                  </p>
+                )}
+                {shown.map(s => (
+                  <div key={s.id} className="group rounded-lg hover:bg-[var(--s3)] transition-colors">
+                    <button onClick={() => insert(s)} className="w-full text-left px-2 py-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11.5px] font-semibold text-[var(--t1)] truncate flex-1">{s.title}</span>
+                        {s.useCount > 0 && <span className="text-[9.5px] text-[var(--t3)] shrink-0">{s.useCount}×</span>}
+                      </div>
+                      <p className="text-[10.5px] text-[var(--t3)] line-clamp-2 leading-snug mt-0.5">{s.body}</p>
+                    </button>
+                    <div className="flex items-center gap-1 px-2 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => setEditing({ id: s.id, title: s.title, body: s.body })}
+                        className="text-[10px] text-[var(--t3)] hover:text-[var(--t1)]">Edit</button>
+                      <button onClick={() => remove(s)}
+                        className="text-[10px] text-red-500 hover:text-red-600">Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ImageLightbox({ src, name, onClose }: { src: string; name: string; onClose: () => void }) {
@@ -289,8 +632,11 @@ function wrapEmailHtml(html: string): string {
   const injectStyle = [
     `<style>`,
     `* { max-width: 100%; box-sizing: border-box; }`,
+    // The frame is sized to its content and the pane outside scrolls; a
+    // scrollbar inside as well showed as a double bar once text was enlarged.
+    `html { overflow: hidden; }`,
     `img { max-width: 100%; height: auto; }`,
-    `body { font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: ${fg}; margin: 16px 20px; line-height: 1.5; background: ${bg}; word-wrap: break-word; }`,
+    `body { font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 11pt; color: ${fg}; margin: 20px 28px; line-height: 1.55; background: ${bg}; word-wrap: break-word; }`,
     // Force sender's hardcoded near-white/near-black text to inherit so it stays
     // readable on the dark canvas (covers most inline-styled marketing emails).
     dark ? `body, body * { color: ${fg} !important; background-color: transparent !important; }` : ``,
@@ -320,6 +666,24 @@ function resolveCidImages(html: string, entryId: string, attachments: Attachment
     if (!hit) return whole;
     return `${q}${attViewUrl(entryId, hit.index)}${q}`;
   });
+}
+
+// A name for the lightbox caption. An inline picture that came from a real
+// attachment gets that attachment's filename; anything else (a remote <img> in
+// a marketing mail) falls back to its alt text, then its URL's last segment.
+function inlineImageName(src: string, img: HTMLImageElement, attachments: AttachmentInfo[]): string {
+  const m = /\/api\/outlook\/attachment-view\/[^/]+\/(\d+)/.exec(src);
+  if (m) {
+    const hit = attachments.find(a => a.index === Number(m[1]));
+    if (hit) return hit.name;
+  }
+  const alt = (img.getAttribute('alt') || '').trim();
+  if (alt) return alt;
+  try {
+    const last = decodeURIComponent(new URL(src, location.href).pathname.split('/').pop() || '');
+    if (last) return last;
+  } catch { /* data: URI or something unparseable — the generic label is fine */ }
+  return 'Image';
 }
 
 // Links in an email body carry every shape Outlook has ever produced. Normalise
@@ -689,10 +1053,10 @@ function MatchTrail({ matches, terms, mode }: { matches?: SearchMatch[]; terms: 
 
 // Plain-text emails have no anchors at all, so their URLs used to be dead text.
 // Linkify them through the same OS-browser route as the HTML body.
-function PlainBody({ text }: { text: string }) {
+function PlainBody({ text, zoom = 1 }: { text: string; zoom?: number }) {
   const parts = (text || '(no body)').split(/(https?:\/\/[^\s<>()]+|www\.[^\s<>()]+|[\w.+-]+@[\w-]+\.[\w.]+)/g);
   return (
-    <pre className="px-5 py-4 text-[12.5px] text-[var(--t2)] leading-relaxed whitespace-pre-wrap font-sans">
+    <pre className="px-7 py-5 text-[var(--t1)] leading-relaxed whitespace-pre-wrap font-sans" style={{ fontSize: 14.5 * zoom }}>
       {parts.map((p, i) => {
         if (i % 2 === 0) return p;
         const url = p.includes('@') && !/^https?:/i.test(p) ? 'mailto:' + p : bodyLinkUrl(p);
@@ -707,8 +1071,39 @@ function PlainBody({ text }: { text: string }) {
   );
 }
 
-function EmailBodyFrame({ html, entryId, attachments }: { html: string; entryId: string; attachments: AttachmentInfo[] }) {
+// Pictures pasted into an email are the usual case — a photo of a board, a
+// screenshot of a schedule — and they arrive as inline <img> inside the body,
+// not as an attachment chip. Only images worth opening get the zoom treatment:
+// signature logos, spacers and tracking pixels are all small, so a size floor
+// separates "content" from "furniture" without needing to guess from the markup.
+const ZOOMABLE_MIN_PX = 64;
+
+function EmailBodyFrame({ html, entryId, attachments, onImageOpen, zoom = 1 }: {
+  html: string; entryId: string; attachments: AttachmentInfo[];
+  onImageOpen: (img: { src: string; name: string }) => void;
+  zoom?: number;
+}) {
   const ref = useRef<HTMLIFrameElement>(null);
+  // The frame's height used to be measured ONCE, at load. Anything that reflowed
+  // the text afterwards — dragging the list pane, maximising the window, opening
+  // the popout, or a tab that loaded while hidden (display:none measures 0, so it
+  // froze at the 200px floor) — left the body clipped or trailing blank space.
+  // That is the "scaling works only sometimes". A ResizeObserver re-fits on every
+  // reflow instead.
+  const fitRef  = useRef<() => void>(() => {});
+  const roRef   = useRef<ResizeObserver | null>(null);
+  const zoomRef = useRef(zoom);
+  useEffect(() => () => roRef.current?.disconnect(), []);
+  useEffect(() => {
+    zoomRef.current = zoom;
+    let doc: Document | null = null;
+    try { doc = ref.current?.contentDocument ?? null; } catch { doc = null; }
+    if (doc?.documentElement) { doc.documentElement.style.zoom = String(zoom); fitRef.current(); }
+  }, [zoom]);
+  // The handler below lives inside the frame's document for as long as that
+  // document does, so it must not close over a stale callback.
+  const openRef = useRef(onImageOpen);
+  useEffect(() => { openRef.current = onImageOpen; }, [onImageOpen]);
   // Remount counter: if the frame ever leaves its srcdoc document anyway (a
   // redirect, a meta refresh, a link shape the handler below didn't catch), the
   // email is gone from the pane. Rebuild it instead of leaving a blank body.
@@ -724,8 +1119,40 @@ function EmailBodyFrame({ html, entryId, attachments }: { html: string; entryId:
       if (rebuilds.current < 3) { rebuilds.current += 1; setReloadTick(t => t + 1); }
       return;
     }
-    const h = Math.max(200, doc.documentElement.scrollHeight || doc.body?.scrollHeight || 200);
-    if (ref.current) ref.current.style.height = (h + 20) + 'px';
+    // Re-measured after every image lands, not just once: at load time the
+    // pictures have no intrinsic size yet, so measuring only here clipped the
+    // bottom off any email whose body is mostly images.
+    doc.documentElement.style.zoom = String(zoomRef.current);
+    const fit = () => {
+      if (!ref.current || !doc?.body) return;
+      if (ref.current.offsetParent === null) return;   // hidden tab: measure when shown
+      // Rects inside a zoomed document already come back zoomed — scaling them
+      // again left a blank tail a third as long as the email.
+      const h = Math.max(120, Math.ceil(doc.body.getBoundingClientRect().bottom));
+      const next = (h + 24) + 'px';
+      if (ref.current.style.height !== next) ref.current.style.height = next;
+    };
+    fitRef.current = fit;
+    fit();
+    roRef.current?.disconnect();
+    const ro = new ResizeObserver(() => fit());
+    if (doc.body) ro.observe(doc.body);
+    ro.observe(frame);
+    roRef.current = ro;
+
+    // Mark the images big enough to be worth opening. Done per image on its own
+    // load event because intrinsic size is the only reliable signal and it is
+    // not known until the bytes arrive.
+    const markZoomable = (img: HTMLImageElement) => {
+      if (img.naturalWidth < ZOOMABLE_MIN_PX || img.naturalHeight < ZOOMABLE_MIN_PX) return;
+      if (img.closest('a[href]')) return;          // the link wins; leave it alone
+      img.style.cursor = 'zoom-in';
+      img.dataset.vectorZoom = '1';
+    };
+    for (const img of Array.from(doc.images)) {
+      if (img.complete) markZoomable(img);
+      else img.addEventListener('load', () => { markZoomable(img); fit(); }, { once: true });
+    }
 
     // A click on a link inside this frame must never navigate the frame. The
     // body is a sandboxed srcdoc document, so navigating it throws away the
@@ -736,13 +1163,28 @@ function EmailBodyFrame({ html, entryId, attachments }: { html: string; entryId:
     const openFromEvent = (e: Event) => {
       const target = e.target as Element | null;
       const a = target?.closest?.('a[href]') as HTMLAnchorElement | null;
-      if (!a) return;
-      const raw = a.getAttribute('href') || '';
-      if (raw.startsWith('#')) return;                // in-page anchor: harmless
+      if (a) {
+        const raw = a.getAttribute('href') || '';
+        if (raw.startsWith('#')) return;              // in-page anchor: harmless
+        e.preventDefault();
+        e.stopPropagation();
+        const url = bodyLinkUrl(raw);
+        if (url) void openExternal(url);
+        return;
+      }
+      // Not a link — an inline picture opens in the same lightbox the
+      // attachment chips use, so a pasted screenshot is readable without
+      // hunting for a chip that was never there.
+      // Primary button only. Chrome routes right-click through auxclick too, and
+      // swallowing that would cost the reader "Save image as" / "Copy image".
+      if ((e as globalThis.MouseEvent).button !== 0) return;
+      const img = target?.closest?.('img[data-vector-zoom]') as HTMLImageElement | null;
+      if (!img) return;
+      const src = img.currentSrc || img.src;
+      if (!src || src.startsWith('cid:')) return;     // never resolved to a real URL
       e.preventDefault();
       e.stopPropagation();
-      const url = bodyLinkUrl(raw);
-      if (url) void openExternal(url);
+      openRef.current({ src, name: inlineImageName(src, img, attachments) });
     };
     doc.addEventListener('click', openFromEvent, true);
     doc.addEventListener('auxclick', openFromEvent, true);   // middle-click
@@ -1053,13 +1495,58 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
   );
 }
 
+/**
+ * Subject with every reply/forward prefix stripped, for deciding which emails
+ * belong together. 'RE: FW: Bristol Hippodrome' and 'Bristol Hippodrome' are one
+ * enquiry; Outlook's own conversation id is not on the summary rows, so the
+ * subject is what there is to match on. Handles the non-English prefixes that
+ * turn up on forwarded European mail (AW/TR/VS) as well as RE/FW/FWD.
+ */
+function baseSubject(s: string) {
+  let t = String(s || '').trim();
+  // ONE loop over both kinds of prefix, because they interleave. Real subject
+  // off the UK box: 'Re: [EXTERNAL] FW: 8204 - em lighting - Amazon Exeter' —
+  // stripping all the RE/FW first and the '[EXTERNAL]' after leaves the second
+  // 'FW:' sitting there, and the four emails of that enquiry stop matching each
+  // other. Strip whichever comes next until nothing is left to strip.
+  for (;;) {
+    const next = t
+      .replace(/^\s*(re|fw|fwd|aw|tr|vs)\s*(\[\d+\])?\s*:\s*/i, '')   // Re: / FW: / AW:
+      .replace(/^\s*\[[^\]]{1,20}\]\s*/, '');                          // [EXTERNAL], [EXT]
+    if (next === t) break;
+    t = next;
+  }
+  // An enquiry sent in chunks numbers its parts in the SUBJECT, so the pieces
+  // never match each other on it. Real ones off the UK box, four days apart:
+  // 'Bristol Hippodrome 2 of 2' and 'Bristol Hippodrome 3 of 3' — the sender
+  // does not even keep the total straight. Drop the counter and they are one
+  // enquiry again, which is the whole point of the picker.
+  t = t
+    .replace(/[\s\-–—(\[]*\b(part|pt)?\s*\d{1,3}\s*(of|\/)\s*\d{1,3}\s*[)\]]*\s*$/i, '')
+    .replace(/[\s\-–—(\[]*\b(part|pt)\s*\d{1,3}\s*[)\]]*\s*$/i, '');
+  return t.trim().toLowerCase();
+}
+
+/** One priceable file, and which email it came out of. */
+interface PricerSource {
+  key: string;                 // entryId:index — unique across emails
+  entryId: string;
+  att: AttachmentInfo;
+  sender: string;              // shown on the chip when it is not this email's
+  own: boolean;                // true = the email currently open
+}
+
 function InlineELPricer({
-  emailBody, entryId, attachments, toast,
+  emailBody, entryId, attachments, toast, setAppTab, subject, emailList, storeId,
 }: {
   emailBody: string;
   entryId: string;
   attachments: AttachmentInfo[];
   toast: ToastFn;
+  setAppTab: (t: string) => void;
+  subject?: string;
+  emailList: EmailSummary[];
+  storeId: string;
 }) {
   const [listText, setListText] = useState(() => extractMaterialHints(emailBody));
   const [loading, setLoading]   = useState(false);
@@ -1069,8 +1556,149 @@ function InlineELPricer({
   const [pdfSource, setPdfSource] = useState<string | null>(null);
   const [schedule, setSchedule] = useState<ScheduleEntry[]>(() => _pricerSchedule);
   const [schedCopied, setSchedCopied] = useState(false);
+  // Which attachments are ticked for a single combined run. Empty = none picked,
+  // and the chips behave the way they always did (click one, price one).
+  const [picked, setPicked]     = useState<Set<string>>(new Set());
+  const [handingOff, setHandingOff] = useState(false);
+  // The in-flight run, so Cancel has something to abort.
+  const abortRef = useRef<AbortController | null>(null);
+  // The manual list collapses once there are attachments to work with — it is
+  // the least-used control in the panel and it was costing three lines of a
+  // panel that is 288px tall by default.
+  const [showList, setShowList] = useState(false);
 
-  const pricerAtts = attachments.filter(a => a.isPdf || isImageFile(a.name) || isExcelFile(a.name));
+  const priceable = useCallback(
+    (a: AttachmentInfo) => a.isPdf || isImageFile(a.name) || isExcelFile(a.name), []);
+
+  // This email's priceable files. Pooling ACROSS emails happens on the EL Pricer
+  // screen, not here — the shape is kept so both ends share one pricing path.
+  const sources: PricerSource[] = React.useMemo(
+    () => attachments.filter(priceable).map(a => ({
+      key: `${entryId}:${a.index}`, entryId, att: a, sender: '', own: true,
+    })),
+    [attachments, entryId, priceable]);
+
+  // ── Emails worth offering ─────────────────────────────────────────────────
+  // Only the COUNT is used here — enough to offer the way through to the EL
+  // Pricer screen, which is where the emails are actually chosen.
+  const { related, others } = React.useMemo(() => {
+    const mine = baseSubject(subject || '');
+    const rel: EmailSummary[] = [], oth: EmailSummary[] = [];
+    for (const e of emailList) {
+      if (e.entryId === entryId) continue;
+      if (!(e.attachments || []).some(priceable)) continue;
+      // SUBJECT ONLY. Matching the sender too was tried and it is useless here:
+      // the quotes arrive through shared mailboxes ('UK Customer Service' sends
+      // everything), so it offered seven unrelated emails on the first case it
+      // was pointed at. The subject is what actually identifies an enquiry — the
+      // Amazon Exeter one runs to four emails from three different senders.
+      if (!!mine && baseSubject(e.subject) === mine) rel.push(e);
+      else oth.push(e);
+    }
+    return { related: rel, others: oth };
+  }, [emailList, entryId, subject, priceable]);
+  void others;   // the full list is offered on the EL Pricer screen, not here
+
+  /** Pull an Outlook attachment down as a real File, so it can be priced the
+   *  same way a dropped file is — one code path for both, and it works for an
+   *  attachment on any email, not just the one on screen. */
+  const fetchAttachmentFile = useCallback(async (s: PricerSource): Promise<File | null> => {
+    try {
+      const resp = await fetch(attViewUrl(s.entryId, s.att.index));
+      if (!resp.ok) throw new Error(`${resp.status}`);
+      const blob = await resp.blob();
+      return new File([blob], s.att.name, { type: blob.type || 'application/octet-stream' });
+    } catch (e: any) {
+      toast('err', failed(`open ${s.att.name}`, e));
+      return null;
+    }
+  }, [toast]);
+
+  /**
+   * Price any number of files in ONE request. `/api/schematics/price` already
+   * takes repeated `files` parts — the same endpoint the EL Pricer tab posts to
+   * — so several attachments come back as a single merged list with one total,
+   * instead of the one-at-a-time route that threw the previous result away on
+   * every drop.
+   */
+  async function priceFiles(files: File[], label: string) {
+    if (!files.length) return;
+    setLoading(true);
+    setResult(null);
+    setPdfSource(label);
+    try {
+      // Registered as a task so the floating dock can kill it, AND held on a ref
+      // so the panel's own Cancel button can. Pricing a pooled run is minutes of
+      // AI on someone else's clock; starting one by mistake and having no way to
+      // stop it is the worst version of this panel.
+      await runTask(`Pricing ${label}`, async (signal) => {
+        const ctl = new AbortController();
+        abortRef.current = ctl;
+        if (signal.aborted) ctl.abort();
+        else signal.addEventListener('abort', () => ctl.abort());
+
+        const fd = new FormData();
+        for (const f of files) fd.append('files', f, f.name);
+        // Anything typed in the box is priced alongside the files, not discarded.
+        if (listText.trim()) fd.append('text', listText);
+        const resp = await fetch('/api/schematics/price', { method: 'POST', body: fd, signal: ctl.signal });
+        const data = await resp.json();
+        if (data.error) { toast('err', failed(`price ${label}`, data.error)); setPdfSource(null); }
+        else setResult(data);
+      });
+    } catch (e: any) {
+      setPdfSource(null);
+      if (isCancel(e)) toast('warn', 'Pricing cancelled — nothing was priced');
+      else toast('err', failed(`price ${label}`, e));
+    } finally {
+      abortRef.current = null;
+      setLoading(false);
+    }
+  }
+
+  /** Stop an in-flight run from the panel itself. */
+  function cancelRun() {
+    abortRef.current?.abort();
+  }
+
+  /** A label naming what a combined run was built from, so the schedule entry
+   *  and the header say "3 emails · 7 files" rather than one arbitrary filename. */
+  function runLabel(chosen: PricerSource[]) {
+    if (chosen.length === 1) return chosen[0].att.name;
+    const emails = new Set(chosen.map(s => s.entryId)).size;
+    return emails > 1
+      ? `${plural(emails, 'email')} · ${plural(chosen.length, 'file')}`
+      : `${chosen.length} attachments`;
+  }
+
+  async function priceSelected() {
+    const chosen = sources.filter(s => picked.has(s.key));
+    if (!chosen.length) return;
+    setLoading(true);
+    const files = (await Promise.all(chosen.map(fetchAttachmentFile))).filter(Boolean) as File[];
+    setLoading(false);
+    if (!files.length) return;
+    await priceFiles(files, runLabel(chosen));
+  }
+
+  /** Send this email's list and attachments to the full EL Pricer tab. */
+  async function openInPricerTab() {
+    setHandingOff(true);
+    try {
+      // Ticked ones if any are ticked, otherwise everything priceable — the
+      // point of the jump is to arrive with the work already loaded.
+      const wanted = picked.size ? sources.filter(s => picked.has(s.key)) : sources;
+      const files = (await Promise.all(wanted.map(fetchAttachmentFile))).filter(Boolean) as File[];
+      sendToPricer({
+        text: listText, files, source: subject || 'Outlook email',
+        origin: { entryId, subject: subject || '', storeId },
+      });
+      setAppTab('Schematics');
+      toast('ok', files.length
+        ? `Opened EL Pricer with ${plural(files.length, 'file')} from this email`
+        : 'Opened EL Pricer');
+    } finally { setHandingOff(false); }
+  }
 
   async function run() {
     if (!listText.trim()) return;
@@ -1124,32 +1752,66 @@ function InlineELPricer({
     setResult(null);
     setPdfSource(attName);
     try {
-      const resp = await fetch('/api/outlook/attachment-price', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entryId, index: attIndex, isImage }),
+      await runTask(`Pricing ${attName}`, async (signal) => {
+        const ctl = new AbortController();
+        abortRef.current = ctl;
+        if (signal.aborted) ctl.abort();
+        else signal.addEventListener('abort', () => ctl.abort());
+        const resp = await fetch('/api/outlook/attachment-price', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entryId, index: attIndex, isImage }),
+          signal: ctl.signal,
+        });
+        const data = await resp.json();
+        if (data.error) { toast('err', failed(`price ${attName}`, data.error)); setPdfSource(null); }
+        else setResult(data);
       });
-      const data = await resp.json();
-      if (data.error) { toast('err', failed(`price ${attName}`, data.error)); setPdfSource(null); }
-      else setResult(data);
-    } catch (e: any) { toast('err', failed(`price ${attName}`, e)); setPdfSource(null); }
-    setLoading(false);
+    } catch (e: any) {
+      setPdfSource(null);
+      if (isCancel(e)) toast('warn', 'Pricing cancelled — nothing was priced');
+      else toast('err', failed(`price ${attName}`, e));
+    } finally {
+      abortRef.current = null;
+      setLoading(false);
+    }
   }
 
   function handleDragOver(e: React.DragEvent) {
     e.preventDefault();
-    if (e.dataTransfer.types.includes('vector/attachment')) setDragOver(true);
+    // 'Files' is what Explorer, the desktop and Outlook itself put on the drag —
+    // the panel used to ignore all of it and only take its own attachment chips,
+    // which is why selecting several files and dropping them did nothing.
+    if (e.dataTransfer.types.includes('vector/attachment')
+      || e.dataTransfer.types.includes('Files')) setDragOver(true);
   }
   function handleDragLeave(e: React.DragEvent) {
     if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false);
   }
-  function handleDrop(e: React.DragEvent) {
+  async function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setDragOver(false);
+
+    // Real files off the desktop, a folder window, or several selected at once.
+    const dropped = Array.from(e.dataTransfer.files || []);
+    if (dropped.length) {
+      const usable = dropped.filter(f => f.name && (isImageFile(f.name) || isExcelFile(f.name) || /\.pdf$/i.test(f.name)));
+      const skipped = dropped.length - usable.length;
+      if (skipped) toast('warn', `${plural(skipped, 'file')} skipped — only PDF, image, Excel and CSV can be priced`);
+      if (usable.length) {
+        await priceFiles(usable, usable.length === 1 ? usable[0].name : `${usable.length} files`);
+      }
+      return;
+    }
+
+    // An attachment chip dragged out of the email above. Dragging one that is
+    // ticked brings every ticked one with it, so a multi-select can be dropped
+    // in a single gesture.
     try {
       const raw = e.dataTransfer.getData('vector/attachment');
       if (!raw) return;
       const { attIndex, attName, isImage } = JSON.parse(raw);
+      if (picked.size > 1 && picked.has(attIndex)) { await priceSelected(); return; }
       priceFromAttachment(attIndex, attName, !!isImage);
     } catch {}
   }
@@ -1240,51 +1902,145 @@ function InlineELPricer({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}>
 
-      {/* Header */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* Header — one line, and the two controls that were missing from it:
+          pick every attachment at once, and take the lot to the full tab. */}
+      <div className="flex items-center gap-2">
         <div className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center shrink-0">
           <Zap className="w-3 h-3 text-amber-500" />
         </div>
-        <p className="text-[12px] font-semibold text-[var(--t1)]">EL Material Pricer</p>
-        {pdfSource
-          ? <span className="text-[10px] text-[var(--accent-text)] bg-[var(--accent-soft)] px-2 py-0.5 rounded-full ring-1 ring-inset ring-[var(--accent-line)] truncate max-w-[200px]">{pdfSource}</span>
-          : <span className="text-[10px] text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 px-2 py-0.5 rounded-full ring-1 ring-inset ring-amber-200 dark:ring-amber-700/30">detected</span>}
+        <p className="text-[12px] font-semibold text-[var(--t1)] shrink-0">EL Material Pricer</p>
+        {pdfSource && (
+          <span className="text-[10px] text-[var(--accent-text)] bg-[var(--accent-soft)] px-2 py-0.5 rounded-full ring-1 ring-inset ring-[var(--accent-line)] truncate min-w-0">{pdfSource}</span>
+        )}
+        <div className="flex-1" />
+        {sources.length > 1 && (
+          <button
+            onClick={() => setPicked(p => p.size === sources.length ? new Set() : new Set(sources.map(s => s.key)))}
+            title={picked.size === sources.length ? 'Clear the selection' : 'Select every attachment'}
+            className="shrink-0 text-[10.5px] font-medium text-[var(--t3)] hover:text-[var(--accent-text)] transition-colors">
+            {picked.size === sources.length ? 'Select none' : 'Select all'}
+          </button>
+        )}
+        <button
+          onClick={openInPricerTab}
+          disabled={handingOff}
+          title="Open the full EL Pricer tab with this email's list and attachments"
+          className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+          {handingOff ? <Loader2 className="w-3 h-3 animate-spin" /> : <ExternalLink className="w-3 h-3" />}
+          Open in EL Pricer
+        </button>
       </div>
 
-      {/* Attachment chips — PDF and images */}
-      {pricerAtts.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 pb-0.5">
-          {pricerAtts.map(a => {
+      {/* Attachment chips — PDF, images and Excel, from THIS email and from any
+          email folded in below. One scrolling row rather than a wrapping block,
+          so six attachments cost one line, not three. */}
+      {sources.length > 0 && (
+        <div className="flex items-center gap-1.5 overflow-x-auto vec-scroll pb-1 -mb-0.5">
+          {sources.map(src => {
+            const a   = src.att;
             const img = isImageFile(a.name);
             const xls = isExcelFile(a.name);
+            const on  = picked.has(src.key);
             return (
-              <button aria-label={`Price ${a.name} with AI`}
-                key={a.index}
-                onClick={() => priceFromAttachment(a.index, a.name, img)}
+              <button aria-label={`${on ? 'Deselect' : 'Select'} ${a.name}`}
+                key={src.key}
+                // Click ticks it; that is what makes "all of them at once"
+                // possible. Double-click still prices this one on its own.
+                onClick={() => setPicked(p => {
+                  const n = new Set(p);
+                  if (n.has(src.key)) n.delete(src.key); else n.add(src.key);
+                  return n;
+                })}
+                onDoubleClick={() => { if (src.own) priceFromAttachment(a.index, a.name, img); }}
+                draggable={src.own}
+                onDragStart={e => {
+                  if (!src.own) return;
+                  e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: a.index, attName: a.name, isImage: img }));
+                  e.dataTransfer.effectAllowed = 'copy';
+                }}
                 disabled={loading}
-                title={`Price ${a.name} with AI`}
+                title={src.own
+                  ? `${a.name} — click to select, double-click to price on its own`
+                  : `${a.name} — from the email by ${src.sender}`}
                 className={cn(
-                  'inline-flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset disabled:opacity-50 transition-colors cursor-pointer',
-                  xls
-                    ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-700/30 hover:bg-green-100 dark:hover:bg-green-900/40'
-                    : img
-                      ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-700/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
-                      : 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)]',
+                  'inline-flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset shrink-0 disabled:opacity-50 transition-colors cursor-pointer',
+                  on
+                    ? 'bg-amber-500 text-white ring-amber-500'
+                    : xls
+                      ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-700/30 hover:bg-green-100 dark:hover:bg-green-900/40'
+                      : img
+                        ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-700/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
+                        : 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)]',
                 )}>
-                {xls ? <FileSpreadsheet className="w-3 h-3 shrink-0" /> : img ? <ImageIcon className="w-3 h-3 shrink-0" /> : <FileText className="w-3 h-3 shrink-0" />}
-                <span className="truncate max-w-[160px]">{a.name}</span>
-                <span className="opacity-50 ml-0.5">→ Price</span>
+                {on
+                  ? <CheckCircle2 className="w-3 h-3 shrink-0" />
+                  : xls ? <FileSpreadsheet className="w-3 h-3 shrink-0" />
+                    : img ? <ImageIcon className="w-3 h-3 shrink-0" />
+                      : <FileText className="w-3 h-3 shrink-0" />}
+                <span className="truncate max-w-[150px]">{a.name}</span>
+                {/* Whose email this came out of — without it a pooled run is a
+                    row of filenames with no way to tell them apart. */}
+                {!src.own && <span className="opacity-60 shrink-0">· {src.sender}</span>}
               </button>
             );
           })}
-          <span className="text-[10px] text-[var(--t3)] self-center ml-1">or drag here</span>
+        </div>
+      )}
+
+      {/* The enquiry picker used to sit here. It moved to the EL Pricer screen
+          (Schematics.tsx): choosing among several emails needs room, and this
+          panel is 288px tall by default — the crowding was the complaint that
+          started all this. What stays here is the count and the way through. */}
+      {related.length > 0 && (
+        <button
+          onClick={openInPricerTab}
+          disabled={handingOff || loading}
+          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left ring-1 ring-inset ring-[var(--line-2)] bg-[var(--s2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+          <Mail className="w-3 h-3 shrink-0 text-[var(--t3)]" />
+          <span className="flex-1 min-w-0 text-[10.5px] text-[var(--t2)] truncate">
+            {plural(related.length, 'more email')} in this enquiry — price them together
+          </span>
+          <ExternalLink className="w-3 h-3 shrink-0 text-[var(--t3)]" />
+        </button>
+      )}
+
+      {/* One button for the whole selection — the thing the panel had no way of
+          expressing before, when every attachment was priced on its own and each
+          run threw the last result away. */}
+      {picked.size > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={priceSelected}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-50 transition-colors">
+            {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+            {loading ? 'Pricing…' : (() => {
+              const emails = new Set(sources.filter(x => picked.has(x.key)).map(x => x.entryId)).size;
+              return `Price ${plural(picked.size, 'file')} together`
+                   + (emails > 1 ? ` · ${emails} emails` : '');
+            })()}
+          </button>
+          {loading ? (
+            <button
+              onClick={cancelRun}
+              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-medium text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+              <X className="w-3 h-3" /> Cancel
+            </button>
+          ) : (
+            <button
+              onClick={() => setPicked(new Set())}
+              className="text-[10.5px] text-[var(--t3)] hover:text-[var(--t1)] transition-colors">
+              Clear
+            </button>
+          )}
+          <span className="text-[10px] text-[var(--t3)]">one list, one total</span>
         </div>
       )}
 
       {/* Drop zone highlight */}
       {dragOver && (
         <div className="flex items-center justify-center h-10 rounded-lg border-2 border-dashed border-amber-400 dark:border-amber-500 text-[11.5px] font-medium text-amber-600 dark:text-amber-400">
-          Drop PDF, image or Excel to price
+          Drop PDFs, images or Excel — as many as you like
         </div>
       )}
 
@@ -1292,24 +2048,42 @@ function InlineELPricer({
       {loading && pdfSource && (
         <div className="flex items-center gap-2 text-[12px] text-amber-600 dark:text-amber-400 py-1">
           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-          Extracting items from {pdfSource} via AI…
+          <span className="flex-1 min-w-0 truncate">Extracting items from {pdfSource} via AI…</span>
+          <button
+            onClick={cancelRun}
+            className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+            <X className="w-3 h-3" /> Cancel
+          </button>
         </div>
       )}
 
-      {/* Manual text input (shown when not in PDF mode or alongside) */}
+      {/* Manual list. Folded away when the email brought attachments — those are
+          what gets priced nine times out of ten, and three rows of textarea is a
+          third of the panel's default height. One click brings it back, and it
+          opens by itself when there is nothing else to work with. */}
       {!pdfSource && (
-        <textarea
-          value={listText}
-          onChange={e => setListText(e.target.value)}
-          placeholder={`Paste material list here…\nMP2ES230CGS, 6\nNXL100, 12`}
-          rows={3}
-          className="w-full rounded-lg bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] p-2.5 text-[11.5px] font-mono focus:outline-none focus:ring-[var(--accent-line)] resize-none placeholder:text-[var(--t4)]"
-        />
+        showList || sources.length === 0 ? (
+          <textarea
+            value={listText}
+            onChange={e => setListText(e.target.value)}
+            placeholder={`Paste material list here…\nMP2ES230CGS, 6\nNXL100, 12`}
+            rows={3}
+            className="w-full rounded-lg bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] p-2.5 text-[11.5px] font-mono focus:outline-none focus:ring-[var(--accent-line)] resize-none placeholder:text-[var(--t4)]"
+          />
+        ) : (
+          <button
+            onClick={() => setShowList(true)}
+            className="w-full text-left px-2.5 py-1.5 rounded-lg text-[10.5px] text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+            {listText.trim()
+              ? `${plural(listText.trim().split('\n').length, 'line')} detected in the email — click to edit or price as text`
+              : 'Paste a material list instead'}
+          </button>
+        )
       )}
 
       {/* Action row */}
       <div className="flex items-center gap-2 flex-wrap">
-        {!pdfSource && (
+        {!pdfSource && (showList || sources.length === 0) && (
           <button
             onClick={run} disabled={loading || !listText.trim()}
             className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-50 transition-colors">
@@ -1692,11 +2466,13 @@ function EmailDetailPanel({
   setAppTab,
   onMarkRead,
   onLabelChange,
+  storeId,
 }: {
   initialEntryId: string;
   emailList: EmailSummary[];
   toast: ToastFn;
   setAppTab: (t: string) => void;
+  storeId: string;
   onMarkRead: (entryId: string) => void;
   onLabelChange: (label: string) => void;
 }) {
@@ -1730,7 +2506,7 @@ function EmailDetailPanel({
   const [chatMessages, setChatMessages]             = useState<Array<{ role: 'user' | 'ai'; text: string }>>([]);
   const [chatInput, setChatInput]                   = useState('');
   const [chatLoading, setChatLoading]               = useState(false);
-  const [activePanel, setActivePanel]               = useState<'summarize' | 'reply' | 'reply-attach' | 'pricer' | 'cbu' | 'quote' | null>(null);
+  const [activePanel, setActivePanel]               = useState<'summarize' | 'reply' | 'reply-attach' | 'pricer' | 'cbu' | 'quote' | 'history' | null>(null);
   const [attachSuggestions, setAttachSuggestions]   = useState<AttachSuggestion[]>([]);
   const [loadingSugg, setLoadingSugg]               = useState(false);
   const [selectedAtts, setSelectedAtts]             = useState<AttachSuggestion[]>([]);
@@ -1753,6 +2529,19 @@ function EmailDetailPanel({
     return s ? parseInt(s, 10) : 288;
   });
   const [panelMaximized, setPanelMaximized] = useState(false);
+  // Reading size for the email body, remembered across emails and restarts.
+  const [textZoom, setTextZoomState] = useState(() => {
+    const v = parseFloat(localStorage.getItem('inbox_text_zoom') || '');
+    return Number.isFinite(v) ? v : 1.15;
+  });
+  const setTextZoom = (z: number) => {
+    const v = Math.round(Math.min(1.8, Math.max(0.8, z)) * 100) / 100;
+    setTextZoomState(v);
+    try { localStorage.setItem('inbox_text_zoom', String(v)); } catch { /* private mode */ }
+  };
+  // Signature logos and pasted pictures arrive as inline attachments and used to
+  // fill the strip; they stay one click away instead.
+  const [showInlineAtts, setShowInlineAtts] = useState(false);
   const panelRef          = useRef<HTMLDivElement>(null);
   const panelResizingRef  = useRef(false);
   const panelResizeStartY = useRef(0);
@@ -1772,10 +2561,27 @@ function EmailDetailPanel({
   const attResizeStartY  = useRef(0);
   const attResizeStartH  = useRef(80);
 
+  // The panel's real ceiling, and the ONLY place it is decided. The drag used to
+  // clamp at a flat 800 while the element carried `maxHeight: calc(100vh-300px)`,
+  // so on any window under 1100px tall the panel stopped growing while the mouse
+  // kept going, and the height committed on release was not the one dragged to.
+  // That is the resize that "still feels off": two limits disagreeing.
+  // Tracked in state, not read straight off `window`, so the panel re-renders
+  // when the window itself is resized instead of keeping a stale ceiling.
+  const [viewportH, setViewportH] = useState(() => (typeof window === 'undefined' ? 900 : window.innerHeight));
+  useEffect(() => {
+    const onResize = () => setViewportH(window.innerHeight);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  const panelMaxH = useCallback(() => Math.max(160, viewportH - 300), [viewportH]);
+
   useEffect(() => {
     function onMouseMove(e: MouseEvent) {
       if (panelResizingRef.current) {
-        const h = Math.max(120, Math.min(800, panelResizeStartH.current - (e.clientY - panelResizeStartY.current)));
+        // The panel now opens under the toolbar with its grip on the BOTTOM edge,
+        // so dragging down grows it.
+        const h = Math.max(120, Math.min(panelMaxH(), panelResizeStartH.current + (e.clientY - panelResizeStartY.current)));
         if (panelRef.current) panelRef.current.style.height = h + 'px';
       }
       if (attResizingRef.current) {
@@ -2136,34 +2942,40 @@ function EmailDetailPanel({
     }
   }
 
-  function ABtn({ panel, icon: Icon, label, color, locked }: { panel: NonNullable<typeof activePanel>; icon: React.ComponentType<{className?: string}>; label: string; color?: string; locked?: boolean }) {
+  // Primary actions carry an outline; tools are quiet ghost buttons. One active
+  // style for all — the old per-colour `bg-${color}-100` classes were built at
+  // runtime, which Tailwind never generates, so "active" often looked like nothing.
+  function ABtn({ panel, icon: Icon, label, primary, locked }: { panel: NonNullable<typeof activePanel>; icon: React.ComponentType<{className?: string}>; label: string; primary?: boolean; locked?: boolean }) {
     const active = activePanel === panel;
+    const base = 'shrink-0 whitespace-nowrap inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[12.5px] font-medium transition-colors';
     if (locked) {
       return (
         <button aria-label="Coming soon" onClick={() => toast('info', `${label} is coming soon`)} title="Coming soon"
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors text-[var(--t3)] ring-[var(--line)] hover:bg-[var(--s3)] cursor-default">
-          <Icon className="w-3 h-3 shrink-0 opacity-60" />
+          className={cn(base, 'text-[var(--t4)] hover:bg-[var(--s3)] cursor-default')}>
+          <Icon className="w-3.5 h-3.5 shrink-0 opacity-60" />
           {label}
-          <Lock className="w-2.5 h-2.5 shrink-0 opacity-60" />
+          <Lock className="w-3 h-3 shrink-0 opacity-60" />
         </button>
       );
     }
     return (
-      <button onClick={() => togglePanel(panel)}
+      <button onClick={() => togglePanel(panel)} aria-pressed={active}
         className={cn(
-          'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+          base,
           active
-            ? `bg-${color || 'violet'}-100 dark:bg-${color || 'violet'}-900/30 text-${color || 'violet'}-700 dark:text-${color || 'violet'}-300 ring-${color || 'violet'}-200 dark:ring-${color || 'violet'}-600`
-            : 'text-[var(--t2)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
+            ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]'
+            : primary
+              ? 'text-[var(--t1)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)]'
+              : 'text-[var(--t2)] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
         )}>
-        <Icon className="w-3 h-3 shrink-0" />
+        <Icon className="w-3.5 h-3.5 shrink-0" />
         {label}
       </button>
     );
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0">
+    <div className="h-full min-w-0 flex flex-col min-h-0">
       {lightbox && <ImageLightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
       {/* Drag shield — captures the mouse over the email iframe so resizing is smooth */}
       {resizeMode && <div className="fixed inset-0 z-[9999]" style={{ cursor: resizeMode === 'panel' ? 'row-resize' : 'ns-resize' }} />}
@@ -2175,45 +2987,62 @@ function EmailDetailPanel({
       ) : detail ? (
         <>
           {/* ── Compact header ──────────────────────────────────────────────── */}
-          <div className="shrink-0 px-5 pt-4 pb-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
-            {/* Nav + counter */}
-            <div className="flex items-center gap-1 mb-2">
-              <button aria-label={prevEmail?.subject} onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} title={prevEmail?.subject}
-                className="w-6 h-6 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-25 transition-colors">
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </button>
-              <button aria-label={nextEmail?.subject} onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} title={nextEmail?.subject}
-                className="w-6 h-6 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-25 transition-colors">
-                <ChevronRight className="w-3.5 h-3.5" />
-              </button>
-              {emailIdx >= 0 && <span className="text-[10px] text-[var(--t3)] ml-1 num">{emailIdx + 1} / {emailList.length}</span>}
+          <div className="shrink-0 px-6 pt-4 pb-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
+            {/* Subject + quiet controls (reading size, prev/next) on one line */}
+            <div className="flex items-start gap-3">
+              <h2 className="flex-1 min-w-0 text-[17px] font-semibold text-[var(--t1)] leading-snug break-words">{detail.subject}</h2>
+              <div className="shrink-0 flex items-center gap-0.5 text-[var(--t3)]">
+                <button aria-label="Smaller text" title="Smaller text" onClick={() => setTextZoom(textZoom - 0.1)} disabled={textZoom <= 0.8}
+                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-30 transition-colors">
+                  <AArrowDown className="w-4 h-4" />
+                </button>
+                <button aria-label="Reset text size" title="Reset text size" onClick={() => setTextZoom(1.15)}
+                  className="h-7 min-w-[42px] px-1 rounded-md text-[11.5px] num hover:bg-[var(--s3)] hover:text-[var(--t1)] transition-colors">
+                  {Math.round(textZoom * 100)}%
+                </button>
+                <button aria-label="Larger text" title="Larger text" onClick={() => setTextZoom(textZoom + 0.1)} disabled={textZoom >= 1.8}
+                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-30 transition-colors">
+                  <AArrowUp className="w-4 h-4" />
+                </button>
+                <span className="w-px h-4 bg-[var(--line-2)] mx-1.5" />
+                <button aria-label={prevEmail?.subject} onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} title={prevEmail?.subject}
+                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-25 transition-colors">
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                {emailIdx >= 0 && <span className="text-[11.5px] num px-0.5">{emailIdx + 1}/{emailList.length}</span>}
+                <button aria-label={nextEmail?.subject} onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} title={nextEmail?.subject}
+                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-25 transition-colors">
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            {/* Subject */}
-            <h2 className="text-[15px] font-bold text-[var(--t1)] leading-snug mb-1.5">{detail.subject}</h2>
-
-            {/* Meta row */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-[var(--t3)]">
-              <span className="w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold text-white shrink-0" style={{ background: 'linear-gradient(140deg, var(--t3), var(--t4))' }}>
+            {/* Meta row — one line, addresses truncate instead of wrapping */}
+            <div className="mt-2 flex items-center gap-2.5 min-w-0 text-[12.5px] text-[var(--t3)]">
+              <span className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0" style={{ background: 'linear-gradient(140deg, var(--t3), var(--t4))' }}>
                 {detail.sender.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
               </span>
-              <span className="font-medium text-[var(--t2)]">{detail.sender}</span>
-              <span className="text-[var(--t3)]">&lt;{detail.senderEmail}&gt;</span>
-              {detail.to && <span>→ {detail.to}</span>}
-              {detail.cc && <span className="truncate max-w-[200px]">CC: {detail.cc}</span>}
-              <span className="ml-auto shrink-0 text-[var(--t3)]">
-                {(() => { try { return new Date(detail.received).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }); } catch { return detail.received; } })()}
+              <span className="font-medium text-[var(--t1)] shrink-0 max-w-[40%] truncate">{detail.sender}</span>
+              <span className="flex-1 min-w-0 truncate"
+                title={[detail.senderEmail, detail.to && `To: ${detail.to}`, detail.cc && `CC: ${detail.cc}`].filter(Boolean).join('\n')}>
+                {detail.senderEmail}{detail.to ? `  →  ${detail.to}` : ''}{detail.cc ? `  ·  CC ${detail.cc}` : ''}
+              </span>
+              <span className="shrink-0">
+                {(() => { try { return parseReceived(detail.received).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }); } catch { return detail.received; } })()}
               </span>
             </div>
 
             {/* Attachments strip */}
-            {detail.attachments.length > 0 && (
-              <div className="mt-2.5 pt-2.5 border-t border-[var(--line)]">
+            {detail.attachments.length > 0 && (() => {
+              const inlineCount = detail.attachments.filter(a => a.isInline).length;
+              const visible = showInlineAtts ? detail.attachments : detail.attachments.filter(a => !a.isInline);
+              return (
+              <div className="mt-3">
                 <div
                   ref={attStripRef}
                   className="flex flex-wrap gap-1.5 overflow-y-auto"
                   style={{ maxHeight: attStripHeight }}>
-                  {detail.attachments.map(att => (
+                  {visible.map(att => (
                     att.isPdf ? (
                       <button aria-label="View · Drag to EL Pricer" key={att.index} onClick={() => openAttachmentPdf(detail.entryId, att.index)}
                         draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
@@ -2224,9 +3053,9 @@ function EmailDetailPanel({
                     ) : isImageFile(att.name) ? (
                       <button aria-label="View · Drag to EL Pricer" key={att.index} onClick={() => setLightbox({ src: attViewUrl(detail.entryId, att.index), name: att.name })}
                         draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name, isImage: true })); e.dataTransfer.effectAllowed = 'copy'; }}
-                        title="View · Drag to EL Pricer"
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-600 hover:bg-emerald-100 transition-colors">
-                        <ImageIcon className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
+                        title={`View · Drag to EL Pricer · ${fmtSize(att.size)}`}
+                        className="inline-flex items-center gap-1.5 pl-0.5 pr-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-600 hover:bg-emerald-100 transition-colors">
+                        <AttThumb entryId={detail.entryId} index={att.index} />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
                       </button>
                     ) : isExcelFile(att.name) ? (
                       <button aria-label="Open EL Pricer · Drag to EL Pricer" key={att.index} onClick={() => setActivePanel('pricer')}
@@ -2247,6 +3076,13 @@ function EmailDetailPanel({
                       {savingPdf ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Download className="w-2.5 h-2.5" />}Queue
                     </button>
                   )}
+                  {inlineCount > 0 && (
+                    <button onClick={() => setShowInlineAtts(s => !s)}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors">
+                      <ImageIcon className="w-2.5 h-2.5" />
+                      {showInlineAtts ? 'Hide inline images' : `${plural(inlineCount, 'inline image')}`}
+                    </button>
+                  )}
                 </div>
                 {/* Attachment strip resize handle */}
                 <div
@@ -2263,72 +3099,46 @@ function EmailDetailPanel({
                   <div className="w-6 h-0.5 rounded-full bg-[var(--s3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
 
-          {/* ── Email body — main scrollable area ───────────────────────────── */}
-          <div ref={bodyRef} className="flex-1 overflow-y-auto bg-[var(--s1)]">
-            {detail.htmlBody
-              ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} entryId={detail.entryId} attachments={detail.attachments} />
-              : <PlainBody text={detail.body} />
-            }
+          {/* ── Action toolbar — at the top, under the header ──────────────────
+              It used to be a wrapped row of seven same-weight buttons jammed under
+              the email. Now: three primary actions, a divider, quiet tools. It
+              scrolls sideways on a narrow pane instead of wrapping into two rows. */}
+          <div className="shrink-0 flex items-center gap-1 px-5 py-2 border-b border-[var(--line-2)] bg-[var(--s1)] overflow-x-auto"
+            style={{ scrollbarWidth: 'none' }}>
+            <ABtn panel="summarize"    icon={Sparkles}    label="Summarize"     primary locked={STRIPPED} />
+            <ABtn panel="reply"        icon={Edit3}       label="Reply"         primary locked={STRIPPED} />
+            <ABtn panel="reply-attach" icon={Paperclip}   label="Attach & Send" primary locked={STRIPPED} />
+            <span className="shrink-0 w-px h-5 bg-[var(--line-2)] mx-1.5" />
+            <ABtn panel="pricer"       icon={Zap}         label="EL Pricer"     locked={STRIPPED} />
+            <ABtn panel="cbu"          icon={Battery}     label="CBU Sheet"     locked={STRIPPED} />
+            <ABtn panel="quote"        icon={FileDown}    label="Quick Quote"   locked={STRIPPED} />
+            {/* Reads only the already-synced CRM tables, so it stays available
+                in the stripped build where the AI-backed panels do not. */}
+            <ABtn panel="history"      icon={HistoryIcon} label="History" />
           </div>
 
-          {/* ── Bottom: expanded panel + action bar ─────────────────────────── */}
-          <div className="shrink-0 border-t border-[var(--line-2)] bg-[var(--s1)]">
-
-            {/* Expanded panel */}
+            {/* Expanded panel — opens right under the toolbar, like Outlook's
+                inline reply, with the email continuing below it */}
             {activePanel && (
-              <>
-                {/* ── Resize handle — OUTSIDE the scroll container so drag works ── */}
-                <div
-                  className="group flex items-center h-5 border-b border-[var(--line)] select-none bg-[var(--s1)] hover:bg-violet-50 dark:hover:bg-violet-900/20 transition-colors"
-                  style={{ cursor: 'row-resize' }}
-                  onMouseDown={e => {
-                    if ((e.target as HTMLElement).closest('button')) return;
-                    panelResizingRef.current = true;
-                    setResizeMode('panel');
-                    panelResizeStartY.current = e.clientY;
-                    panelResizeStartH.current = panelRef.current?.offsetHeight ?? panelHeight;
-                    document.body.style.cursor = 'row-resize';
-                    document.body.style.userSelect = 'none';
-                    e.preventDefault();
-                  }}>
-                  <div className="flex-1 flex items-center justify-center pointer-events-none">
-                    <div className="w-8 h-0.5 rounded-full bg-[var(--line-3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
-                  </div>
-                  <div className="flex items-center gap-0.5 pr-1.5">
-                    <button aria-label={panelMaximized ? 'Restore' : 'Maximise'}
-                      onClick={() => setPanelMaximized(p => !p)}
-                      title={panelMaximized ? 'Restore' : 'Maximise'}
-                      className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
-                      {panelMaximized
-                        ? <ChevronRight className="w-3 h-3 rotate-90" />
-                        : <ChevronLeft className="w-3 h-3 -rotate-90" />}
-                    </button>
-                    <button aria-label="Open EL Pricer in new window"
-                      onClick={() => openExternal('/schematics', { popup: true, width: 1000, height: 760 })}
-                      title="Open EL Pricer in new window"
-                      className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
-                      <ExternalLink className="w-3 h-3" />
-                    </button>
-                    <button aria-label="Close"
-                      onClick={() => setActivePanel(null)}
-                      title="Close"
-                      className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                </div>
-
+              // Shrinkable, so on a short window the email keeps its floor
+              // (min-h on the body below) instead of being squeezed to nothing.
+              <div className="shrink min-h-0 flex flex-col bg-[var(--s1)] border-b border-[var(--line-2)]">
                 {/* Scrollable panel content */}
                 <div
                   ref={panelRef}
-                  className="overflow-y-auto border-b border-[var(--line-2)]"
+                  className="shrink min-h-0 overflow-y-auto"
                   // Cap to the space left below the app + inbox headers so the panel
                   // (and its follow-up input at the bottom) plus the action bar can
                   // never spill under the Windows taskbar / off-screen.
-                  style={{ height: panelMaximized ? 600 : panelHeight, maxHeight: 'calc(100vh - 300px)' }}>
+                  // One limit, shared with the drag (panelMaxH), so the handle
+                  // always tracks the pointer. Maximise takes the whole ceiling
+                  // rather than a flat 600 — which used to SHRINK a panel that
+                  // had been dragged taller than that.
+                  style={{ height: Math.min(panelMaximized ? panelMaxH() : panelHeight, panelMaxH()) }}>
 
                 {/* ── Summarize panel — summary + inline chat + vision ── */}
                 {activePanel === 'summarize' && (
@@ -2495,9 +3305,10 @@ function EmailDetailPanel({
                       <>
                         {/* The reply body. Blank on open, and nothing writes into
                             it except the user and the Insert button below. */}
-                        <textarea value={replyText} onChange={e => setReplyText(e.target.value)} rows={5}
+                        <textarea value={replyText} onChange={e => setReplyText(e.target.value)} rows={9}
                           placeholder="Write your reply…"
-                          className="w-full text-[12.5px] text-[var(--t1)] bg-[var(--s3)] rounded-lg px-3 py-2.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+                          style={{ fontSize: 14 * Math.min(textZoom, 1.3) }}
+                          className="w-full min-h-[160px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-3.5 py-3 ring-1 ring-inset ring-[var(--line-2)] resize-y focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
                         <div className="flex items-center gap-2 flex-wrap">
                           <button onClick={sendReply} disabled={sendingReply || !replyText.trim()}
                             className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
@@ -2510,6 +3321,9 @@ function EmailDetailPanel({
                                 : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]')}>
                             <Sparkles className="w-3 h-3" />AI Draft
                           </button>
+                          <SnippetPicker toast={toast}
+                            onInsert={body => setReplyText(prev =>
+                              prev.trim() ? `${prev.trimEnd()}\n\n${body}` : body)} />
                           {replyText && (
                             <button onClick={() => setReplyText('')}
                               className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-red-500 ring-1 ring-inset ring-red-200 dark:ring-red-700/50 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
@@ -2652,9 +3466,10 @@ function EmailDetailPanel({
                       </p>
                     )}
 
-                    <textarea value={replyAttachText} onChange={e => setReplyAttachText(e.target.value)} rows={5}
+                    <textarea value={replyAttachText} onChange={e => setReplyAttachText(e.target.value)} rows={7}
                       placeholder="Covering note…"
-                      className="w-full text-[12.5px] text-[var(--t1)] bg-[var(--s3)] rounded-lg px-3 py-2.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+                      style={{ fontSize: 14 * Math.min(textZoom, 1.3) }}
+                      className="w-full min-h-[140px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-3.5 py-3 ring-1 ring-inset ring-[var(--line-2)] resize-y focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
                     {/* Suggested attachments */}
                     <div>
                       <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1.5 flex items-center gap-2">
@@ -2707,7 +3522,9 @@ function EmailDetailPanel({
                 {/* ── EL Pricer panel ── */}
                 {activePanel === 'pricer' && (
                   <div className="px-5 py-3">
-                    <InlineELPricer emailBody={detail.body || ''} entryId={detail.entryId} attachments={detail.attachments} toast={toast} />
+                    <InlineELPricer emailBody={detail.body || ''} entryId={detail.entryId} attachments={detail.attachments}
+                      toast={toast} setAppTab={setAppTab} subject={detail.subject} emailList={emailList}
+                      storeId={storeId} />
                   </div>
                 )}
 
@@ -2721,19 +3538,59 @@ function EmailDetailPanel({
                 {activePanel === 'quote' && (
                   <QuickQuotePanel emailSubject={detail.subject} emailBody={detail.body || ''} senderName={detail.sender} senderEmail={detail.senderEmail} toast={toast} />
                 )}
+
+                {/* ── Customer history panel ── */}
+                {activePanel === 'history' && (
+                  <div className="px-5 py-3">
+                    <CustomerHistoryPanel senderEmail={detail.senderEmail} senderName={detail.sender} toast={toast} />
+                  </div>
+                )}
                 </div>
-              </>
+
+                {/* ── Resize grip — bottom edge, OUTSIDE the scroll container so drag works ── */}
+                <div
+                  className="group flex items-center h-6 border-t border-[var(--line)] select-none hover:bg-[var(--s3)] transition-colors"
+                  style={{ cursor: 'row-resize' }}
+                  onMouseDown={e => {
+                    if ((e.target as HTMLElement).closest('button')) return;
+                    panelResizingRef.current = true;
+                    setResizeMode('panel');
+                    panelResizeStartY.current = e.clientY;
+                    panelResizeStartH.current = panelRef.current?.offsetHeight ?? panelHeight;
+                    document.body.style.cursor = 'row-resize';
+                    document.body.style.userSelect = 'none';
+                    e.preventDefault();
+                  }}>
+                  <div className="flex-1 flex items-center justify-center pointer-events-none">
+                    <div className="w-10 h-1 rounded-full bg-[var(--line-3)] group-hover:bg-[var(--t4)] transition-colors" />
+                  </div>
+                  <div className="flex items-center gap-0.5 pr-2">
+                    <button aria-label={panelMaximized ? 'Restore' : 'Maximise'}
+                      onClick={() => setPanelMaximized(p => !p)}
+                      title={panelMaximized ? 'Restore' : 'Maximise'}
+                      className="w-6 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
+                      {panelMaximized
+                        ? <ChevronLeft className="w-3.5 h-3.5 rotate-90" />
+                        : <ChevronRight className="w-3.5 h-3.5 rotate-90" />}
+                    </button>
+                    <button aria-label="Close"
+                      onClick={() => setActivePanel(null)}
+                      title="Close"
+                      className="w-6 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
             )}
 
-            {/* Action bar */}
-            <div className="flex items-center gap-1.5 px-4 py-2 flex-wrap">
-              <ABtn panel="summarize"    icon={Sparkles}      label="Summarize" color="violet" locked={STRIPPED} />
-              <ABtn panel="reply"        icon={Edit3}         label="Reply"     color="ink"    locked={STRIPPED} />
-              <ABtn panel="reply-attach" icon={Paperclip}     label="Attach & Send" color="brand" locked={STRIPPED} />
-              <ABtn panel="pricer"       icon={Zap}           label="EL Pricer" color="amber"  locked={STRIPPED} />
-              <ABtn panel="cbu"         icon={Battery}       label="CBU Sheet" color="blue"   locked={STRIPPED} />
-              <ABtn panel="quote"        icon={FileDown}      label="Quick Quote" color="emerald" locked={STRIPPED} />
-            </div>
+          {/* ── Email body — main scrollable area ───────────────────────────── */}
+          <div ref={bodyRef} className={cn('flex-1 overflow-y-auto bg-[var(--s1)]', activePanel ? 'min-h-[180px]' : 'min-h-0')}>
+            {detail.htmlBody
+              ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} entryId={detail.entryId}
+                  attachments={detail.attachments} onImageOpen={setLightbox} zoom={textZoom} />
+              : <PlainBody text={detail.body} zoom={textZoom} />
+            }
           </div>
         </>
       ) : null}
@@ -2917,10 +3774,12 @@ export function InboxPage({
   toast,
   setTab,
   onUnreadCount,
+  onSwitchLayout,
 }: {
   toast: ToastFn;
   setTab: (t: string) => void;
   onUnreadCount?: (n: number) => void;
+  onSwitchLayout?: () => void;
 }) {
   // Backed by module-level variables so state survives tab switches
   const [available, _setAvailable]      = useState<boolean | null>(_available);
@@ -3543,10 +4402,10 @@ export function InboxPage({
 
       {/* ── Full-screen email popout (double-click) ─────────────────────────── */}
       {popoutId && (
-        <div className="fixed inset-0 z-[9960] bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+        <div className="fixed inset-0 z-[9960] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3"
           onClick={e => { if (e.target === e.currentTarget) setPopoutId(null); }}>
-          <div className="w-full max-w-4xl bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-inset ring-[var(--line-2)] flex flex-col overflow-hidden"
-            style={{ height: 'min(90vh, 860px)' }}>
+          <div className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-inset ring-[var(--line-2)] flex flex-col overflow-hidden"
+            style={{ width: 'min(96vw, 1400px)', height: 'min(95vh, 1200px)' }}>
             {/* Popout header */}
             <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
               <Mail className="w-4 h-4 text-[var(--t3)] shrink-0" />
@@ -3567,6 +4426,7 @@ export function InboxPage({
                 setAppTab={setTab}
                 onMarkRead={handleMarkRead}
                 onLabelChange={() => {}}
+                storeId={storeId}
               />
             </div>
           </div>
@@ -3715,6 +4575,14 @@ export function InboxPage({
           <PenLine className="w-3 h-3" />
           Compose
         </button>
+
+        {onSwitchLayout && (
+          <button onClick={onSwitchLayout} title="Switch to the Outlook-style layout"
+            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)] hover:opacity-90 transition-opacity">
+            <Sparkles className="w-3 h-3" />
+            New layout
+          </button>
+        )}
 
         {/* Refresh */}
         <button aria-label="Refresh emails"
@@ -4076,7 +4944,13 @@ export function InboxPage({
         </div>
 
         {/* ── Detail pane (right) — browser-style tabs ────────────────────── */}
-        <div className="flex-1 flex flex-col min-h-0">
+        {/* min-w-0 matters as much as min-h-0 and was missing: a flex item will
+            not shrink below its content, so a wide child — the attachment strip,
+            a long subject, the pricer's chip row — pushed this whole column past
+            the window edge (measured at 1604px inside a 1440px viewport) and
+            everything on the right was quietly clipped, buttons included. That
+            is why the pane felt crowded only sometimes: only wide emails did it. */}
+        <div className="flex-1 min-w-0 flex flex-col min-h-0">
 
           {/* Tab bar */}
           {openTabs.length > 0 && (
@@ -4214,7 +5088,7 @@ export function InboxPage({
           {/* One EmailDetailPanel per tab — inactive tabs hidden via display:none */}
           {openTabs.map(t => (
             <div key={t.id}
-              className="flex-1 min-h-0"
+              className="flex-1 min-w-0 min-h-0"
               style={t.id !== activeTabId ? { display: 'none' } : undefined}>
               <EmailDetailPanel
                 initialEntryId={t.id}
@@ -4223,6 +5097,7 @@ export function InboxPage({
                 setAppTab={setTab}
                 onMarkRead={handleMarkRead}
                 onLabelChange={label => updateTabLabel(t.id, label)}
+                storeId={storeId}
               />
             </div>
           ))}
@@ -4232,3 +5107,17 @@ export function InboxPage({
     </div>
   );
 }
+
+// ─── Shared with the Outlook layout (InboxOutlook.tsx) ───────────────────────
+// The Outlook-style page reuses these rather than keeping a second copy of the
+// email frame, the tool panels, search and the session caches.
+export {
+  STRIPPED, CACHE_TTL, emailCache, capMap, capRecord, MAX_EMAIL_CACHE, MAX_SUMMARIES,
+  _summaryCache, _storeOf, rememberStores, CATEGORIES,
+  Md, fmtDate, parseReceived, fmtSize, openAttachmentPdf, isImageFile, isExcelFile, attViewUrl,
+  CustomerHistoryPanel, ImageLightbox, PlainBody, EmailBodyFrame,
+  MATCH_MODE_OPTIONS, EMPTY_FILTERS, SCOPE_OPTIONS, activeFilterPills, toApiFilters, passesFilters,
+  scopeHaystack, termPattern, highlightTerms, Highlight, SearchFilterPanel,
+  InlineCBUGenerator, InlineELPricer, ComposeModal, EmailDetailPanel, avatarColor, avatarInitials,
+};
+export type { Mailbox, AttachmentInfo, EmailSummary, EmailDetail, FilterState, PolishMode };

@@ -5,7 +5,7 @@ import {
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
   Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
   Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge, Pin, PinOff,
-  Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo, Lightbulb, Tags,
+  Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo, Lightbulb, Tags, FolderTree,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
@@ -27,7 +27,8 @@ const DashboardPage  = React.lazy(() => import('./pages/Dashboard').then(m => ({
 const AnalyticsPage  = React.lazy(() => import('./pages/Analytics').then(m => ({ default: m.AnalyticsPage })));
 const ReportPage     = React.lazy(() => import('./pages/Report').then(m => ({ default: m.ReportPage })));
 const HistoryPage    = React.lazy(() => import('./pages/History').then(m => ({ default: m.HistoryPage })));
-const InboxPage      = React.lazy(() => import('./pages/Inbox').then(m => ({ default: m.InboxPage })));
+// InboxRoot picks the Outlook-style layout or the classic one (View → Classic layout).
+const InboxPage      = React.lazy(() => import('./pages/InboxOutlook').then(m => ({ default: m.InboxRoot })));
 const SettingsPage   = React.lazy(() => import('./pages/Settings').then(m => ({ default: m.SettingsPage })));
 const CrmPage        = React.lazy(() => import('./pages/Crm').then(m => ({ default: m.CrmPage })));
 const ELInfoPage     = React.lazy(() => import('./pages/ELInfo').then(m => ({ default: m.ELInfoPage })));
@@ -40,7 +41,7 @@ const TodoPage       = React.lazy(() => import('./pages/Todo').then(m => ({ defa
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 type TabId =
   | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Report' | 'Inbox' | 'Todo' | 'CRM' | 'ELInfo' | 'Fenton'
-  | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Docs' | 'LSD' | 'Settings';
+  | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Filing' | 'Docs' | 'LSD' | 'Settings';
 
 // Stripped ship build vs full local app. The desktop ship is produced with
 // `vite build` (import.meta.env.PROD === true). The full app runs ONLY via the
@@ -53,7 +54,9 @@ const STRIPPED = import.meta.env.PROD;
 // the stripped ship (personal API keys / tooling not ready for rollout), full
 // locally.
 const LOCKED_TABS = new Set<TabId>(
-  STRIPPED ? ['Assistant', 'ELInfo', 'Fenton', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs', 'LSD'] : [],
+  // Filing is locked in the ship build too: it writes to the shared D&Q Store,
+  // which is not something a rolled-out copy should be able to do unattended.
+  STRIPPED ? ['Assistant', 'ELInfo', 'Fenton', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Filing', 'Docs', 'LSD'] : [],
 );
 const isLocked = (t: TabId) => LOCKED_TABS.has(t);
 
@@ -62,11 +65,12 @@ const isLocked = (t: TabId) => LOCKED_TABS.has(t);
 // eliminated and never bundled. Locally they load on first visit.
 const AssistantPage  = STRIPPED ? null : React.lazy(() => import('./pages/Assistant').then(m => ({ default: m.AssistantPage })));
 const SchematicsPage = STRIPPED ? null : React.lazy(() => import('./pages/Schematics').then(m => ({ default: m.SchematicsPage })));
+const FilingPage     = STRIPPED ? null : React.lazy(() => import('./pages/Filing').then(m => ({ default: m.FilingPage })));
 const PmoPage        = STRIPPED ? null : React.lazy(() => import('./pages/PMO').then(m => ({ default: m.PmoPage })));
 const CommissionPage = STRIPPED ? null : React.lazy(() => import('./pages/Commission').then(m => ({ default: m.CommissionPage })));
 const DocsPage       = STRIPPED ? null : React.lazy(() => import('./pages/Docs').then(m => ({ default: m.DocsPage })));
 const LsdPage        = STRIPPED ? null : React.lazy(() => import('./pages/LSD').then(m => ({ default: m.LsdPage })));
-const CBUCalculator  = STRIPPED ? null : React.lazy(() => import('./CBUCalculator'));
+const CbuPage        = STRIPPED ? null : React.lazy(() => import('./pages/CBU').then(m => ({ default: m.CbuPage })));
 
 // Title/description shown on each locked tab's Coming Soon wall.
 const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
@@ -78,6 +82,7 @@ const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
   PMO:        { title: 'PMO',               desc: 'PMO automation is being readied for the team and will land here soon.' },
   CBU:        { title: 'CBU Sizer',         desc: 'The CBU sizing tool is coming soon to your workspace.' },
   Commission: { title: 'Commission',        desc: 'Commission tooling is coming soon to your workspace.' },
+  Filing:     { title: 'D&Q Filing',        desc: 'Audit the quotes you have sent against the D&Q Store and file what is missing. Coming soon to your workspace.' },
   Docs:       { title: 'Doc Packs',         desc: 'Document pack generation is coming soon to your workspace.' },
   LSD:        { title: 'LSD Pricing',       desc: 'Drop a CPQ transaction, get the priced feedback sheet and its working file. Coming soon to your workspace.' },
 };
@@ -107,6 +112,7 @@ const NAV_STRUCTURE = {
       { id: 'CBU'        as TabId, Icon: Calculator,    labelKey: 'cbuSizer'    as const },
       { id: 'Commission' as TabId, Icon: Gauge,          labelKey: 'commission'  as const },
       { id: 'Schematics' as TabId, Icon: Zap,           labelKey: 'schematics'  as const },
+      { id: 'Filing'     as TabId, Icon: FolderTree,    labelKey: 'filing'      as const },
       { id: 'Docs'       as TabId, Icon: BookOpen,      labelKey: 'docPacks'   as const },
     ],
   },
@@ -128,6 +134,7 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   CBU:        { t: 'cbuSizer',    s: 'sub_cbu'        },
   Commission: { t: 'commission',  s: 'sub_commission' },
   Schematics:{ t: 'schematics', s: 'sub_schematics' },
+  Filing:    { t: 'filing',     s: 'sub_filing'    },
   Docs:      { t: 'docPacks',   s: 'sub_docs'      },
   LSD:       { t: 'lsd',        s: 'sub_lsd'       },
   Settings:  { t: 'settings',   s: 'sub_settings'  },
@@ -1157,11 +1164,12 @@ export default function App() {
                       {t === 'Fenton'     && <FentonKBPage     toast={toast} />}
                       {t === 'Assistant'  && AssistantPage  && <AssistantPage  connected={!!connected} toast={toast} />}
                       {t === 'Schematics' && SchematicsPage && <SchematicsPage toast={toast} />}
+                {t === 'Filing'     && FilingPage     && <FilingPage toast={toast} />}
                       {t === 'PMO'        && PmoPage        && <PmoPage        toast={toast} />}
                       {t === 'Commission' && CommissionPage && <CommissionPage />}
                       {t === 'Docs'       && DocsPage       && <DocsPage       toast={toast} />}
                       {t === 'LSD'        && LsdPage        && <LsdPage        toast={toast} />}
-                      {t === 'CBU'        && CBUCalculator  && <CBUCalculator />}
+                      {t === 'CBU'        && CbuPage       && <CbuPage />}
                       {t === 'Settings'   && <SettingsPage config={config} onSave={async c => {
                         await api.saveConfig(c); setConfig(c); toast('ok', tCurrent.settings_saved);
                       }} />}
