@@ -59,6 +59,11 @@ export interface UserDoc {
 export interface LsdLine {
   material: string; description: string | null; group: string | null;
   qty: number; list: number | null; std_disc: number;
+  // Which book the list price came from, when the transaction carried none:
+  // the Trigger sheet, an identical Trigger entry (a discontinued material
+  // reaching its successor's price), or the Guidance sheet. Null = the
+  // transaction's own list.
+  list_src: 'trigger' | 'twin' | 'guidance' | null;
   unit_std: number | null; total_std: number | null;
   cost: number | null; total_cost: number | null;
   target_e2e: number | null; net_at_target: number | null; disc_at_target: number | null;
@@ -85,8 +90,24 @@ export interface LsdSummary {
   // and whether anyone has to decide anything.
   headline?: string;
   rule?: 'requested' | 'e2e'; half?: 'H1' | 'H2'; rpi_rate?: number;
+  // Set when a standing customer exception replaced the half-year RPI rate
+  // (Khaled Al Saigh / KYR and the like) — `standard` is the rate it replaced.
+  rpi_exception?: { label: string; rate: number; why: string; standard: number } | null;
   // Lines priced under their target E2E — the reason an approval is asked for.
   below_target?: number; target_e2e?: number | null;
+  // Lines the customer asked below target on, which the target-E2E floor lifted
+  // back up to it. `floored_value` is how far the quote sits over the ask, and
+  // `e2e_concession` the band (0.37, 0.35) an approver may come down to.
+  floored?: number; floored_value?: number; e2e_concession?: number[];
+  // Where the RPI came from. `rpi_no_history` is the share of it measured against
+  // the ledger's COUNTRY average on lines this customer never bought — that is a
+  // comparison to the Gulf, not a price raised on anyone. `rpi_below_cost` is the
+  // share from materials whose prior-year average is under today's cost, which no
+  // margin can reconcile. `rpi_drivers` is the biggest few lines, largest first.
+  rpi_no_history?: number; rpi_below_cost?: number;
+  rpi_drivers?: Array<{ material: string; rpi_value: number; share: number | null;
+                        ctry_avg: number | null; cost: number | null;
+                        unit_net: number | null; ref_below_cost: boolean }>;
   // The two stages the approval mail quotes. `at_target` is the CUSTOMER's
   // requested price and what it would land; the table is the proposed price.
   at_target?: { target_price: number; e2e: number | null; rpi_pct: number | null;
@@ -94,6 +115,44 @@ export interface LsdSummary {
   groups?: Array<{ group: string; lines: number; add_disc: number | null;
                    net: number; e2e: number | null; target_e2e: number | null;
                    rpi_pct: number | null; rpi_value: number }>;
+}
+
+// The state of the background session keep-alive: one row per tab Vector holds
+// open in the debug-rail Edge, plus which of them are showing a sign-in page and
+// therefore need a human once. Written by automation/tab_keepalive.py.
+export interface LsdKeepaliveTab {
+  url: string; matched: boolean; created: boolean; reloaded: boolean;
+  signed_in: boolean | null; title: string | null; final_url: string | null;
+  error: string | null;
+}
+export interface LsdKeepalive {
+  enabled: boolean; everyMin: number; urls: string[]; running: boolean;
+  ran: string | null; ok: boolean | null; launched?: boolean;
+  tabs: LsdKeepaliveTab[]; needs_signin: string[]; error?: string; log?: string[];
+}
+
+// One open row of the analyst's LSD Daily work sheet (automation/lsd_queue.py).
+//   fetch     — nobody has picked it up: Status open, no case folder here
+//   priced    — a case folder exists here, but her Status is still open
+//   laith     — her Notes already say Laith did it, Status still open
+//   hold      — Hold / Hold Sales / Hold by Kiran
+//   no_number — no usable W-number in the row yet
+//   no_bu     — BU column blank, so it may or may not be Fire
+// Rows in other BUs (CBS, EL) never arrive — the script filters on BU, FIRE by default.
+export interface LsdQueueRow {
+  row: number; transaction: string; raw_transaction: string;
+  country: string; bu: string; name: string; customer: string; customer_name: string;
+  status: string; sales: string; notes: string;
+  cpq_updated: string | null; age_days: number | null; value: number | string | null;
+  fill: string | null; kind: 'fetch' | 'priced' | 'laith' | 'hold' | 'no_number' | 'no_bu';
+  first_seen?: string | null; case_folder?: string | null;
+}
+export interface LsdQueue {
+  enabled: boolean; everyMin: number; running: boolean;
+  ran: string | null; ok: boolean | null; error?: string;
+  file?: { name: string; modified: string; url?: string };
+  rows: LsdQueueRow[]; counts?: Record<string, number>; closed?: number;
+  other_bu?: number; bu_filter?: string[];
 }
 
 // One line of the LSD daily register, in the analyst's own column order. Every
@@ -164,6 +223,8 @@ export interface LsdResult {
   meta?: Record<string, string>;
   log?: Array<{ kind: 'info' | 'ok' | 'warn' | 'error'; msg: string }>;
   case_dir?: string; bom?: string; working?: string; feedback?: string;
+  // The first draft — the "as pasted" Working File.
+  baseline?: string | null;
   // The ledger alone, values only — what the approval mail attaches.
   ledger?: string;
   checks?: { ledger_T11: number; feedback_L10: number; python: number; agree: boolean };
@@ -195,6 +256,12 @@ export interface LsdMeta {
   // into the same case folder with that prefix, and every line the previous
   // revision already carried keeps its price.
   revision?: string;
+  // The first draft: a second Working File holding the master with nothing in
+  // it but the transaction — every ledger column still its own formula, no
+  // decided discount. It separates a model number from an engine number, so it
+  // is written on every build; set false to skip it (a 7 MB copy and an extra
+  // Excel pass).
+  baseline?: boolean;
   // Register fields. They ride along with the build, which registers the case
   // as soon as it is written; `register: false` builds without registering.
   bu?: string; status?: string; sales_name?: string; cpq_updated?: string;
@@ -264,6 +331,13 @@ export const api = {
       // server caps both well below this, so this only ever fires if the box
       // itself has stopped answering.
       '/api/lsd/cpq-fetch', { transaction }, { timeout: 300_000 }).then(r => r.data),
+  // Which of the work tabs are open and still signed in, and a sweep on demand.
+  lsdKeepalive: () => axios.get<LsdKeepalive>('/api/lsd/keepalive').then(r => r.data),
+  lsdKeepaliveRun: () =>
+    axios.post<LsdKeepalive>('/api/lsd/keepalive/run', {}, { timeout: 240_000 }).then(r => r.data),
+  lsdQueue: () => axios.get<LsdQueue>('/api/lsd/queue').then(r => r.data),
+  lsdQueueRefresh: () =>
+    axios.post<LsdQueue>('/api/lsd/queue/refresh', {}, { timeout: 240_000 }).then(r => r.data),
   // The approval ask. Always a DRAFT — it opens in Outlook and a human sends it.
   lsdApprovalMail: (body: { summary: unknown; meta: unknown; attach?: string[];
                             to?: string; cc?: string; subject?: string; intro?: string }) =>
@@ -494,6 +568,65 @@ export const api = {
                     axios.post<{ ok: boolean; count?: number; scanned?: number; error?: string }>(
                       '/api/todo/recipients/refresh', { days }, { timeout: 300_000 }).then(r => r.data),
 
+  // ── D&Q filing (audit → review → file) ──────────────────────────────────────
+  // The audit walks months of Sent Items and indexes the store, so it is started
+  // and then polled rather than awaited.
+  dqAuditStart:  (months = 3) =>
+                   axios.post<DqAuditStatus & { started: boolean }>('/api/dq/audit', { months },
+                     { timeout: 30_000 }).then(r => r.data),
+  dqAuditStatus: () => axios.get<DqAuditStatus>('/api/dq/audit/status', { timeout: 15_000 }).then(r => r.data),
+  dqAuditResult: (verdict = '') =>
+                   axios.get<DqAuditResult>('/api/dq/audit/result',
+                     { params: verdict ? { verdict } : {}, timeout: 30_000 }).then(r => r.data),
+  // `ids` is always explicit — there is no "file everything" call on purpose.
+  dqFile:        (ids: number[], dryRun: boolean) =>
+                   axios.post<DqFileResult>('/api/dq/file', { ids, dryRun },
+                     { timeout: 900_000 }).then(r => r.data),
+
+  // ── EL price list issue ─────────────────────────────────────────────────────
+  pricelistVersion:     (force = false) =>
+                          axios.get<PriceListVersion>('/api/pricelist/version',
+                            { params: force ? { force: 1 } : {}, timeout: 30_000 }).then(r => r.data),
+  pricelistAcknowledge: () =>
+                          axios.post<{ ok: boolean; fingerprint?: string; label?: string; error?: string }>(
+                            '/api/pricelist/acknowledge', {}, { timeout: 30_000 }).then(r => r.data),
+
+  // ── Reply snippets ──────────────────────────────────────────────────────────
+  snippets:      () => axios.get<{ snippets: Snippet[] }>('/api/snippets', { timeout: 15_000 }).then(r => r.data),
+  snippetSave:   (s: Partial<Snippet> & { title: string; body: string }) =>
+                   axios.post<{ ok: boolean; snippet: Snippet; error?: string }>(
+                     '/api/snippets', s, { timeout: 15_000 }).then(r => r.data),
+  snippetDelete: (id: number) =>
+                   axios.delete<{ ok: boolean }>(`/api/snippets/${id}`, { timeout: 15_000 }).then(r => r.data),
+  snippetUsed:   (id: number) =>
+                   axios.post<{ ok: boolean }>(`/api/snippets/${id}/used`, {}, { timeout: 10_000 }).then(r => r.data),
+
+  // ── CBU reference quotes (which past quote was this system size) ────────────
+  cbuRefs:       () => axios.get<{ refs: CbuRef[]; lastScan: CbuRefScan | null; dirs: string[] }>(
+                    '/api/cbu/refs', { timeout: 20_000 }).then(r => r.data),
+  // The mail pass opens messages through Outlook COM one at a time, so this can
+  // legitimately run for minutes; the files-only scan comes back in seconds.
+  cbuRefScan:    (opts: { dirs?: string[]; scanMail?: boolean } = {}) =>
+                   axios.post<CbuRefScan & { ok: boolean; refs: CbuRef[]; error?: string }>(
+                     '/api/cbu/refs/scan', opts, { timeout: 11 * 60_000 }).then(r => r.data),
+  cbuRefSave:    (r: { id?: number; system: string; quoteRef: string; project?: string; note?: string; dated?: string }) =>
+                   axios.post<{ ok: boolean; ref: CbuRef | null; error?: string }>(
+                     '/api/cbu/refs', r, { timeout: 15_000 }).then(r => r.data),
+  cbuRefPin:     (id: number, pinned: boolean) =>
+                   axios.post<{ ok: boolean; error?: string }>(
+                     `/api/cbu/refs/${id}/pin`, { pinned }, { timeout: 15_000 }).then(r => r.data),
+  cbuRefHide:    (id: number) =>
+                   axios.delete<{ ok: boolean; error?: string }>(
+                     `/api/cbu/refs/${id}`, { timeout: 15_000 }).then(r => r.data),
+  cbuRefReveal:  (id: number) =>
+                   axios.post<{ ok: boolean; error?: string }>(
+                     `/api/cbu/refs/${id}/reveal`, {}, { timeout: 15_000 }).then(r => r.data),
+
+  // ── Customer history (past quotes for the account behind an email) ──────────
+  customerHistory: (params: { email?: string; name?: string; q?: string; limit?: number }) =>
+                     axios.get<CustomerHistory>('/api/customer/history',
+                       { params, timeout: 20_000 }).then(r => r.data),
+
   // Retry queue
   retryQueue:     () => axios.get<any[]>('/api/retry').then(r => r.data),
   retryNow:       () => axios.post<{ ok: boolean; ran: number; error?: string }>('/api/retry/now').then(r => r.data),
@@ -502,6 +635,174 @@ export const api = {
   // Server log
   logs: (tail = 150) => axios.get<{ lines: string[]; error?: string }>('/api/logs', { params: { tail } }).then(r => r.data),
 };
+
+// ─── D&Q filing ──────────────────────────────────────────────────────────────
+// The audit compares quotes actually sent from Outlook against what is in the
+// shared D&Q Store. Verdicts:
+//   MATCH / MATCH_RERENDER  filed correctly (nothing to do)
+//   MISSING_FOLDER          no folder exists for this opportunity
+//   MISSING_REVISION        folder exists, this revision's subfolder does not
+//   MISSING_FILE            folder and revision exist, the quote is not in them
+//   DIFFERENT_COPY          a file with this reference is filed but differs
+//   UNRESOLVED / ERROR      no id to match on, or the check itself failed
+// Only the three MISSING_* verdicts can be filed automatically; the rest either
+// need nothing or need a person.
+export type DqVerdict =
+  | 'MATCH' | 'MATCH_RERENDER' | 'MISSING_FOLDER' | 'MISSING_REVISION'
+  | 'MISSING_FILE' | 'DIFFERENT_COPY' | 'UNRESOLVED' | 'ERROR';
+
+export interface DqAuditStatus {
+  running:     boolean;
+  phase:       'idle' | 'scanning' | 'done' | 'error';
+  message:     string;
+  startedAt:   string;
+  finishedAt:  string;
+  error:       string;
+  months:      number;
+  lines:       string[];
+  generatedAt: string;
+  tally:       Record<string, number>;
+  rows:        number;
+}
+
+export interface DqAuditRow {
+  id:              number;
+  verdict:         DqVerdict;
+  sent:            string;
+  timesSent:       number;
+  code:            string;
+  revision:        string;
+  sfid:            string;
+  works:           string;
+  folders:         string[];
+  folderCount:     number;
+  attachment:      string;
+  subject:         string;
+  detail:          string;
+  messageInFolder: string;
+  // Decided server-side so the UI cannot offer to file what the writer refuses.
+  fileable:        boolean;
+}
+
+export interface DqAuditResult {
+  generatedAt: string;
+  months:      number | null;
+  tally:       Record<string, number>;
+  total:       number;
+  fileable:    number;
+  rows:        DqAuditRow[];
+  error?:      string;
+}
+
+export interface DqFileResult {
+  ok:         boolean;
+  dryRun:     boolean;
+  finishedAt: string;
+  approved:   number;
+  considered: number;
+  filed:      number;
+  skipped:    number;
+  failed:     number;
+  notInAudit: number[];
+  results:    { id: number; label: string; status: 'filed' | 'would-file' | 'skipped' | 'failed'; detail: string; newFolder?: boolean; size?: number }[];
+  log:        string[];
+  error?:     string;
+}
+
+// ─── EL price list issue ─────────────────────────────────────────────────────
+// Read from the workbook's own header row, not from anything hardcoded here.
+// `changed` means the file on disk is a different issue from the one this desk
+// last acknowledged — i.e. anything quoted before now used the previous sheet.
+export interface PriceListVersion {
+  label:           string;          // "July 2026 Price list"
+  validFrom:       string;          // "1st July 2026"
+  currency:        string;          // "EUR €"
+  exchangeRate:    number | null;   // the EUR→GBP rate the £ columns were built with
+  fingerprint:     string;
+  fileSize:        number;
+  modified:        string;
+  rows:            number;
+  seenFingerprint: string;
+  changed:         boolean;
+  acknowledged:    boolean;
+  error?:          string;
+}
+
+// ─── Reply snippet ───────────────────────────────────────────────────────────
+export interface Snippet {
+  id:         number;
+  title:      string;
+  body:       string;
+  tag:        string | null;
+  useCount:   number;
+  lastUsedAt: string | null;
+  createdAt:  string;
+  updatedAt:  string;
+}
+
+// ─── CBU reference quote ─────────────────────────────────────────────────────
+// One past LoadStar-PS quote, tied to the system size it was for. `confidence`
+// is 'weak' when the reference read out of the brief is not a recognisable
+// Salesforce or BidManager id — practice exports live in Downloads too.
+export interface CbuRef {
+  id:         number;
+  system:     string;                       // '1PH- 10KVA' — a cbuData.ts key
+  kva:        number | null;
+  phase:      string;                       // '1PH' | '3PH'
+  quoteRef:   string;
+  project:    string;
+  duration:   string;
+  dated:      string;                       // YYYY-MM-DD
+  source:     'brief' | 'calculator' | 'mail' | 'manual' | string;
+  detail:     string;                       // file path, or the mail subject
+  confidence: 'exact' | 'weak' | string;
+  note:       string;
+  pinned:     boolean;
+  hidden:     boolean;
+}
+
+export interface CbuRefScan {
+  at:           string;
+  created:      number;
+  updated:      number;
+  found:        number;
+  filesScanned: number;
+  mailsScanned: number;
+  errors:       string[];
+  dirs:         string[];
+}
+
+// ─── Customer history ────────────────────────────────────────────────────────
+// What this customer was quoted before, so "what did we send them last time"
+// doesn't mean digging through D&Q or old mail.
+//
+// Keyed on the customer (Rexel, Edmundson, CEF — the repeat buyers), not on the
+// CRM account, which holds the project. `spellings` is how many ways that one
+// customer's name appears in the Quotations List; they are folded into one row.
+export interface CustomerHistoryQuote {
+  sfId:      string | null;
+  title:     string | null;
+  quoteName: string | null;
+  account:   string | null;
+  customer:  string | null;
+  salesman:  string | null;
+  price:     number | null;
+  status:    string | null;
+  arrivedOn: string | null;
+  state:     'open' | 'won' | 'lost';
+}
+export interface CustomerHistory {
+  matched:     boolean;
+  customer:    string;
+  matchedOn:   'picked' | 'sender-name' | 'domain' | '';
+  spellings:   string[];
+  quotes:      CustomerHistoryQuote[];
+  projects:    { name: string; count: number }[];
+  totals:      { count: number; won: number; lost: number; open: number; value: number; wonValue: number };
+  // Offered when the sender could not be identified — pick rather than guess.
+  suggestions: { customer: string; count: number }[];
+  error?:      string;
+}
 
 // ─── CRM global quote-search hit ─────────────────────────────────────────────
 export interface CrmQuoteHit {

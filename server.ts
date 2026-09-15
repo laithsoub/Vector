@@ -11,7 +11,7 @@ import { request as httpsRequest } from 'https';
 import { createServer as netCreateServer } from 'net';
 import { AsyncLocalStorage } from 'async_hooks';
 import { createRequire } from 'module';
-import { randomUUID, randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'crypto';
+import { randomUUID, randomBytes, scryptSync, createCipheriv, createDecipheriv, createHash } from 'crypto';
 import initSqlJs from 'sql.js';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
@@ -138,6 +138,8 @@ const CONFIG_KEYS = [
   'lsd_master_model', 'lsd_cases_root', 'lsd_ledger', 'lsd_cpq_port',
   'lsd_register', 'lsd_sales_name', 'lsd_bu', 'lsd_request_type',
   'lsd_approver', 'lsd_approver_cc',
+  'lsd_keepalive', 'lsd_keepalive_min', 'lsd_keepalive_urls',
+  'lsd_queue', 'lsd_queue_min', 'lsd_daily_file', 'lsd_queue_bu',
 ] as const;
 
 // ── Salesman roster ──────────────────────────────────────────────────────────
@@ -399,6 +401,52 @@ function loadDb() {
     lastScanThreads INTEGER, lastScanCreated INTEGER, lastScanUpdated INTEGER,
     lastScanMessage TEXT, lastScanError TEXT, lastScanStartedAt TEXT
   );`);
+  // Small named values that belong to the desk rather than to any one feature
+  // (which price list issue was acknowledged, and so on). A generic key/value
+  // table beats another single-row table per fact.
+  db.run(`CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updatedAt TEXT
+  );`);
+  // Reply snippets: the sentences typed every week (lead times, commissioning
+  // terms, the standard questions back). Stored here rather than in config.json
+  // so they are queryable and survive a config rewrite.
+  db.run(`CREATE TABLE IF NOT EXISTS snippet (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    tag TEXT,
+    useCount INTEGER DEFAULT 0,
+    lastUsedAt TEXT,
+    createdAt TEXT, updatedAt TEXT
+  );`);
+  // CBU reference quotes: which past LoadStar-PS quote was for which system
+  // size. A new 10KVA single-phase enquiry is nearly always a copy of the last
+  // one, and nothing else in the desk records a SIZE against a quote number —
+  // the mail index cannot answer "10kva-1ph" because the size only exists
+  // inside the Tech Brief PDF the sizer exported. Filled by cbu_ref_scan.py
+  // reading those briefs; `pinned` is the one the user chose to keep per size.
+  db.run(`CREATE TABLE IF NOT EXISTS cbu_ref (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    system TEXT NOT NULL,
+    kva REAL, phase TEXT,
+    quoteRef TEXT NOT NULL,
+    project TEXT,
+    duration TEXT,
+    dated TEXT,
+    source TEXT,
+    detail TEXT,
+    confidence TEXT,
+    note TEXT,
+    pinned INTEGER DEFAULT 0,
+    hidden INTEGER DEFAULT 0,
+    createdAt TEXT, updatedAt TEXT
+  );`);
+  // NOCASE on the reference: the same opportunity is written "CR00us2z3YAA"
+  // and "cr00us2z3yaa" depending on who typed it, and they are one quote.
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS cbu_ref_key
+          ON cbu_ref(system, quoteRef COLLATE NOCASE);`);
   migrateDb();
   migrateTodo();
   migrateCrm();
@@ -1140,7 +1188,9 @@ function buildSystemPrompt(appContext: string): string {
     '- **Step 1**: extracts pricing from dropped quotes (UK/BE/FR/IT/DE/ES; PDF/Word/Excel) → uploads to the SharePoint QuotationFactory list.',
     '- **Step 2**: creates the D&Q Store folder on SharePoint and uploads the quote PDF.',
     '- **PMO tab**: quote PDF + customer PO + BidManager DOCU_ID PDFs → a PMO Word doc, ready to email the PMO team.',
-    '- **EL Pricer** (Schematics tab): prices Eaton emergency-lighting items from schematics/images/pasted lists against the EL Global Price List (July 2026, valid from 1 July 2026).',
+    // Named from the workbook actually on disk. Hardcoding the issue here meant
+    // the brain kept quoting "July 2026" after the sheet had been replaced.
+    `- **EL Pricer** (Schematics tab): prices Eaton emergency-lighting items from schematics/images/pasted lists against ${pricelistLabel(_plVersion?.v ?? null)}.`,
     '- **CBU Sizer** (CBU tab): LoadStar-PS battery/UPS sizing WITH a built-in list-price table per kVA system (hard-coded LoadStar-PS configurator prices — no live feed), plus a printable tech brief.',
     '- **Inbox**: reads Outlook email; one Summarize gives a structured read (incl. photos/diagrams/PDFs) + inline follow-up chat; also AI reply drafting and an inline EL Pricer.',
     '- **CRM tab**: account cards auto-seeded from past quotes — contacts, facts, D&Q docs, and live quotes/opportunities (an opportunity is an open priced quote, not won/lost). Duplicate cards can be MERGED. You can EDIT from chat: "add contact John Smith (buyer, john@acme.com) to <account>", "note that <account> pays at 60 days", "mark SR0012345 as won", "create account Acme", "tag <account> key-account" — you execute it and confirm.',
@@ -1194,6 +1244,69 @@ function extractObject(text: string): any | null {
     else if (c === '}') { depth--; if (depth === 0) { try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; } } }
   }
   return null;
+}
+
+// ─── EL price list: which issue is on disk ────────────────────────────────────
+// Every price this app quotes traces to one issue of the EL global price list.
+// That issue used to exist only as a sentence hardcoded into the AI prompt, so
+// replacing el_pricelist.xlsx left the app confidently citing the old date, and
+// a quote could go out on superseded pricing with nothing to show it had.
+//
+// schematic_reader --mode version reads the workbook's own header (it states its
+// label, valid-from, currency and the EUR→GBP rate the £ columns were built
+// with) plus a content hash. Cached because the hash reads the whole file.
+interface PriceListVersion {
+  label: string; validFrom: string; currency: string; exchangeRate: number | null;
+  fingerprint: string; fileSize: number; modified: string; rows: number; error?: string;
+}
+let _plVersion: { v: PriceListVersion; ts: number } | null = null;
+const PL_TTL = 5 * 60 * 1000;
+
+function pricelistVersion(force = false): Promise<PriceListVersion> {
+  return new Promise((resolve) => {
+    const empty: PriceListVersion = {
+      label: '', validFrom: '', currency: '', exchangeRate: null,
+      fingerprint: '', fileSize: 0, modified: '', rows: 0, error: 'price list not found',
+    };
+    if (!force && _plVersion && Date.now() - _plVersion.ts < PL_TTL) { resolve(_plVersion.v); return; }
+    const script = pyFile('schematic_reader.py');
+    if (!existsSync(script)) { resolve(empty); return; }
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--mode', 'version'],
+      { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let out = '';
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 20_000);
+    proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+    proc.on('error', () => { clearTimeout(killer); resolve(empty); });
+    proc.on('close', () => {
+      clearTimeout(killer);
+      try {
+        const v = JSON.parse(out.trim()) as PriceListVersion;
+        _plVersion = { v, ts: Date.now() };
+        resolve(v);
+      } catch { resolve(empty); }
+    });
+  });
+}
+
+// One line naming the issue in force, for the AI prompts that must not invent
+// their own. Falls back to saying nothing rather than to a stale hardcoded date.
+function pricelistLabel(v: PriceListVersion | null): string {
+  if (!v || !v.label) return 'the EL Global Price List';
+  return `the EL Global Price List (${v.label}${v.validFrom ? `, valid from ${v.validFrom}` : ''})`;
+}
+
+// The fingerprint of the issue this desk last acknowledged. When the file on
+// disk stops matching, the app says so instead of quietly repricing.
+function seenPricelistFingerprint(): string {
+  const r = queryAll(`SELECT value FROM meta WHERE key = 'pricelist_fingerprint'`)[0] as any;
+  return r ? String(r.value || '') : '';
+}
+function ackPricelistFingerprint(fp: string) {
+  db.run(`INSERT INTO meta (key, value, updatedAt) VALUES ('pricelist_fingerprint', ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`,
+    [fp, new Date().toISOString()]);
+  saveDb();
 }
 
 // ─── EL price-sheet lookup (authoritative internal source) ─────────────────────
@@ -1771,6 +1884,9 @@ async function startServer() {
       '/api/el-internal/digest', '/api/el-internal/chat',
       '/api/fenton/refresh', '/api/fenton/chat',
       '/api/quote/detect-cbu', '/api/quote/luminaires',
+      // CBU reference quotes: same gated tab, and the scanner script is not
+      // staged into ship-automation either.
+      '/api/cbu/refs',
       '/api/crm/command',
       // To-Do: the AI triage and the AI draft writer only. The board itself
       // (/api/todo, /api/todo/:id/send) stays usable in the ship build.
@@ -3401,6 +3517,681 @@ async function startServer() {
     res.json({ startedAt: sessionStartedAt });
   });
 
+  // ── EL price list version ──────────────────────────────────────────────────
+  // `changed` is the point of this: it means the workbook on disk is a different
+  // issue from the one this desk last acknowledged, so anything quoted before
+  // now was priced on the older sheet.
+  app.get('/api/pricelist/version', async (req, res) => {
+    const v    = await pricelistVersion(req.query.force === '1');
+    const seen = seenPricelistFingerprint();
+    res.json({
+      ...v,
+      seenFingerprint: seen,
+      // First run has nothing to compare against — that is not a change.
+      changed: !!(seen && v.fingerprint && seen !== v.fingerprint),
+      acknowledged: !!seen && seen === v.fingerprint,
+    });
+  });
+
+  // Record that the current sheet is the one being worked to.
+  app.post('/api/pricelist/acknowledge', async (_req, res) => {
+    const v = await pricelistVersion(true);
+    if (!v.fingerprint) { res.status(400).json({ ok: false, error: v.error || 'price list not readable' }); return; }
+    ackPricelistFingerprint(v.fingerprint);
+    res.json({ ok: true, fingerprint: v.fingerprint, label: v.label });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ── D&Q filing: audit sent quotes, then file the approved ones ────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // The audit has been read-only since it was written, and it reported that only
+  // ~26% of sent quotes are filed correctly. Closing that gap means writing to a
+  // store the whole team shares, so the write path here is deliberately gated:
+  //
+  //   * the audit proposes, a person disposes — /file acts ONLY on ids passed in
+  //   * a dry run is available and the UI runs it before offering to write
+  //   * the writer re-checks each destination immediately before uploading
+  //   * every batch is logged to the jobs table, filed or not
+  //
+  // There is no "fix everything" call, by design.
+  const DQ_DIR = path.join(DATA_DIR, 'dq');
+  const dqAuditPath  = () => path.join(DQ_DIR, 'audit.json');
+
+  // Mirrors FILEABLE in dq_backfill_file.py. Any other verdict either needs no
+  // action (MATCH) or needs a human decision the script must not make
+  // (DIFFERENT_COPY: something carrying that reference is already filed).
+  const DQ_FILEABLE = new Set(['MISSING_FOLDER', 'MISSING_REVISION', 'MISSING_FILE']);
+
+  type DqAuditState = {
+    running: boolean; phase: 'idle' | 'scanning' | 'done' | 'error';
+    message: string; startedAt: string; finishedAt: string; error: string;
+    months: number; lines: string[];
+  };
+  const dqAudit: DqAuditState = {
+    running: false, phase: 'idle', message: '', startedAt: '', finishedAt: '',
+    error: '', months: 3, lines: [],
+  };
+
+  function dqAuditSummary() {
+    // The stored audit is the source of truth for the review list; the state
+    // object only describes the run that produced it.
+    let generatedAt = '', tally: Record<string, number> = {}, rows = 0;
+    try {
+      const a = JSON.parse(readFileSync(dqAuditPath(), 'utf8'));
+      generatedAt = a.generatedAt || '';
+      tally = a.tally || {};
+      rows = (a.rows || []).length;
+    } catch { /* no audit yet */ }
+    return { ...dqAudit, lines: dqAudit.lines.slice(-40), generatedAt, tally, rows };
+  }
+
+  app.get('/api/dq/audit/status', (_req, res) => res.json(dqAuditSummary()));
+
+  app.post('/api/dq/audit', (req, res) => {
+    if (dqAudit.running) { res.json({ started: false, ...dqAuditSummary() }); return; }
+    const months = Math.min(24, Math.max(0.5, Number((req.body ?? {}).months) || 3));
+    const script = pyFile('dq_backfill_audit.py');
+    if (!existsSync(script)) { res.status(500).json({ started: false, error: 'dq_backfill_audit.py not found' }); return; }
+
+    try { mkdirSync(DQ_DIR, { recursive: true }); } catch {}
+    Object.assign(dqAudit, {
+      running: true, phase: 'scanning', message: 'Scanning Sent Items…',
+      startedAt: new Date().toISOString(), finishedAt: '', error: '', months, lines: [],
+    });
+
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base,
+      '--months', String(months),
+      '--out',  path.join(DQ_DIR, 'audit.csv'),
+      '--json', dqAuditPath(),
+    ], { cwd: PY_DIR, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+
+    // The audit walks months of Sent Items and indexes the whole store, so it
+    // runs for minutes. Its stdout is the only progress a caller can see.
+    let tail = '';
+    const onText = (b: Buffer) => {
+      tail += b.toString();
+      const parts = tail.split(/\r?\n/);
+      tail = parts.pop() || '';
+      for (const l of parts) {
+        const line = l.trim();
+        if (!line) continue;
+        dqAudit.lines.push(line);
+        if (dqAudit.lines.length > 400) dqAudit.lines.shift();
+        if (/^\[\*\]|^\s*\[\d+\/\d+\]/.test(line)) dqAudit.message = line.slice(0, 160);
+      }
+    };
+    proc.stdout.on('data', onText);
+    proc.stderr.on('data', onText);
+
+    proc.on('error', (e: Error) => {
+      Object.assign(dqAudit, { running: false, phase: 'error', error: e.message, message: 'Failed: ' + e.message, finishedAt: new Date().toISOString() });
+    });
+    proc.on('close', (code: number) => {
+      const ok = code === 0 && existsSync(dqAuditPath());
+      Object.assign(dqAudit, {
+        running: false,
+        phase: ok ? 'done' : 'error',
+        error: ok ? '' : (dqAudit.lines.slice(-3).join(' ') || `exit ${code}`),
+        message: ok ? 'Audit complete' : 'The audit did not finish',
+        finishedAt: new Date().toISOString(),
+      });
+    });
+
+    res.json({ started: true, ...dqAuditSummary() });
+  });
+
+  // The review list. Rows are returned without the local file path — that stays
+  // server-side; the browser has no use for it and it is not its business.
+  app.get('/api/dq/audit/result', (req, res) => {
+    const verdict = String(req.query.verdict || '').trim().toUpperCase();
+    try {
+      const a = JSON.parse(readFileSync(dqAuditPath(), 'utf8'));
+      let rows = (a.rows || []) as any[];
+      if (verdict) rows = rows.filter(r => String(r.verdict).toUpperCase() === verdict);
+      res.json({
+        generatedAt: a.generatedAt || '', months: a.months ?? null,
+        tally: a.tally || {}, total: (a.rows || []).length,
+        fileable: (a.rows || []).filter((r: any) => DQ_FILEABLE.has(String(r.verdict))).length,
+        rows: rows.map(r => ({
+          id: r.id, verdict: r.verdict, sent: r.sent, timesSent: r.times_sent,
+          code: r.code, revision: r.revision, sfid: r.sfid, works: r.works,
+          folders: r.folder_list || [], folderCount: r.folder_count,
+          attachment: r.attachment, subject: r.subject, detail: r.detail,
+          messageInFolder: r.message_in_folder,
+          // Whether this row is even a candidate for the writer, decided here so
+          // the UI cannot offer to file something the writer would refuse.
+          fileable: DQ_FILEABLE.has(String(r.verdict)) && !!r.local_path,
+        })),
+      });
+    } catch {
+      res.json({ generatedAt: '', tally: {}, total: 0, fileable: 0, rows: [], error: 'no audit has been run yet' });
+    }
+  });
+
+  // The write. `ids` is mandatory and never defaulted: this endpoint has no
+  // concept of "all". `dryRun` reports the plan and touches nothing.
+  app.post('/api/dq/file', async (req, res) => {
+    const { ids, dryRun } = (req.body ?? {}) as { ids?: number[]; dryRun?: boolean };
+    const list = Array.isArray(ids) ? ids.map(Number).filter(n => Number.isFinite(n)) : [];
+    if (!list.length) { res.status(400).json({ ok: false, error: 'no rows were approved' }); return; }
+    if (!existsSync(dqAuditPath())) { res.status(400).json({ ok: false, error: 'run the audit first' }); return; }
+
+    const script = pyFile('dq_backfill_file.py');
+    if (!existsSync(script)) { res.status(500).json({ ok: false, error: 'dq_backfill_file.py not found' }); return; }
+
+    const stamp   = Date.now();
+    const jobPath = path.join(DQ_DIR, `file_job_${stamp}.json`);
+    const outPath = path.join(DQ_DIR, `file_out_${stamp}.json`);
+    try {
+      mkdirSync(DQ_DIR, { recursive: true });
+      writeFileSync(jobPath, JSON.stringify({ auditPath: dqAuditPath(), ids: list }));
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); return; }
+
+    const [py, base] = pyArgs(script);
+    const args = [...base, '--job', jobPath, '--out', outPath];
+    if (dryRun) args.push('--dry-run');
+
+    const proc = spawn(py, args, { cwd: PY_DIR, env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+    let err = '';
+    proc.stderr.on('data', (d: Buffer) => { err += d.toString(); });
+    // Uploading a batch of PDFs to SharePoint over the corporate proxy is slow;
+    // give it room but never hang forever.
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 15 * 60 * 1000);
+
+    proc.on('error', (e: Error) => {
+      clearTimeout(killer);
+      res.status(500).json({ ok: false, error: e.message });
+    });
+    proc.on('close', () => {
+      clearTimeout(killer);
+      let out: any = null;
+      try { out = JSON.parse(readFileSync(outPath, 'utf8')); } catch { /* reported below */ }
+      for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} }
+
+      if (!out) {
+        res.status(500).json({ ok: false, error: err.trim().slice(-400) || 'the filer returned nothing' });
+        return;
+      }
+      // A real write is worth a row in the job log; a dry run is not.
+      if (!out.dryRun) {
+        insertJob({
+          step: 'D&Q backfill',
+          status: out.failed ? 'warn' : 'ok',
+          items: out.filed || 0,
+          note: `filed ${out.filed}, skipped ${out.skipped}, failed ${out.failed} of ${out.approved} approved`,
+        });
+      }
+      res.json({ ok: true, ...out, log: err.trim().split(/\r?\n/).slice(-60) });
+    });
+  });
+
+  // ── Customer history ───────────────────────────────────────────────────────
+  // "What have we quoted this customer before, at what price, did they buy" —
+  // the question asked mid-reply, which otherwise means leaving the app for D&Q
+  // or old mail. Everything here is already synced; this only joins it up.
+  //
+  // Keyed on crm_quote.customer, NOT on crm_company. crm_company holds the
+  // PROJECT ("University of Warwick", "Winkworth Arboretum") — 885 of 885 of its
+  // names match an `account` value and only 15 match a `customer`. The repeat
+  // buyer is the customer column: Rexel, Edmundson, CEF, the wholesalers.
+  //
+  // Those names arrive spelled many ways — 14 spellings of Edmundson across 48
+  // quotes, 6 of Rexel across 45 — so they are folded on a normalised key. Only
+  // legal forms and account codes are stripped: industry words are load-bearing
+  // ("Park Electrical" and "Park Electrical Distributors" are different firms).
+  const CUST_LEGAL = /\b(ltd|limited|plc|llp|llc|inc|incorporated|gmbh|bv|nv|sa|srl)\b\.?/gi;
+  function customerKey(s: string): string {
+    let v = String(s || '').replace(/\([^)]*\)/g, ' ');   // (P05669) account codes
+    v = v.replace(CUST_LEGAL, ' ').toLowerCase().replace(/[^a-z0-9 ]/g, ' ');
+    v = v.replace(CUST_LEGAL, ' ');
+    return v.split(/\s+/).filter(Boolean).join(' ');
+  }
+
+  // Free/shared providers say nothing about which company someone buys for.
+  const GENERIC_MAIL_DOMAINS = new Set([
+    'gmail.com', 'googlemail.com', 'hotmail.com', 'hotmail.co.uk', 'outlook.com',
+    'live.com', 'live.co.uk', 'yahoo.com', 'yahoo.co.uk', 'aol.com', 'icloud.com',
+    'me.com', 'msn.com', 'btinternet.com', 'sky.com', 'protonmail.com',
+  ]);
+
+  app.get('/api/customer/history', async (req, res) => {
+    const email = String(req.query.email || '').trim().toLowerCase();
+    const name  = String(req.query.name || '').trim();
+    const q     = String(req.query.q || '').trim();       // explicit pick from the UI
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
+    const empty = {
+      matched: false, customer: '', matchedOn: '' as const, spellings: [] as string[],
+      quotes: [], projects: [], suggestions: [] as { customer: string; count: number }[],
+      totals: { count: 0, won: 0, lost: 0, open: 0, value: 0, wonValue: 0 },
+    };
+
+    try {
+      // Same binding the /api/crm routes get from their middleware — this reads
+      // the same multi-tenant tables, so it must resolve the same owner.
+      try { await resolveOwner(); } catch { /* keep last-known owner */ }
+      const oid = ownerId();
+
+      // Every distinct customer this desk has quoted, folded to its key.
+      const byKey = new Map<string, { display: string; spellings: Set<string>; count: number }>();
+      for (const r of queryAll(
+        `SELECT customer, COUNT(*) AS n FROM crm_quote
+          WHERE ownerId = ? AND customer IS NOT NULL AND TRIM(customer) != ''
+          GROUP BY customer`, [oid]) as any[]) {
+        const key = customerKey(r.customer);
+        if (!key) continue;
+        const e = byKey.get(key) || { display: '', spellings: new Set<string>(), count: 0 };
+        const raw = String(r.customer);
+        e.spellings.add(raw);
+        e.count += Number(r.n) || 0;
+        // Pick the spelling a person would write. A trailing "(P05669)" is an
+        // internal account code, so any spelling without one wins outright;
+        // among equals the longest reads most like a full company name.
+        const clean  = (s: string) => !/\([^)]*\)/.test(s);
+        const better = !e.display
+          || (clean(raw) && !clean(e.display))
+          || (clean(raw) === clean(e.display) && raw.length > e.display.length);
+        if (better) e.display = raw;
+        byKey.set(key, e);
+      }
+
+      let key = '';
+      let matchedOn: 'picked' | 'sender-name' | 'domain' | '' = '';
+
+      // An explicit pick always wins — it is the user telling us who this is.
+      if (q) {
+        const qk = customerKey(q);
+        if (byKey.has(qk)) { key = qk; matchedOn = 'picked'; }
+      }
+
+      // The display name usually carries the company ("Dave — Rexel Bristol").
+      // Longest key first so "park electrical distributors" beats "park electrical".
+      if (!key && name) {
+        const hay = customerKey(name);
+        const keys = [...byKey.keys()].sort((a, b) => b.length - a.length);
+        for (const k of keys) {
+          if (k.length < 4) continue;                  // "cef" would match anything
+          if (hay === k || hay.includes(k)) { key = k; matchedOn = 'sender-name'; break; }
+        }
+      }
+
+      // Then the domain label: rexel.co.uk → "rexel". Weakest of the three, so
+      // it runs last and still requires a real word.
+      //
+      // Here the SHORTEST match wins, the opposite of the name path above: a
+      // domain names the parent company, so "rexel" must land on Rexel (45
+      // quotes) and not on the longer "rexel cambridge cowley road" (1).
+      if (!key && email.includes('@')) {
+        const domain = email.split('@')[1] || '';
+        if (domain && !GENERIC_MAIL_DOMAINS.has(domain)) {
+          const label = customerKey(domain.split('.')[0] || '');
+          if (label.length >= 4) {
+            const hits = [...byKey.keys()]
+              .filter(k => k === label || k.startsWith(label + ' '))
+              .sort((a, b) => a.length - b.length);
+            if (hits.length) { key = hits[0]; matchedOn = 'domain'; }
+          }
+        }
+      }
+
+      // Nothing identified them: offer the biggest customers to pick from rather
+      // than guessing. A wrong customer's history beside a reply box is worse
+      // than none, so this never falls back to a fuzzy best-effort match.
+      if (!key) {
+        const suggestions = [...byKey.entries()]
+          .sort((a, b) => b[1].count - a[1].count).slice(0, 8)
+          .map(([, v]) => ({ customer: v.display, count: v.count }));
+        res.json({ ...empty, suggestions });
+        return;
+      }
+
+      const entry     = byKey.get(key)!;
+      const spellings = [...entry.spellings];
+      const ph        = spellings.map(() => '?').join(',');
+      const states    = stateMap(oid);
+
+      const rows = queryAll(
+        `SELECT * FROM crm_quote
+          WHERE ownerId = ? AND customer IN (${ph})
+          ORDER BY COALESCE(arrivedOn, syncedAt) DESC LIMIT ?`,
+        [oid, ...spellings, limit]);
+
+      const quotes = rows.map((r: any) => ({
+        sfId: r.sfId || null, title: r.title || null,
+        quoteName: r.quoteName || null, account: r.account || null,
+        customer: r.customer || null, salesman: r.salesman || null,
+        price: r.price != null ? Number(r.price) : null,
+        status: r.status || null, arrivedOn: r.arrivedOn || null,
+        state: (states.get(String(r.sfId || '')) || 'open') as 'open' | 'won' | 'lost',
+      }));
+
+      // Totals cover the whole relationship, so they run over every quote for
+      // this customer — not just the page returned above.
+      const totals = { count: 0, won: 0, lost: 0, open: 0, value: 0, wonValue: 0 };
+      for (const r of queryAll(
+        `SELECT sfId, price FROM crm_quote WHERE ownerId = ? AND customer IN (${ph})`,
+        [oid, ...spellings]) as any[]) {
+        const st = states.get(String(r.sfId || '')) || 'open';
+        const p  = Number(r.price) || 0;
+        totals.count++; totals.value += p;
+        if (st === 'won')       { totals.won++; totals.wonValue += p; }
+        else if (st === 'lost')   totals.lost++;
+        else                      totals.open++;
+      }
+
+      // Which projects this customer has bought for — the useful second axis.
+      const projects = queryAll(
+        `SELECT account AS name, COUNT(*) AS n FROM crm_quote
+          WHERE ownerId = ? AND customer IN (${ph}) AND account IS NOT NULL AND TRIM(account) != ''
+          GROUP BY account ORDER BY n DESC LIMIT 6`, [oid, ...spellings])
+        .map((r: any) => ({ name: String(r.name), count: Number(r.n) || 0 }));
+
+      res.json({
+        matched: true,
+        customer: entry.display,
+        matchedOn,
+        spellings,
+        quotes, projects, totals,
+        suggestions: [],
+      });
+    } catch (e: any) {
+      res.json({ ...empty, error: e.message });
+    }
+  });
+
+  // ── Reply snippets ─────────────────────────────────────────────────────────
+  // The sentences typed every week — lead times, commissioning terms, the
+  // standard questions back. AI drafting regenerates prose each time; these are
+  // the fixed wordings that should come out identical every time.
+  const snippetRow = (r: any) => ({
+    id: r.id, title: r.title, body: r.body, tag: r.tag || null,
+    useCount: r.useCount || 0, lastUsedAt: r.lastUsedAt || null,
+    createdAt: r.createdAt, updatedAt: r.updatedAt,
+  });
+
+  app.get('/api/snippets', (_req, res) => {
+    // Most-used first: the list is a palette, not a filing cabinet.
+    const rows = queryAll(`SELECT * FROM snippet ORDER BY useCount DESC, title COLLATE NOCASE ASC`);
+    res.json({ snippets: rows.map(snippetRow) });
+  });
+
+  app.post('/api/snippets', (req, res) => {
+    const { id, title, body, tag } = (req.body ?? {}) as
+      { id?: number; title?: string; body?: string; tag?: string };
+    const t = String(title || '').trim();
+    const b = String(body || '').trim();
+    if (!t || !b) { res.status(400).json({ ok: false, error: 'a snippet needs a title and a body' }); return; }
+    const now = new Date().toISOString();
+    try {
+      let rowId = Number(id) || 0;
+      if (rowId) {
+        db.run(`UPDATE snippet SET title=?, body=?, tag=?, updatedAt=? WHERE id=?`,
+          [t, b, tag || null, now, rowId]);
+      } else {
+        rowId = runWrite(`INSERT INTO snippet (title, body, tag, createdAt, updatedAt) VALUES (?,?,?,?,?)`,
+          [t, b, tag || null, now, now]);
+      }
+      saveDb();
+      const row = queryAll(`SELECT * FROM snippet WHERE id = ?`, [rowId])[0];
+      res.json({ ok: true, snippet: snippetRow(row) });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  app.delete('/api/snippets/:id', (req, res) => {
+    try {
+      db.run(`DELETE FROM snippet WHERE id = ?`, [Number(req.params.id) || 0]);
+      saveDb();
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // Bumped on insert so the palette orders itself by what actually gets used.
+  app.post('/api/snippets/:id/used', (req, res) => {
+    try {
+      db.run(`UPDATE snippet SET useCount = COALESCE(useCount,0) + 1, lastUsedAt = ? WHERE id = ?`,
+        [new Date().toISOString(), Number(req.params.id) || 0]);
+      saveDb();
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // ── CBU reference quotes ───────────────────────────────────────────────────
+  // "Which quote did I do last for a 10KVA single phase?" — the question that
+  // sends the desk hunting through Downloads, because the size lives only in
+  // the Tech Brief PDF and never in the mail subject Ask Vector searches.
+  // cbu_ref_scan.py reads those briefs (and any filled sizing calculator) and
+  // reports system + reference + project; this stores the answers so the CBU
+  // tab can hand back a quote number the moment a size is picked.
+  const cbuRefRow = (r: any) => ({
+    id: r.id, system: r.system, kva: r.kva, phase: r.phase,
+    quoteRef: r.quoteRef, project: r.project || '', duration: r.duration || '',
+    dated: r.dated || '', source: r.source || '', detail: r.detail || '',
+    confidence: r.confidence || 'exact', note: r.note || '',
+    pinned: !!r.pinned, hidden: !!r.hidden,
+  });
+
+  // Where the briefs pile up. Downloads first because that is where the tab's
+  // own export lands; a config override exists for anyone filing elsewhere.
+  function cbuScanDirs(): string[] {
+    const cfg = loadPyCfg() as any;
+    const fromCfg = cfg.cbu_scan_dirs;
+    if (Array.isArray(fromCfg) && fromCfg.length) return fromCfg.map(String);
+    const home = os.homedir();
+    return [
+      path.join(home, 'Downloads'),
+      path.join(home, 'Desktop'),
+      path.join(String(cfg.base || ''), 'PDF Quotes'),
+    ].filter(Boolean);
+  }
+
+  app.get('/api/cbu/refs', (_req, res) => {
+    try {
+      // Pinned first inside a size, then newest — the pin is the one the user
+      // decided to reuse, and it should not move when a newer job lands.
+      const rows = queryAll(
+        `SELECT * FROM cbu_ref WHERE hidden = 0
+         ORDER BY pinned DESC, dated DESC, id DESC`);
+      const meta = queryAll(`SELECT value FROM meta WHERE key = 'cbu_ref_scan'`)[0];
+      let lastScan: any = null;
+      try { lastScan = meta ? JSON.parse(String(meta.value)) : null; } catch { /* ignore */ }
+      res.json({ refs: rows.map(cbuRefRow), lastScan, dirs: cbuScanDirs() });
+    } catch (e: any) { res.status(500).json({ refs: [], error: e.message }); }
+  });
+
+  // Upsert one record. Rescanning must not clobber what the user curated, so a
+  // row that already exists keeps its pin, its note and its hidden flag, and
+  // only gains fields the scan filled in that were previously blank.
+  function upsertCbuRef(r: any, now: string): 'created' | 'updated' | 'skipped' {
+    const system = String(r.system || '').trim();
+    const ref    = String(r.quoteRef || '').trim();
+    if (!system || !ref) return 'skipped';
+    const existing = queryAll(
+      `SELECT * FROM cbu_ref WHERE system = ? AND quoteRef = ? COLLATE NOCASE`,
+      [system, ref])[0];
+    if (existing) {
+      db.run(
+        `UPDATE cbu_ref SET project = COALESCE(NULLIF(?, ''), project),
+                            duration = COALESCE(NULLIF(?, ''), duration),
+                            dated    = COALESCE(NULLIF(?, ''), dated),
+                            source   = COALESCE(NULLIF(?, ''), source),
+                            detail   = COALESCE(NULLIF(?, ''), detail),
+                            confidence = ?, updatedAt = ?
+         WHERE id = ?`,
+        [String(r.project || ''), String(r.duration || ''), String(r.dated || ''),
+         String(r.source || ''), String(r.detail || ''),
+         String(r.confidence || 'exact'), now, existing.id]);
+      return 'updated';
+    }
+    runWrite(
+      `INSERT INTO cbu_ref (system, kva, phase, quoteRef, project, duration, dated,
+                            source, detail, confidence, pinned, hidden, createdAt, updatedAt)
+       VALUES (?,?,?,?,?,?,?,?,?,?,0,0,?,?)`,
+      [system, Number(r.kva) || null, String(r.phase || ''), ref,
+       String(r.project || ''), String(r.duration || ''), String(r.dated || ''),
+       String(r.source || 'manual'), String(r.detail || ''),
+       String(r.confidence || 'exact'), now, now]);
+    return 'created';
+  }
+
+  app.post('/api/cbu/refs/scan', (req, res) => {
+    const body = (req.body ?? {}) as { dirs?: string[]; scanMail?: boolean };
+    const dirs = Array.isArray(body.dirs) && body.dirs.length
+      ? body.dirs.map(String) : cbuScanDirs();
+    const script = pyFile('cbu_ref_scan.py');
+    if (!existsSync(script)) {
+      res.status(500).json({ ok: false, error: 'cbu_ref_scan.py is missing from the automation folder.' });
+      return;
+    }
+    const tmp     = path.join(os.tmpdir(), `cbu_ref_${Date.now()}_${randomUUID().slice(0, 8)}`);
+    const jobPath = path.join(tmp, 'job.json');
+    const outPath = path.join(tmp, 'out.json');
+    const cleanup = () => {
+      for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} }
+      try { rmdirSync(tmp); } catch {}
+    };
+    try {
+      mkdirSync(tmp, { recursive: true });
+      writeFileSync(jobPath, JSON.stringify({
+        dirs,
+        scan_mail: !!body.scanMail,
+        mail_db:   path.join(DATA_DIR, 'mail_index.db'),
+        mail_limit: 200,
+      }), 'utf8');
+    } catch (e: any) { cleanup(); res.status(500).json({ ok: false, error: e.message }); return; }
+
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+      { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
+               MAGIC_MAIL_INDEX: path.join(DATA_DIR, 'mail_index.db') } });
+    let errBuf = '';
+    proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+    // The mail pass opens messages one at a time through COM; the files pass is
+    // seconds. Ten minutes covers the slow one without leaving the tab spinning.
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 10 * 60_000);
+    proc.on('error', (e: any) => {
+      clearTimeout(killer); cleanup();
+      if (!res.headersSent) res.status(500).json({ ok: false, error: e.message });
+    });
+    proc.on('close', () => {
+      clearTimeout(killer);
+      let out: any = null;
+      try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+      cleanup();
+      if (!out || !out.ok) {
+        const err = (out && out.error) || errBuf.trim().slice(-600) || 'The scan produced no result.';
+        if (!res.headersSent) res.status(500).json({ ok: false, error: err });
+        return;
+      }
+      const now = new Date().toISOString();
+      let created = 0, updated = 0;
+      try {
+        for (const r of (out.found || [])) {
+          const what = upsertCbuRef(r, now);
+          if (what === 'created') created++;
+          else if (what === 'updated') updated++;
+        }
+        const summary = {
+          at: now, created, updated,
+          found: (out.found || []).length,
+          filesScanned: out.filesScanned || 0,
+          mailsScanned: out.mailsScanned || 0,
+          errors: (out.errors || []).slice(0, 20),
+          dirs,
+        };
+        db.run(`INSERT INTO meta (key, value, updatedAt) VALUES ('cbu_ref_scan', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt`,
+          [JSON.stringify(summary), now]);
+        saveDb();
+        const rows = queryAll(
+          `SELECT * FROM cbu_ref WHERE hidden = 0 ORDER BY pinned DESC, dated DESC, id DESC`);
+        if (!res.headersSent) res.json({ ok: true, ...summary, refs: rows.map(cbuRefRow) });
+      } catch (e: any) {
+        if (!res.headersSent) res.status(500).json({ ok: false, error: e.message });
+      }
+    });
+  });
+
+  // Add or correct one by hand — for the quote whose brief was never saved.
+  app.post('/api/cbu/refs', (req, res) => {
+    const b = (req.body ?? {}) as any;
+    const system = String(b.system || '').trim();
+    const ref    = String(b.quoteRef || '').trim();
+    if (!system || !ref) {
+      res.status(400).json({ ok: false, error: 'a reference needs a system and a quote number' });
+      return;
+    }
+    const m = /^([13])PH-\s*([\d.]+)KVA$/i.exec(system.replace(/\s+/g, ' ').replace(' ', ''));
+    const now = new Date().toISOString();
+    try {
+      if (Number(b.id)) {
+        db.run(`UPDATE cbu_ref SET system = ?, quoteRef = ?, project = ?, note = ?, dated = ?, updatedAt = ?
+                WHERE id = ?`,
+          [system, ref, String(b.project || ''), String(b.note || ''),
+           String(b.dated || ''), now, Number(b.id)]);
+      } else {
+        upsertCbuRef({
+          system, quoteRef: ref,
+          kva: m ? Number(m[2]) : null,
+          phase: m ? `${m[1]}PH` : '',
+          project: b.project, dated: b.dated, source: 'manual', confidence: 'exact',
+        }, now);
+        if (b.note) {
+          db.run(`UPDATE cbu_ref SET note = ? WHERE system = ? AND quoteRef = ? COLLATE NOCASE`,
+            [String(b.note), system, ref]);
+        }
+      }
+      saveDb();
+      const row = queryAll(
+        `SELECT * FROM cbu_ref WHERE system = ? AND quoteRef = ? COLLATE NOCASE`, [system, ref])[0];
+      res.json({ ok: true, ref: row ? cbuRefRow(row) : null });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // Pin the one to reuse. Exactly one per size, so pinning clears the others —
+  // "pick one, keep it as a resource" is a choice, not a shortlist.
+  app.post('/api/cbu/refs/:id/pin', (req, res) => {
+    const id = Number(req.params.id) || 0;
+    const on = (req.body ?? {}).pinned !== false;
+    try {
+      const row = queryAll(`SELECT system FROM cbu_ref WHERE id = ?`, [id])[0];
+      if (!row) { res.status(404).json({ ok: false, error: 'no such reference' }); return; }
+      db.run(`UPDATE cbu_ref SET pinned = 0 WHERE system = ?`, [row.system]);
+      if (on) db.run(`UPDATE cbu_ref SET pinned = 1, updatedAt = ? WHERE id = ?`,
+        [new Date().toISOString(), id]);
+      saveDb();
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // Hidden rather than deleted: the practice exports ("sds", "wewwe") sit in
+  // Downloads forever, and a real delete would let the next scan bring them
+  // straight back.
+  app.delete('/api/cbu/refs/:id', (req, res) => {
+    try {
+      db.run(`UPDATE cbu_ref SET hidden = 1, pinned = 0, updatedAt = ? WHERE id = ?`,
+        [new Date().toISOString(), Number(req.params.id) || 0]);
+      saveDb();
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // Show the brief this row came from. Only paths the scan itself recorded are
+  // openable, so this cannot be pointed at an arbitrary file.
+  app.post('/api/cbu/refs/:id/reveal', (req, res) => {
+    const row = queryAll(`SELECT detail, source FROM cbu_ref WHERE id = ?`,
+      [Number(req.params.id) || 0])[0];
+    const target = String(row?.detail || '');
+    if (!row || row.source === 'mail' || !target || !existsSync(target)) {
+      res.status(400).json({ ok: false, error: 'no file was recorded for this reference' });
+      return;
+    }
+    try {
+      spawn('explorer.exe', ['/select,', path.resolve(target)],
+        { detached: true, stdio: 'ignore' }).unref();
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
   // ── PDF list / delete / upload ─────────────────────────────────────────────
   app.get('/api/pdfs', (_req, res) => {
     const dir = path.join(loadPyCfg().base, 'PDF Quotes');
@@ -3781,6 +4572,230 @@ async function startServer() {
         resolve(out || { ok: false, error: errBuf.trim().slice(-300) || 'No result from the OneDrive lookup.' });
       });
     });
+  }
+
+  // ── Keep the LSD work tabs alive ───────────────────────────────────────────
+  // CPQ, the analyst's OneDrive and the SharePoint site all sign out when their
+  // tab sits idle, and every LSD fetch reads those tabs. A timer reloads them in
+  // the background (minimized debug-rail Edge) so the first fetch of the day
+  // works without anyone clicking the browser awake — see tab_keepalive.py.
+  const KEEPALIVE_DEFAULT_URLS = [
+    'https://eaton.bigmachines.com/',
+    'https://eaton.sharepoint.com/sites/QuotationFactoryEMEA',
+  ];
+  function keepaliveUrls(): string[] {
+    const raw = (loadPyCfg() as any).lsd_keepalive_urls;
+    const list = Array.isArray(raw) ? raw
+      : String(raw || '').split(/[\r\n]+/);
+    const clean = list.map((s: string) => String(s || '').trim()).filter(Boolean);
+    return clean.length ? clean : KEEPALIVE_DEFAULT_URLS;
+  }
+  let keepaliveState: any = { ran: null, ok: null, tabs: [], needs_signin: [], log: [] };
+  let keepaliveBusy = false;
+
+  // What the session strip is sent, from BOTH endpoints. tab_keepalive.py reports
+  // only on the sweep it just ran — tabs, needs_signin, log — and knows nothing
+  // about the configuration around it. The GET used to add `urls`, `enabled` and
+  // `everyMin` on top and the POST did not, so pressing Connect swapped a
+  // complete object for a partial one and the next render read `ka.urls.length`
+  // off undefined, which the error boundary turned into a dead tab.
+  const keepalivePayload = (state: any) => {
+    const cfg = loadPyCfg() as any;
+    return {
+      enabled: cfg.lsd_keepalive !== false && String(cfg.lsd_keepalive ?? '') !== 'off',
+      everyMin: Number(cfg.lsd_keepalive_min) || 10,
+      urls: keepaliveUrls(),
+      running: keepaliveBusy,
+      tabs: [], needs_signin: [], log: [],
+      ...state,
+    };
+  };
+
+  function runKeepalive(force = false): Promise<any> {
+    return new Promise(resolve => {
+      if (keepaliveBusy && !force) { resolve({ ...keepaliveState, skipped: 'already running' }); return; }
+      const script = pyFile('tab_keepalive.py');
+      if (!existsSync(script)) { resolve({ ok: false, error: 'tab_keepalive.py is missing from this install' }); return; }
+      keepaliveBusy = true;
+      const cfg     = loadPyCfg() as any;
+      const tmp     = path.join(os.tmpdir(), `kajob_${Date.now()}_${randomUUID().slice(0, 8)}`);
+      const jobPath = path.join(tmp, 'job.json');
+      const outPath = path.join(tmp, 'out.json');
+      const cleanup = () => { for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} } try { rmdirSync(tmp); } catch {} };
+      try {
+        mkdirSync(tmp, { recursive: true });
+        writeFileSync(jobPath, JSON.stringify({
+          port: Number(cfg.lsd_cpq_port) || 9222,
+          urls: keepaliveUrls(),
+          launch: true, minimized: true, reload: true,
+        }), 'utf8');
+      } catch (e: any) { keepaliveBusy = false; cleanup(); resolve({ ok: false, error: e.message }); return; }
+      const [py, base] = pyArgs(script);
+      const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+        { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      let errBuf = '';
+      proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+      const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 180_000);
+      const finish = (out: any) => {
+        keepaliveBusy = false;
+        keepaliveState = { ran: new Date().toISOString(), ...out };
+        resolve(keepaliveState);
+      };
+      proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); finish({ ok: false, error: e.message }); });
+      proc.on('close', () => {
+        clearTimeout(killer);
+        let out: any = null;
+        try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+        cleanup();
+        finish(out || { ok: false, error: errBuf.trim().slice(-300) || 'The keep-alive produced no result.' });
+      });
+    });
+  }
+
+  // What the LSD tab shows in its session strip: which pages are warm, which
+  // need a human to sign in once, and when the last sweep ran.
+  app.get('/api/lsd/keepalive', (_req, res) => {
+    res.json(keepalivePayload(keepaliveState));
+  });
+  app.post('/api/lsd/keepalive/run', async (_req, res) => {
+    res.json(keepalivePayload(await runKeepalive(true)));
+  });
+
+  // The timer itself. Off by config, never off by accident: a failed sweep just
+  // records itself and the next one tries again.
+  if (!(global as any).__vectorKeepaliveTimer) {
+    const tick = async () => {
+      const cfg = loadPyCfg() as any;
+      if (cfg.lsd_keepalive === false || String(cfg.lsd_keepalive ?? '') === 'off') return;
+      try { await runKeepalive(); } catch {}
+    };
+    const mins = Number((loadPyCfg() as any).lsd_keepalive_min) || 10;
+    (global as any).__vectorKeepaliveTimer = setInterval(tick, Math.max(2, mins) * 60_000);
+    setTimeout(tick, 20_000);   // one sweep shortly after boot
+  }
+
+  // ── What is waiting in the analyst's daily sheet ───────────────────────────
+  // Dalia adds a row to her "LSD Daily work" workbook for every transaction that
+  // needs pricing. automation/lsd_queue.py reads it READ-ONLY through the signed-in
+  // eaton-my tab and returns the rows that are not Done/Cancelled and not noted
+  // "Done by Laith". This keeps the last answer, stamps when each transaction first
+  // showed up, and marks the ones that already have a case folder here.
+  const LSD_QUEUE_SEEN = path.join(LSD_DIR, 'queue_seen.json');
+  let queueState: any = { ran: null, ok: null, rows: [] };
+  let queueBusy = false;
+
+  const queuePayload = (state: any) => {
+    const cfg = loadPyCfg() as any;
+    return {
+      enabled: cfg.lsd_queue !== false && String(cfg.lsd_queue ?? '') !== 'off',
+      everyMin: Math.max(2, Number(cfg.lsd_queue_min) || 5),
+      rows: [],
+      ...state,
+      running: queueBusy,
+    };
+  };
+
+  // Case folders on disk, keyed on the transaction number their name opens with
+  // ("W262072585E2 - Taiba …" → W262072585E2).
+  function localCases(): Map<string, string> {
+    const m = new Map<string, string>();
+    try {
+      const root = lsdCasesRoot();
+      for (const d of readdirSync(root, { withFileTypes: true })) {
+        const w = d.isDirectory() ? d.name.match(/^(W\d{9,}E\d*)(?:\s|$)/i) : null;
+        if (w) m.set(w[1].toUpperCase(), path.join(root, d.name));
+      }
+    } catch {}
+    return m;
+  }
+
+  function runQueue(force = false): Promise<any> {
+    return new Promise(resolve => {
+      if (queueBusy) { resolve(queueState); return; }
+      // The keep-alive reloads the OneDrive tabs this read goes through, and a read
+      // started mid-reload fails for nothing. The timer just tries again next tick.
+      if (keepaliveBusy && !force) { resolve(queueState); return; }
+      const script = pyFile('lsd_queue.py');
+      if (!existsSync(script)) {
+        resolve({ ...queueState, ok: false, error: 'lsd_queue.py is missing from this install' });
+        return;
+      }
+      queueBusy = true;
+      const cfg     = loadPyCfg() as any;
+      const tmp     = path.join(os.tmpdir(), `lsdq_${Date.now()}_${randomUUID().slice(0, 8)}`);
+      const jobPath = path.join(tmp, 'job.json');
+      const outPath = path.join(tmp, 'out.json');
+      const cleanup = () => { for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} } try { rmdirSync(tmp); } catch {} };
+      const finish = (out: any) => {
+        queueBusy = false;
+        const now = new Date().toISOString();
+        if (out?.ok) {
+          const cases = localCases();
+          // First sighting per transaction. The very first read stamps nothing, or
+          // every open row in her sheet would arrive flagged as new.
+          let seen: Record<string, string> = {};
+          let baseline = false;
+          try { seen = JSON.parse(readFileSync(LSD_QUEUE_SEEN, 'utf8')); } catch { baseline = true; }
+          const counts: Record<string, number> = {};
+          for (const r of out.rows || []) {
+            const key = r.transaction || `name:${r.name}`;
+            if (!(key in seen)) seen[key] = baseline ? '' : now;
+            r.first_seen = seen[key] || null;
+            r.case_folder = (r.transaction && cases.get(r.transaction)) || null;
+            // Priced here but her Status is still open: done by Laith, not yet noted.
+            if (r.case_folder && r.kind === 'fetch') r.kind = 'priced';
+            counts[r.kind] = (counts[r.kind] || 0) + 1;
+          }
+          try { writeFileSync(LSD_QUEUE_SEEN, JSON.stringify(seen), 'utf8'); } catch {}
+          queueState = { ...out, counts, ran: now };
+        } else {
+          // Keep the last good rows on screen; only the error is new.
+          queueState = { ...queueState, ran: now, ok: false,
+                         error: out?.error || 'The daily sheet read produced no result.' };
+        }
+        resolve(queueState);
+      };
+      try {
+        mkdirSync(tmp, { recursive: true });
+        writeFileSync(jobPath, JSON.stringify({
+          port: Number(cfg.lsd_cpq_port) || 9222,
+          file: String(cfg.lsd_daily_file || '').trim(),
+          bu: String(cfg.lsd_queue_bu || '').trim(),          // blank = FIRE
+        }), 'utf8');
+      } catch (e: any) { cleanup(); finish({ ok: false, error: e.message }); return; }
+      const [py, base] = pyArgs(script);
+      const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
+        { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      let errBuf = '';
+      proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
+      const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 180_000);
+      proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); finish({ ok: false, error: e.message }); });
+      proc.on('close', () => {
+        clearTimeout(killer);
+        let out: any = null;
+        try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
+        cleanup();
+        finish(out || { ok: false, error: errBuf.trim().slice(-300) || 'The daily sheet read produced no result.' });
+      });
+    });
+  }
+
+  app.get('/api/lsd/queue', (_req, res) => {
+    res.json(queuePayload(queueState));
+  });
+  app.post('/api/lsd/queue/refresh', async (_req, res) => {
+    res.json(queuePayload(await runQueue(true)));
+  });
+
+  if (!(global as any).__vectorLsdQueueTimer) {
+    const tick = async () => {
+      const cfg = loadPyCfg() as any;
+      if (cfg.lsd_queue === false || String(cfg.lsd_queue ?? '') === 'off') return;
+      try { await runQueue(); } catch {}
+    };
+    const mins = Math.max(2, Number((loadPyCfg() as any).lsd_queue_min) || 5);
+    (global as any).__vectorLsdQueueTimer = setInterval(tick, mins * 60_000);
+    setTimeout(tick, 45_000);   // after the boot keep-alive sweep has woken the tabs
   }
 
   // Pull a transaction straight from Oracle CPQ (its REST API, driven through the
@@ -6187,27 +7202,113 @@ async function startServer() {
     res.json({ ok: failed.length === 0, saved, count: saved.length, failed });
   });
 
-  // Serve a single attachment inline (PDF or image)
+  // ── Attachment bytes, with a disk cache in front of the COM fetch ─────────
+  // Every hit here used to spawn outlook_reader.py, which initialises COM and
+  // walks to the message before it can save one file. That was tolerable while
+  // the only caller was "open this PDF"; now the Inbox draws a thumbnail on
+  // every image chip, so an eight-picture mail would have meant eight COM
+  // round-trips just to paint the header.
+  //
+  // The extracted bytes are therefore kept on disk, keyed by the message's
+  // EntryID. Attachment N of a given message never changes, and a message that
+  // moves gets a new EntryID, so a stale key can't serve the wrong file.
+  const ATT_DIR          = path.join(os.tmpdir(), 'vector_att');
+  const ATT_CACHE_DIR    = path.join(ATT_DIR, 'cache');
+  const ATT_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const ATT_MIME: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+    '.png': 'image/png',  '.gif': 'image/gif',
+    '.bmp': 'image/bmp',  '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.tiff': 'image/tiff', '.tif': 'image/tiff',
+  };
+
+  function attKey(entryId: string, index: string): string {
+    // EntryIDs are long and not filename-safe; the hash only has to be stable
+    // and collision-free across one mailbox.
+    return createHash('sha1').update(entryId).digest('hex').slice(0, 16) + '-' + index;
+  }
+
+  // Nothing has ever deleted from these temp dirs, so they grew for as long as
+  // the app had been used. Run once at boot: a week is far longer than anyone
+  // keeps an email pane open.
+  function pruneAttCache() {
+    const cutoff = Date.now() - ATT_CACHE_TTL_MS;
+    for (const dir of [ATT_CACHE_DIR, ATT_DIR, path.join(os.tmpdir(), 'vector_sum')]) {
+      try {
+        for (const f of readdirSync(dir)) {
+          const p = path.join(dir, f);
+          try {
+            const st = statSync(p);
+            if (st.isFile() && st.mtimeMs < cutoff) unlinkSync(p);
+          } catch { /* vanished under us, or locked — next boot gets it */ }
+        }
+      } catch { /* dir not created yet */ }
+    }
+  }
+  pruneAttCache();
+
+  // Serve a single attachment inline (PDF or image). `?thumb=N` asks for a copy
+  // downscaled to N px on its longest side — see _write_thumb in outlook_reader.
   app.get('/api/outlook/attachment-view/:entryId/:index', async (req, res) => {
     const entryId = decodeURIComponent(req.params.entryId);
     const index   = req.params.index;
-    const tmpDir  = path.join(os.tmpdir(), 'vector_att');
+    const thumb   = Math.min(512, Math.max(0, parseInt(String(req.query.thumb ?? '0'), 10) || 0));
+
+    const key      = attKey(entryId, index);
+    const metaPath = path.join(ATT_CACHE_DIR, `${key}.json`);
+    const fullPath = path.join(ATT_CACHE_DIR, `${key}.bin`);
+    const blobPath = thumb ? path.join(ATT_CACHE_DIR, `${key}-t${thumb}.bin`) : fullPath;
+
+    // `jpegThumb` is false when the reader could not shrink the file and the
+    // cached "thumb" is really the original — labelling those image/jpeg would
+    // hand an SVG to the browser under the wrong type and break the chip.
+    const serve = (name: string, jpegThumb: boolean) => {
+      const mime = (thumb && jpegThumb) ? 'image/jpeg'
+                 : (ATT_MIME[path.extname(name).toLowerCase()] || 'application/octet-stream');
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Content-Disposition', contentDisposition('inline', name));
+      // The bytes behind an EntryID never change, so this can be cached hard —
+      // it is what keeps a re-render of the chip strip free.
+      res.setHeader('Cache-Control', 'private, max-age=86400, immutable');
+      // sendFile (not a raw stream) so PDFs in an iframe get Range and 304s.
+      res.sendFile(blobPath);
+    };
+
     try {
-      const r = await runOutlookPy(['--action', 'get-attachment', '--id', entryId, '--index', index, '--dest', tmpDir]);
+      if (existsSync(metaPath) && existsSync(blobPath)) {
+        let name = 'attachment', jpegThumb = false;
+        try {
+          const meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+          name = meta.name || name;
+          jpegThumb = !!meta.thumbOk;
+        } catch { /* keep defaults */ }
+        serve(name, jpegThumb);
+        return;
+      }
+
+      mkdirSync(ATT_CACHE_DIR, { recursive: true });
+      const r = await runOutlookPy([
+        '--action', 'get-attachment', '--id', entryId, '--index', index, '--dest', ATT_DIR,
+        ...(thumb ? ['--thumb', String(thumb)] : []),
+      ]);
       if (r.error || !r.path) { res.status(404).send(r.error || 'Attachment not found'); return; }
-      const ext  = path.extname(r.name).toLowerCase();
-      const mime: Record<string, string> = {
-        '.pdf': 'application/pdf',
-        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-        '.png': 'image/png',  '.gif': 'image/gif',
-        '.bmp': 'image/bmp',  '.webp': 'image/webp',
-        '.svg': 'image/svg+xml',
-        '.tiff': 'image/tiff', '.tif': 'image/tiff',
-      };
-      res.setHeader('Content-Type', mime[ext] || 'application/octet-stream');
-      res.setHeader('Content-Disposition', contentDisposition('inline', r.name));
-      res.setHeader('Cache-Control', 'private, max-age=300');
-      createReadStream(r.path).pipe(res);
+
+      // A thumbnail the reader declined to build (an SVG, a corrupt file) falls
+      // back to the original bytes, so the chip shows the picture either way.
+      const jpegThumb = !!(thumb && r.thumbPath && existsSync(r.thumbPath));
+      copyFileSync(jpegThumb ? r.thumbPath : r.path, blobPath);
+      // The full file is in hand regardless of what was asked for; cache it too
+      // so clicking the chip through to the lightbox costs no second COM trip.
+      if (blobPath !== fullPath && !existsSync(fullPath)) copyFileSync(r.path, fullPath);
+      writeFileSync(metaPath, JSON.stringify({ name: r.name, size: r.size ?? null, thumbOk: jpegThumb }));
+
+      // The staging copies outside the cache have served their purpose.
+      for (const p of [r.path, r.thumbPath]) {
+        if (p && p !== blobPath && p !== fullPath) { try { unlinkSync(p); } catch { /* best effort */ } }
+      }
+      serve(r.name, jpegThumb);
     } catch (e: any) { res.status(500).send(e.message); }
   });
 
@@ -7768,7 +8869,38 @@ async function startServer() {
   });
 
   // ── CBU Tech Brief export ──────────────────────────────────────────────────
-  const cbuDownloads = new Map<string, { filePath: string; tmpDir: string }>();
+  const cbuDownloads = new Map<string, { filePath: string; tmpDir: string; fileName: string }>();
+
+  // What the exported brief is called. Both halves matter and both were missing:
+  //
+  //  * the QUOTE REFERENCE as typed, revision included. The header below used to
+  //    be a hardcoded "CBU_Tech_Brief.pdf", and in the desktop app that header is
+  //    what names the file — so "CR00xxHR3YAM A1R" arrived as a generic name with
+  //    no reference on it at all.
+  //  * the SYSTEM. One opportunity is often quoted at two sizes, and with the
+  //    reference alone both exports are the same name: Downloads has
+  //    "…IuXi5YAF-A2R (1).pdf" from the browser de-duplicating them, and
+  //    "…00xUfRxYAK (10KVA-1PH).pdf" from the size being typed back in by hand.
+  //
+  // Windows rejects <>:"/\|?* and control characters in a name, and silently
+  // drops a trailing dot or space, so anything pasted into the reference box is
+  // reduced to a safe equivalent rather than breaking the save.
+  const cbuFileName = (quote: string, systems: string[]) => {
+    const clean = (s: string) => String(s || '')
+      .replace(/[<>:"/\\|?*\x00-\x1f]+/g, '-')
+      .replace(/\s+/g, ' ')
+      .replace(/^[-\s.]+|[-\s.]+$/g, '');
+    const ref = clean(quote);
+    // '1PH- 4KVA' → '1PH-4KVA'. Several systems in one export are all named, so
+    // the file still says what is inside it.
+    // Repeats are counted rather than listed, so four identical systems read
+    // "4x1PH-10KVA" instead of the same size four times over.
+    const counts = new Map<string, number>();
+    for (const s of systems.map(s => clean(s).replace(/^([13]PH)-\s*/i, '$1-')).filter(Boolean))
+      counts.set(s, (counts.get(s) || 0) + 1);
+    const sys = [...counts].map(([s, n]) => n > 1 ? `${n}x${s}` : s);
+    return ['CBU_Tech_Brief', ref, sys.join('_')].filter(Boolean).join('_') + '.pdf';
+  };
 
   app.get('/api/download/cbu/:id', (req, res) => {
     const entry = cbuDownloads.get(req.params.id);
@@ -7776,7 +8908,13 @@ async function startServer() {
       res.status(404).json({ error: 'that download has expired — generate it again' }); return;
     }
     res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', 'attachment; filename="CBU_Tech_Brief.pdf"');
+    // Both spellings: the plain one for anything old, and RFC 5987's filename*
+    // for the reference as actually typed — quote references carry spaces and
+    // the odd non-ASCII dash, which a bare filename= cannot express.
+    const name = entry.fileName || 'CBU_Tech_Brief.pdf';
+    res.setHeader('Content-Disposition',
+      `attachment; filename="${name.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '')}"; `
+      + `filename*=UTF-8''${encodeURIComponent(name)}`);
     const stream = createReadStream(entry.filePath);
     stream.on('end', () => {
       cbuDownloads.delete(req.params.id);
@@ -7837,9 +8975,12 @@ async function startServer() {
       if (pdfLine) {
         const filePath = pdfLine.slice('__PDF__:'.length).trim();
         const dlId = randomUUID();
-        cbuDownloads.set(dlId, { filePath, tmpDir });
+        const fileName = cbuFileName(quote, systems);
+        cbuDownloads.set(dlId, { filePath, tmpDir, fileName });
         setTimeout(() => cbuDownloads.delete(dlId), 10 * 60 * 1000);
-        if (!res.headersSent) res.json({ id: dlId });
+        // Handed back so the browser's own save uses the same name the header
+        // carries, instead of the two paths naming the file differently.
+        if (!res.headersSent) res.json({ id: dlId, fileName });
       } else {
         const msg = errLine ? errLine.slice('__ERROR__:'.length) : (stderr.trim() || stdout.trim() || 'No output from script');
         if (!res.headersSent) res.status(500).json({ error: msg });
@@ -8414,6 +9555,18 @@ async function startServer() {
     } else {
       console.log(`\n  Vector v2  →  http://localhost:${PORT}\n`);
     }
+    // Warm the price-list identity so the AI prompt names the issue actually on
+    // disk from the first question, and say so when it differs from the one
+    // this desk acknowledged.
+    void pricelistVersion(true).then(v => {
+      if (v.error || !v.label) return;
+      const seen = seenPricelistFingerprint();
+      console.log(`[pricelist] ${v.label}${v.validFrom ? ` (valid from ${v.validFrom})` : ''}`
+        + ` — ${v.rows} rows, rate ${v.exchangeRate ?? '?'}`);
+      if (seen && seen !== v.fingerprint) {
+        console.warn('[pricelist] CHANGED since last acknowledged — quotes priced before now used the previous issue.');
+      }
+    }).catch(() => { /* never block startup on this */ });
   });
 }
 

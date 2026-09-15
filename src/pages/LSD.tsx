@@ -19,7 +19,8 @@ import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, Button, relTime } from '../lib/ui';
 import { api } from '../lib/api';
 import { failed, plural } from '../lib/errors';
-import type { LsdLine, LsdResult, LsdCase, LsdMeta, LsdRegister, LsdPushResult } from '../lib/api';
+import type { LsdLine, LsdResult, LsdCase, LsdMeta, LsdRegister, LsdPushResult,
+              LsdKeepalive, LsdKeepaliveTab, LsdQueue, LsdQueueRow } from '../lib/api';
 import { openExternal } from '../lib/shell';
 import type { ToastFn } from '../App';
 
@@ -53,7 +54,7 @@ const SEV: Record<LsdLine['severity'], { label: string; color: string; bg: strin
 // required marker in the form.
 const EMPTY: Omit<LsdMeta, 'file'> = {
   customer: '', customer_name: '', country: '', project: '', transaction: '', crm: '',
-  half: 'auto', aprc: 'auto', ledger: 'R2321', revision: '',
+  half: 'auto', aprc: 'auto', ledger: 'R2321', revision: '', baseline: true,
   // These never touch the price — they are the daily register's own columns,
   // filled here because this is the only moment anyone knows them.
   bu: '', status: 'Priced', sales_name: '', cpq_updated: '', notes: '', rpi_comment: '',
@@ -64,6 +65,287 @@ const EMPTY: Omit<LsdMeta, 'file'> = {
 const STATUSES = ['Priced', 'Pending Approval', 'Approved', 'Sent', 'On Hold'];
 
 // ─── one KPI ─────────────────────────────────────────────────────────────────
+// The bit of a work-tab URL worth showing a human: OneDrive and CPQ URLs are
+// hundreds of characters of session ids, and the host is what identifies them.
+function hostOf(u: string): string {
+  try { return new URL(u).host.replace(/^www\./, ''); } catch { return u; }
+}
+
+// ── CPQ session button ───────────────────────────────────────────────────────
+// Fetch-from-CPQ reads tabs that are already signed in inside the debug-rail
+// Edge, and those sessions expire while nobody is looking. Vector reloads them
+// on a timer (automation/tab_keepalive.py) — this is the one control that shows
+// it, shaped like the JOE button in the header because it means the same thing:
+// one dot, one word, green when the session is good, and a click to redo it.
+// The four tabs behind it are the tooltip, not the page; the only failure a
+// timer cannot fix is a page asking for a password, and that turns it amber.
+function CpqDot({ toast }: { toast: ToastFn }) {
+  const [ka, setKa]     = useState<LsdKeepalive | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try { setKa(await api.lsdKeepalive()); } catch {}
+  }, []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 60_000);   // the sweep itself runs server-side
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function sweep() {
+    setBusy(true);
+    try {
+      const r = await api.lsdKeepaliveRun();
+      setKa(r);
+      if (r.needs_signin?.length) toast('warn', `Sign in once: ${r.needs_signin.map(hostOf).join(', ')}`);
+      else if (r.ok) toast('ok', 'CPQ session is live — every work tab is open and signed in.');
+      else toast('err', r.error || 'The CPQ session could not be refreshed.');
+    } catch (e: any) { toast('err', failed('refresh the CPQ session', e)); }
+    setBusy(false);
+  }
+
+  if (!ka) return null;
+  const working  = busy || ka.running;
+  const rows     = ka.tabs || [];
+  // Every array here is read defensively. The strip is a status readout, and a
+  // field missing from one payload should degrade it, not take the whole LSD tab
+  // down through the error boundary — which is exactly what `ka.urls.length` did
+  // when the sweep's own response turned out not to carry `urls`.
+  const urls     = ka.urls || [];
+  // Connected means all of it: every configured tab present, signed in, no error.
+  const connected = rows.length > 0 && rows.length === urls.length
+                 && rows.every(t => t.signed_in === true && !t.error);
+  const needs     = (ka.needs_signin || []).length > 0;
+  const label     = working ? 'Connecting…' : connected ? 'Connected'
+                  : needs   ? 'Sign in to CPQ' : 'Connect to CPQ';
+  const tone      = connected ? 'var(--ok)' : needs ? 'var(--warn)' : null;
+  const tip = [
+    connected ? 'CPQ, both OneDrive pages and the EMEA site are open and signed in.'
+              : 'Click to open and refresh the tabs every LSD fetch reads.',
+    ...(rows.length ? rows : urls.map(u => ({ url: u, signed_in: null, error: null } as any)))
+      .map((t: LsdKeepaliveTab) =>
+        `${t.error ? '✕' : t.signed_in === false ? '!' : t.signed_in ? '✓' : '·'} ${hostOf(t.url)}${t.error ? ` — ${t.error}` : ''}`),
+    ka.enabled ? `Refreshed automatically every ${ka.everyMin} min.` : 'The automatic refresh is off (Settings → LSD Pricing).',
+  ].join('\n');
+
+  // A dot on the action row, not a band of its own. The whole state — which
+  // pages are warm, which need signing into, when it last swept — is already in
+  // the tooltip, and the strip was spending a full row to repeat two words of
+  // it. Colour carries the status; the label only appears when it needs a hand.
+  return (
+    <button
+      onClick={sweep} disabled={working} title={tip}
+      aria-label={working ? 'Refreshing the CPQ session' : label}
+      className={cn(
+        'h-[36px] shrink-0 rounded-[9px] border flex items-center gap-[7px] transition-colors',
+        needs && !working ? 'px-2.5' : 'px-2.5',
+        working ? 'border-[var(--line-2)] bg-[var(--s2)] cursor-not-allowed'
+                : 'border-[var(--line-2)] hover:bg-[var(--s-hover)]',
+      )}
+      style={tone && !working
+        ? { borderColor: `color-mix(in oklab, ${tone} 32%, transparent)`,
+            background: connected ? 'var(--ok-soft)' : 'var(--warn-soft)' }
+        : undefined}>
+      {working
+        ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--t3)]" />
+        : <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: tone || 'var(--t3)' }} />}
+      {/* Signed in and quiet needs no words. Anything else does. */}
+      {!connected && !working && (
+        <span className="text-[11px] font-medium whitespace-nowrap"
+              style={{ color: tone || 'var(--t2)' }}>{label}</span>
+      )}
+    </button>
+  );
+}
+
+// ── Dalia's daily sheet: what is waiting to be fetched ───────────────────────
+// She adds a row to "LSD Daily work" for every transaction that needs pricing.
+// The server reads the workbook every few minutes (automation/lsd_queue.py); this
+// lists the rows nobody has picked up — Status not Done/Cancelled, no "Done by
+// Laith" in Notes, no case folder here — each with one click to fetch it.
+const QUEUE_KIND: Record<LsdQueueRow['kind'], string> = {
+  fetch:     'To fetch',
+  priced:    'Priced here — still open in her sheet',
+  laith:     'Noted done by Laith — status still open',
+  hold:      'On hold',
+  no_number: 'No transaction number yet',
+  no_bu:     'BU blank in her sheet — check it is Fire',
+};
+
+function ago(iso: string | null | undefined): string {
+  if (!iso) return 'not yet';
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+}
+
+function QueueTable({ rows, onFetch, disabled, todo }: {
+  rows: LsdQueueRow[]; onFetch: (w: string) => void; disabled: boolean; todo?: boolean;
+}) {
+  const th = 'px-2 py-1 font-medium whitespace-nowrap';
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-[11.5px]">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-[var(--t3)] text-left">
+            <th className={th}>Transaction</th><th className={th}>Project · customer</th>
+            <th className={th}>Country · BU</th><th className={th}>Sales</th>
+            <th className={th} title="Days since CPQ Last Updated">Age</th>
+            <th className={cn(th, 'text-right')}>Value</th>
+            <th className={th}>{todo ? 'Status · notes' : 'Why it is here'}</th><th className={th} />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(r => {
+            const fresh = !!r.first_seen && Date.now() - new Date(r.first_seen).getTime() < 864e5;
+            return (
+              <tr key={`${r.transaction}-${r.row}`} className="border-t border-[var(--line-2)]">
+                <td className="px-2 py-1.5 whitespace-nowrap font-medium text-[var(--t1)] tabular-nums">
+                  {r.transaction || r.raw_transaction || '—'}
+                  {fresh && (
+                    <span className="ml-1.5 text-[9.5px] font-semibold px-1 rounded"
+                          style={{ color: 'var(--ok)', background: 'var(--ok-soft)' }}>NEW</span>
+                  )}
+                </td>
+                <td className="px-2 py-1.5 max-w-[300px] truncate text-[var(--t2)]"
+                    title={`${r.name} — ${r.customer_name} (${r.customer})`}>
+                  {r.name}<span className="text-[var(--t3)]"> · {r.customer_name}</span>
+                </td>
+                <td className="px-2 py-1.5 whitespace-nowrap text-[var(--t2)]">
+                  {[r.country, r.bu].filter(Boolean).join(' · ')}
+                </td>
+                <td className="px-2 py-1.5 whitespace-nowrap text-[var(--t2)]">{r.sales}</td>
+                <td className="px-2 py-1.5 whitespace-nowrap tabular-nums text-[var(--t3)]"
+                    title={r.cpq_updated || ''}>
+                  {r.age_days == null ? '—' : r.age_days <= 0 ? 'today' : `${r.age_days} d`}
+                </td>
+                <td className="px-2 py-1.5 whitespace-nowrap text-right tabular-nums text-[var(--t2)]">
+                  {typeof r.value === 'number'
+                    ? r.value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+                    : r.value || '—'}
+                </td>
+                <td className="px-2 py-1.5 max-w-[240px] truncate text-[var(--t3)]"
+                    title={[r.status, r.notes].filter(Boolean).join(' — ')}>
+                  {todo ? [r.status, r.notes].filter(Boolean).join(' · ') : QUEUE_KIND[r.kind]}
+                </td>
+                <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                  {r.transaction && (
+                    <button
+                      onClick={() => onFetch(r.transaction)} disabled={disabled}
+                      className={cn(
+                        'inline-flex items-center gap-1 h-[24px] px-2 rounded-md border text-[11px] font-medium transition-colors',
+                        disabled ? 'border-[var(--line-2)] text-[var(--t3)] cursor-not-allowed'
+                                 : 'border-[var(--line-2)] text-[var(--t1)] hover:bg-[var(--s-hover)]',
+                      )}>
+                      <CloudDownload className="w-3 h-3" />
+                      {r.kind === 'fetch' ? 'Fetch' : 'Fetch anyway'}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function QueuePanel({ toast, onFetch, disabled }: {
+  toast: ToastFn; onFetch: (w: string) => void; disabled: boolean;
+}) {
+  const [q, setQ]               = useState<LsdQueue | null>(null);
+  const [busy, setBusy]         = useState(false);
+  const [open, setOpen]         = useState(true);
+  const [showOther, setShowOther] = useState(false);
+  // The to-fetch numbers already shown, so a row Dalia adds while the tab is
+  // open gets a toast instead of appearing silently in a list nobody is watching.
+  const known = useRef<Set<string> | null>(null);
+
+  const take = useCallback((r: LsdQueue) => {
+    setQ(r);
+    if (!r.ok) return;
+    const now = new Set((r.rows || []).filter(x => x.kind === 'fetch').map(x => x.transaction));
+    if (known.current) {
+      const fresh = [...now].filter(w => !known.current!.has(w));
+      if (fresh.length) toast('ok', `New in Dalia's sheet: ${fresh.join(', ')}`);
+    }
+    known.current = now;
+  }, [toast]);
+
+  useEffect(() => {
+    const load = async () => { try { take(await api.lsdQueue()); } catch {} };
+    load();
+    const t = setInterval(load, 60_000);   // the read itself runs server-side
+    return () => clearInterval(t);
+  }, [take]);
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const r = await api.lsdQueueRefresh();
+      take(r);
+      if (!r.ok) toast('err', r.error || "Could not read Dalia's sheet.");
+    } catch (e) { toast('err', failed("read Dalia's daily sheet", e)); }
+    setBusy(false);
+  };
+
+  if (!q) return null;
+  const rows    = q.rows || [];
+  const todo    = rows.filter(r => r.kind === 'fetch');
+  const other   = rows.filter(r => r.kind !== 'fetch');
+  const working = busy || q.running;
+
+  return (
+    <Card className="order-1">
+      <div className="flex items-center gap-2 min-w-0">
+        <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1.5 min-w-0 text-left">
+          <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-[var(--t3)] transition-transform', open && 'rotate-90')} />
+          <ClipboardList className="w-4 h-4 shrink-0 text-[var(--t2)]" />
+          <span className="text-[12.5px] font-semibold text-[var(--t1)] truncate"
+                title={q.bu_filter?.length
+                  ? `Only BU ${q.bu_filter.join(', ')} — ${q.other_bu ?? 0} open row(s) in other BUs are not listed`
+                  : 'Every BU'}>
+            {q.bu_filter?.length ? `${q.bu_filter.map(b => b[0] + b.slice(1).toLowerCase()).join(' / ')} waiting` : 'Waiting'} in Dalia's sheet
+          </span>
+        </button>
+        <span className="text-[11px] tabular-nums px-1.5 py-[1px] rounded-md shrink-0"
+              style={todo.length ? { color: 'var(--accent)', background: 'var(--s3)' } : { color: 'var(--t3)' }}>
+          {q.ran == null && q.ok == null ? 'not read yet' : todo.length ? `${todo.length} to fetch` : 'nothing new'}
+        </span>
+        <span className="ml-auto min-w-0 text-[10.5px] text-[var(--t3)] truncate"
+              title={[q.file?.name, q.file?.modified && `saved ${q.file.modified}`, q.error].filter(Boolean).join('\n')}>
+          {q.ok === false
+            ? <span style={{ color: 'var(--err)' }}>{q.error}</span>
+            : `Read ${ago(q.ran)}`}
+          {q.enabled ? ` · every ${q.everyMin} min` : ' · auto-read off'}
+        </span>
+        <button onClick={refresh} disabled={working} title="Read the sheet now"
+                className="p-1.5 shrink-0 rounded hover:bg-[var(--s-hover)] text-[var(--t3)]">
+          <RefreshCw className={cn('w-3.5 h-3.5', working && 'animate-spin')} />
+        </button>
+      </div>
+
+      {open && q.ran != null && (
+        <div className="mt-2.5 flex flex-col gap-2">
+          {todo.length > 0
+            ? <QueueTable rows={todo} onFetch={onFetch} disabled={disabled} todo />
+            : <p className="text-[11px] text-[var(--t3)]">Nothing to pick up — every open row is priced here, on hold, or has no number.</p>}
+          {other.length > 0 && (
+            <>
+              <button onClick={() => setShowOther(s => !s)}
+                      className="self-start flex items-center gap-1 text-[11px] text-[var(--t3)] hover:text-[var(--t1)]">
+                <ChevronRight className={cn('w-3 h-3 transition-transform', showOther && 'rotate-90')} />
+                {plural(other.length, 'other open row')} — priced here, on hold, no number or no BU
+              </button>
+              {showOther && <QueueTable rows={other} onFetch={onFetch} disabled={disabled} />}
+            </>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function Kpi({ label, value, tone, hint }: {
   label: string; value: React.ReactNode; tone?: string; hint?: string;
 }) {
@@ -197,6 +479,73 @@ function LineTable({ lines, cur }: { lines: LsdLine[]; cur: string }) {
   );
 }
 
+// ─── one run, one progress line ──────────────────────────────────────────────
+// Fetching, pricing and building used to be three separate spinners with their
+// own notes underneath. They are one job to the person doing it, so they share
+// one bar. The step names say where the run is, not how it is done — what Excel
+// or the browser rail are up to underneath is not the analyst's problem.
+//
+// There is no real percentage to report: the engine returns once, at the end. So
+// each step eases towards its own share of the bar on a curve that never quite
+// arrives (1 - e^-t/τ) and snaps forward when the step actually finishes. It
+// keeps moving during a slow step without ever claiming to be done early.
+type RunStep = 'fetch' | 'price' | 'build' | 'upload';
+
+// What the single button says and does in each state.
+const ACTION = {
+  fetch:   { label: 'Fetch',            Icon: CloudDownload, tone: 'primary' as const },
+  price:   { label: 'Price it',         Icon: Play,          tone: 'primary' as const },
+  build:   { label: 'Create case folder', Icon: Hammer,      tone: 'dark' as const },
+  rebuild: { label: 'Rebuild',          Icon: RefreshCw,     tone: 'outline' as const },
+  upload:  { label: 'File it',          Icon: CloudUpload,   tone: 'dark' as const },
+};
+
+const RUN_STEP: Record<RunStep, { label: string; secs: number }> = {
+  fetch:  { label: 'Getting the transaction', secs: 10 },
+  price:  { label: 'Pricing',                 secs: 22 },
+  build:  { label: 'Writing the case',        secs: 16 },
+  upload: { label: 'Filing to SharePoint',    secs: 12 },
+};
+
+function useRunProgress() {
+  const [run, setRun] = useState<{ steps: RunStep[]; idx: number; pct: number; secs: number } | null>(null);
+  const started = useRef(0);
+  const base    = useRef(0);
+
+  const begin = (steps: RunStep[]) => {
+    started.current = Date.now();
+    base.current = 0;
+    setRun({ steps, idx: 0, pct: 0, secs: 0 });
+  };
+  // Called as each step lands, so the bar jumps to that step's true boundary
+  // rather than drifting on the curve alone.
+  const next = () => setRun(r => {
+    if (!r) return r;
+    const total = r.steps.reduce((s, k) => s + RUN_STEP[k].secs, 0);
+    base.current = r.steps.slice(0, r.idx + 1).reduce((s, k) => s + RUN_STEP[k].secs, 0) / total;
+    started.current = Date.now();
+    return { ...r, idx: r.idx + 1, pct: Math.round(base.current * 100), secs: 0 };
+  });
+  const end = () => setRun(r => (r ? { ...r, idx: r.steps.length, pct: 100 } : r));
+  const clear = () => setRun(null);
+
+  useEffect(() => {
+    if (!run || run.idx >= run.steps.length) return;
+    const total = run.steps.reduce((s, k) => s + RUN_STEP[k].secs, 0);
+    const share = RUN_STEP[run.steps[run.idx]].secs / total;
+    const tick = setInterval(() => {
+      const t = (Date.now() - started.current) / 1000;
+      const within = 1 - Math.exp(-t / RUN_STEP[run.steps[run.idx!]].secs);
+      setRun(r => (r ? { ...r,
+        pct: Math.min(99, Math.round((base.current + share * within) * 100)),
+        secs: Math.floor(t) } : r));
+    }, 120);
+    return () => clearInterval(tick);
+  }, [run?.idx, run?.steps]);
+
+  return { run, begin, next, end, clear };
+}
+
 // ─── the page ────────────────────────────────────────────────────────────────
 export function LsdPage({ toast }: { toast: ToastFn }) {
   const [status, setStatus]   = useState<Awaited<ReturnType<typeof api.lsdStatus>> | null>(null);
@@ -215,6 +564,37 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
   const [revNote, setRevNote] = useState('');
   const [reg, setReg]         = useState<LsdRegister | null>(null);
   const [regBusy, setRegBusy] = useState<'' | 'load' | 'upload' | 'save'>('');
+  const progress = useRunProgress();
+  // One button, whose job is whatever the run needs next. Four buttons meant
+  // three of them were disabled at any moment and the eye still had to check
+  // which; this way the only control on the row is the one that does something.
+  //   nothing staged, a number typed  → fetch it
+  //   an export staged, not yet priced → price it
+  //   priced and not yet built         → write the case
+  //   nothing staged, a case on file   → rebuild it
+  // A priced result only earns the "build next" step while it still matches
+  // what is on screen. Change the customer number, the ledger or the staged
+  // export and the button falls back to Price it, rather than offering to write
+  // a case folder from numbers that are no longer the ones in the form.
+  const sigNow = JSON.stringify([meta, file?.path ?? '']);
+  const pricedSig = useRef('');
+  const priceFresh = !!result?.ok && !result.cancelled && pricedSig.current === sigNow;
+
+  const action: RunStep | 'rebuild' =
+      file   ? (priceFresh && !built ? 'build' : 'price')
+    : cpqNum.trim() ? 'fetch'
+    : (built?.ok || meta.transaction.trim()) ? 'rebuild'
+    : 'fetch';
+  const runningNow = !!busy || !!(progress.run && progress.run.idx < progress.run.steps.length);
+  const canRun =
+      action === 'fetch' ? !!cpqNum.trim()
+    : !!status?.master && (action !== 'price' || !!file);
+  const advance = () => {
+    if (action === 'fetch')   return void fetchCpq();
+    if (action === 'price')   return void price();
+    if (action === 'rebuild') return void build(true);
+    return void build(false);
+  };
   const [pushed, setPushed]   = useState<LsdPushResult | null>(null);
   const [mailBusy, setMailBusy] = useState(false);
   const [mailNote, setMailNote] = useState('');
@@ -281,10 +661,13 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
   }, [take]);
 
   // Pull the transaction straight from CPQ: BOM + customer/project/CRM, all filled.
-  const fetchCpq = async () => {
-    const w = cpqNum.trim();
+  // `num` lets the daily-sheet queue hand a transaction straight in; the typed
+  // field is only read when nothing was handed over.
+  const fetchCpq = async (num?: string) => {
+    const w = (num ?? cpqNum).trim();
     if (!w) return;
     setCpqBusy(true); setCpqNote(''); setRevNote(''); setResult(null); setBuilt(null);
+    progress.begin(['fetch']);
     try {
       const r = await api.lsdCpqFetch(w);
       if (!r.ok || !r.file) { setCpqNote(r.error || 'Fetch failed.'); toast('err', r.error || 'CPQ fetch failed.'); return; }
@@ -320,7 +703,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
       setCpqNote(`Fetched ${r.lines ?? ''} line(s). Customer ${h.customer || '?'} — CPQ's own; change it if you price a different account.`);
       toast('ok', `Pulled ${w} from CPQ.`);
     } catch (e) { setCpqNote(failed('reach CPQ', e)); toast('err', failed('reach CPQ', e)); }
-    finally { setCpqBusy(false); }
+    finally { setCpqBusy(false); progress.end(); setTimeout(progress.clear, 900); }
   };
 
   // One run at a time, and Cancel needs a handle on it: the id goes to the
@@ -348,14 +731,19 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
     if (!file) return;
     const run = startRun();
     setBusy('preview'); setBuilt(null);
+    progress.begin(['price']);
     try {
       const r = await api.lsdPreview({ ...meta, file: file.path, job_id: run.id }, run.ctl.signal);
       setResult(r);
+      if (r.ok && !r.cancelled) pricedSig.current = JSON.stringify([meta, file.path]);
       if (r.cancelled) toast('warn', 'Cancelled.');
       else if (!r.ok) toast('err', r.error || 'Pricing failed.');
       else toast('ok', `${plural(r.summary?.lines || 0, 'line')} priced.`);
     } catch (e) { toast('err', failed('price the transaction', e)); }
-    finally { setBusy(''); setCancelling(false); runRef.current = null; }
+    finally {
+      setBusy(''); setCancelling(false); runRef.current = null;
+      progress.end(); setTimeout(progress.clear, 900);
+    }
   };
 
   // `rebuild` re-runs a case that is already on disk: no staged upload, the
@@ -369,6 +757,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
     }
     const run = startRun();
     setBusy('build');
+    progress.begin(['build']);
     try {
       const r = await api.lsdBuild(
         { ...meta, file: file?.path || '', rebuild, job_id: run.id }, run.ctl.signal);
@@ -387,7 +776,10 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
         toast('ok', `Case folder written and ${r.register?.action === 'updated' ? 'register row updated' : 'registered'}.`);
       }
     } catch (e) { toast('err', failed('build the case folder', e)); }
-    finally { setBusy(''); setCancelling(false); runRef.current = null; }
+    finally {
+      setBusy(''); setCancelling(false); runRef.current = null;
+      progress.end(); setTimeout(progress.clear, 900);
+    }
   };
 
   const reveal = async (p: string) => {
@@ -461,6 +853,12 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
     () => (result?.lines || []).filter(l => l.severity === 'action' || l.severity === 'verify').length,
     [result],
   );
+  // The single line behind the RPI, when there is one. Below 40% of the total no
+  // line is "the reason" and naming one would be misleading.
+  const rpiDriver = useMemo(
+    () => (s?.rpi_drivers || []).find(d => (d.share || 0) > 0.4),
+    [s],
+  );
 
   // The deal header is the widest thing on the page while it is open and dead
   // weight once a case is priced, so it lives in a strip that folds shut. It
@@ -491,110 +889,124 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
         </Card>
       )}
 
-      {/* ── the strip: where the transaction comes from, who it is for, and the
-          two buttons. One band across the top, so nothing that matters after
-          pricing sits in a narrow column. ── */}
+      {/* ── one row: what to price, and the one button that moves it on ──
+          The transaction number and the dropped export were two controls doing
+          the same job — naming the deal — so they are one field: type the
+          number, or drop the export onto it. The button is whatever the run
+          needs next, in one place, rather than four that are mostly disabled. */}
+      {/* What Dalia has added and nobody has picked up. Fetching one starts a
+          clean run, so whatever was staged before is cleared first. */}
+      <QueuePanel
+        toast={toast} disabled={runningNow || cpqBusy}
+        onFetch={w => { reset(); setCpqNum(w); void fetchCpq(w); }} />
+
       <Card className="order-1">
-        <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,340px)_minmax(0,1fr)_auto] gap-3 items-center">
-          {/* Fetch straight from CPQ — BOM + customer/project/CRM in one go */}
-          <div className="flex gap-2">
-            <div className="relative flex-1">
-              <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)] pointer-events-none" />
-              <input
-                value={cpqNum}
-                onChange={e => setCpqNum(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && !cpqBusy) fetchCpq(); }}
-                placeholder="Transaction #  ·  W262168503E"
-                className="w-full h-[36px] pl-8 pr-2.5 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
-            </div>
-            <Button tone="primary" Icon={cpqBusy ? Loader2 : CloudDownload}
-                    disabled={cpqBusy || !cpqNum.trim()} onClick={fetchCpq}>
-              {cpqBusy ? 'Fetching…' : 'Fetch'}
-            </Button>
-          </div>
+        <div
+          onDragOver={e => { e.preventDefault(); setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
+          onDrop={onDrop}
+          className="flex items-center gap-2 min-w-0"
+        >
+          <input
+            ref={inputRef} type="file" accept=".csv,.xlsx,.xlsb" className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) take(f); }}
+          />
 
-          {/* the drop target, on the same line rather than under it */}
-          <div
-            onDragOver={e => { e.preventDefault(); setDrag(true); }}
-            onDragLeave={() => setDrag(false)}
-            onDrop={onDrop}
-            onClick={() => inputRef.current?.click()}
-            className={cn(
-              'h-[36px] flex items-center gap-2 px-3 rounded-[9px] border border-dashed cursor-pointer transition-colors min-w-0',
-              drag ? 'border-[var(--accent)] bg-[var(--s3)]'
-                   : file ? 'border-[var(--line-3)] bg-[var(--s1)]'
-                          : 'border-[var(--line-2)] hover:bg-[var(--s-hover)]',
-            )}
-          >
-            <input
-              ref={inputRef} type="file" accept=".csv,.xlsx,.xlsb" className="hidden"
-              onChange={e => { const f = e.target.files?.[0]; if (f) take(f); }}
-            />
-            {busy === 'upload'
-              ? <Loader2 className="w-4 h-4 animate-spin text-[var(--t3)] shrink-0" />
-              : file
-                ? <FileSpreadsheet className="w-4 h-4 shrink-0" style={{ color: 'var(--ok)' }} />
-                : <Upload className="w-4 h-4 text-[var(--t3)] shrink-0" />}
-            <span className={cn('text-[12px] truncate', file ? 'text-[var(--t1)]' : 'text-[var(--t2)]')}>
-              {file ? file.name : 'Drop the transaction here — .csv · .xlsx · .xlsb'}
-            </span>
-            {file && (
-              <button onClick={e => { e.stopPropagation(); reset(); }}
-                      className="ml-auto shrink-0 p-1 rounded hover:bg-[var(--s-hover)] text-[var(--t3)]"
-                      title="Clear">
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          <div className="flex gap-2 justify-end">
-            {busy ? (
-              // While a run is in flight the only useful control is the one that
-              // stops it. Cancel asks the engine to unwind so Excel closes with
-              // it — a killed process would leave Excel holding the master open.
-              <Button tone="outline" Icon={cancelling ? Loader2 : X}
-                      disabled={cancelling} onClick={cancelRun}>
-                {cancelling ? 'Stopping…' : `Cancel ${busy === 'build' ? 'the build' : 'pricing'}`}
-              </Button>
+          <div className={cn(
+            'relative flex-1 min-w-0 h-[36px] rounded-[9px] border flex items-center transition-colors',
+            drag  ? 'border-[var(--accent)] bg-[var(--s3)] border-dashed'
+                  : 'border-[var(--line-2)] bg-[var(--s1)] focus-within:border-[var(--accent-line)]',
+          )}>
+            {file ? (
+              /* A staged export owns the field: its name IS what will be priced. */
+              <>
+                {busy === 'upload'
+                  ? <Loader2 className="w-4 h-4 animate-spin text-[var(--t3)] shrink-0 ml-2.5" />
+                  : <FileSpreadsheet className="w-4 h-4 shrink-0 ml-2.5" style={{ color: 'var(--ok)' }} />}
+                <span className="text-[12px] text-[var(--t1)] truncate ml-2">{file.name}</span>
+                <button onClick={reset} title="Clear"
+                        className="ml-auto mr-1.5 shrink-0 p-1 rounded hover:bg-[var(--s-hover)] text-[var(--t3)]">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </>
             ) : (
               <>
-                <Button tone="primary" Icon={Play}
-                        disabled={!file || !status?.master} onClick={() => price()}>
-                  Price it
-                </Button>
-                <Button tone="dark" Icon={Hammer}
-                        disabled={!file || !status?.master} onClick={() => build(false)}>
-                  Create case folder
-                </Button>
-                {/* A case already on disk can be re-run without a fresh export —
-                    after an engine fix, or when a build was cancelled part-way. */}
-                {!file && (built?.ok || meta.transaction.trim()) && (
-                  <Button tone="outline" Icon={RefreshCw}
-                          disabled={!status?.master} onClick={() => build(true)}>
-                    Rebuild
-                  </Button>
-                )}
+                <Search className="w-3.5 h-3.5 absolute left-2.5 text-[var(--t3)] pointer-events-none" />
+                <input
+                  value={cpqNum}
+                  onChange={e => setCpqNum(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !runningNow && canRun) advance(); }}
+                  placeholder="Transaction #, or drop the export here"
+                  className="w-full h-full pl-8 pr-2.5 bg-transparent rounded-[9px] text-[12px] text-[var(--t1)] focus:outline-none" />
+                <button onClick={() => inputRef.current?.click()} title="Choose a file"
+                        className="mr-1.5 shrink-0 p-1 rounded hover:bg-[var(--s-hover)] text-[var(--t3)]">
+                  <Upload className="w-3.5 h-3.5" />
+                </button>
               </>
             )}
           </div>
+
+          {runningNow ? (
+            // Mid-run the only useful control is the one that stops it. Cancel
+            // asks the engine to unwind so Excel closes with it — a killed
+            // process would leave Excel holding the master open.
+            <Button tone="outline" Icon={cancelling ? Loader2 : X}
+                    disabled={cancelling || !busy} onClick={cancelRun}>
+              {cancelling ? 'Stopping…'
+                : busy === 'build' ? 'Cancel the build'
+                : busy === 'preview' ? 'Cancel pricing'
+                // A fetch is a browser round trip with nothing to unwind, so the
+                // button is inert here and must not name a step that is not running.
+                : 'Cancel'}
+            </Button>
+          ) : (
+            <Button tone={ACTION[action].tone} Icon={ACTION[action].Icon}
+                    disabled={!canRun} onClick={advance}>
+              {ACTION[action].label}
+            </Button>
+          )}
+
+          <CpqDot toast={toast} />
         </div>
 
-        {cpqNote && (
+        {/* Both notes on one muted line — they are the same kind of aside. */}
+        {(cpqNote || revNote) && !runningNow && (
           <p className="text-[10.5px] text-[var(--t3)] mt-2 leading-relaxed flex items-start gap-1.5">
-            <Info className="w-3 h-3 shrink-0 mt-0.5" />{cpqNote}
+            <Info className="w-3 h-3 shrink-0 mt-[3px]" />
+            <span>{[cpqNote, revNote].filter(Boolean).join('  ·  ')}</span>
           </p>
         )}
-        {revNote && (
-          <p className="text-[10.5px] mt-1.5 leading-relaxed flex items-start gap-1.5"
-             style={{ color: 'var(--t2)' }}>
-            <History className="w-3 h-3 shrink-0 mt-0.5" style={{ color: 'var(--accent)' }} />
-            {revNote}
-          </p>
-        )}
-        {busy === 'build' && (
-          <p className="text-[10.5px] text-[var(--t3)] mt-2">
-            Filling the master model in Excel — about 15 seconds.
-          </p>
+
+        {/* One line for the whole run. No step-by-step commentary — where it is
+            and how far along, and that is all. */}
+        {progress.run && (
+          <div className="mt-2.5">
+            <div className="flex items-baseline gap-2 mb-1">
+              <span className="text-[11px] font-medium text-[var(--t1)]">
+                {progress.run.idx >= progress.run.steps.length
+                  ? 'Done'
+                  : RUN_STEP[progress.run.steps[progress.run.idx]].label}
+              </span>
+              <span className="ml-auto text-[10px] tabular-nums text-[var(--t3)]">
+                {(() => {
+                  const st = progress.run.steps[progress.run.idx];
+                  const slow = st && progress.run.secs > RUN_STEP[st].secs * 1.5;
+                  const m = Math.floor(progress.run.secs / 60), sec = progress.run.secs % 60;
+                  return slow
+                    ? `${m ? `${m}m ` : ''}${sec}s · ${progress.run.pct}%`
+                    : `${progress.run.pct}%`;
+                })()}
+              </span>
+            </div>
+            <div className="h-[3px] rounded-full bg-[var(--s3)] overflow-hidden">
+              <div
+                className="h-full rounded-full transition-[width] duration-200 ease-out"
+                style={{
+                  width: `${progress.run.pct}%`,
+                  background: progress.run.pct >= 100 ? 'var(--ok)' : 'var(--accent)',
+                }} />
+            </div>
+          </div>
         )}
 
         {/* who the deal is for: one readable line, expandable to the real form */}
@@ -673,6 +1085,18 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 <TextInput value={meta.revision || ''} onChange={e => set('revision')(e.target.value)}
                            placeholder="R4" />
               </Field>
+              <label className="col-span-2 flex items-start gap-2 cursor-pointer pt-1">
+                <input type="checkbox" checked={!!meta.baseline}
+                       onChange={e => setMeta(m => ({ ...m, baseline: e.target.checked }))}
+                       className="mt-0.5 accent-[var(--accent)]" />
+                <span className="text-[10px] text-[var(--t3)] leading-relaxed">
+                  <span className="text-[var(--t2)] font-medium">Keep the first draft ("as pasted")</span> —
+                  a second Working File beside the final one, holding the master with nothing but
+                  the transaction in it: every column still its own formula, no discount decided,
+                  nothing corrected. Open it when a number looks wrong — what it shows is the
+                  model's, what differs in the final one is Vector's.
+                </span>
+              </label>
               <p className="text-[10px] text-[var(--t3)] leading-relaxed self-end pb-1.5 col-span-2">
                 Auto reads the half-year from the export's date and the APRC from the
                 pricing-group mix — FIRE in USD, EL in EUR. A revision writes into the same
@@ -956,10 +1380,15 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                      tone={s.target_e2e && s.overall_e2e !== null && s.overall_e2e < s.target_e2e
                              ? 'var(--warn)' : 'var(--ok)'}
                      hint={s.target_e2e ? `target ${pct(s.target_e2e, 0)}` : 'no target on these groups'} />
+                {/* A double-digit RPI is what the approver challenges first, and
+                    the total alone does not answer it — name the line it came
+                    from when one line dominates. */}
                 <Kpi label="Total RPI" value={pct(s.total_rpi)}
                      tone={s.rpi_rate !== undefined && s.total_rpi !== null && s.total_rpi < s.rpi_rate
                              ? 'var(--warn)' : 'var(--ok)'}
-                     hint="price + mix variance" />
+                     hint={rpiDriver
+                             ? `${pct(rpiDriver.share, 0)} ${rpiDriver.material}`
+                             : 'price + mix variance'} />
                 <Kpi label="E2E @ target" value={pct(s.at_target?.e2e)}
                      hint={s.at_target ? `${money(s.at_target.target_price, cur)} · RPI ${pct(s.at_target.rpi_pct)}` : 'as requested'} />
                 {!!s.carried && (
@@ -970,6 +1399,22 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                      tone={flagged ? 'var(--warn)' : 'var(--ok)'}
                      hint={`${s.action} review · ${s.verify} verify`} />
               </div>
+
+              {/* The rate this case was priced on, when it is not the half-year's.
+                  It is the first thing an approver queries, so it sits above the
+                  table rather than inside a line's flags. */}
+              {s.rpi_exception && (
+                <div className="mt-3 flex items-start gap-2 rounded-[10px] border border-[var(--warn)]/40
+                                bg-[var(--warn)]/[0.07] px-3 py-2.5 text-[11.5px] text-[var(--t1)] leading-relaxed">
+                  <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: 'var(--warn)' }} />
+                  <span>
+                    <b>{s.rpi_exception.label}</b> — priced on last year's price{' '}
+                    <b>+ {pct(s.rpi_exception.rate, 1)}</b>, not the {s.half}{' '}
+                    {pct(s.rpi_exception.standard, 1)}: {s.rpi_exception.why}.{' '}
+                    The rate itself still needs approving.
+                  </span>
+                </div>
+              )}
 
               {s.no_py > 0 && (
                 <div className="mt-3 flex items-start gap-2 text-[11px] text-[var(--t3)] leading-relaxed">
@@ -1037,18 +1482,30 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                         </span></>}
                 </div>
               )}
-              {/* The approval ask. Shown whenever a line prices under its target
-                  E2E — that margin is somebody's decision, not the engine's. */}
-              {!!built.summary?.below_target && (
+              {/* The approval ask. Two ways in: a line still priced under its
+                  target E2E (that margin is somebody's decision), or a line the
+                  target floor lifted off the customer's own ask (that COUNTER is
+                  somebody's decision, and the concession band is what they grant). */}
+              {!!(built.summary?.below_target || built.summary?.floored) && (
                 <div className="mb-3 p-3 rounded-[10px] border border-[var(--line-2)]"
                      style={{ background: 'color-mix(in srgb, var(--warn) 7%, transparent)' }}>
                   <div className="flex items-start gap-2 mb-2">
                     <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--warn)' }} />
                     <div className="text-[11.5px] text-[var(--t2)] leading-relaxed">
-                      {plural(built.summary.below_target, 'line')} price under target —{' '}
-                      <b>E2E {pct(built.summary.overall_e2e)}</b> against a{' '}
-                      {pct(built.summary.target_e2e, 0)} target. The price was not raised to
-                      cover it, so this margin needs an approval.
+                      {built.summary.below_target ? <>
+                        {plural(built.summary.below_target, 'line')} price under target —{' '}
+                        <b>E2E {pct(built.summary.overall_e2e)}</b> against a{' '}
+                        {pct(built.summary.target_e2e, 0)} target. The price was not raised to
+                        cover it, so this margin needs an approval.
+                      </> : <>
+                        {plural(built.summary.floored!, 'line')} asked for a price under the{' '}
+                        {pct(built.summary.target_e2e, 0)} target and{' '}
+                        <b>were priced at it</b> — {money(built.summary.floored_value, cur)} over
+                        what the customer asked. Nothing goes out at cost.
+                        {!!built.summary.e2e_concession?.length && <>{' '}If they push back,
+                          concede no further than{' '}
+                          {built.summary.e2e_concession.map(r => pct(r, 0)).join(' then ')} E2E.</>}
+                      </>}
                       {built.summary.at_target && (
                         <> At the customer's target price{' '}
                           {money(built.summary.at_target.target_price, cur)} it would be{' '}
@@ -1072,6 +1529,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   ['Feedback sheet', built.feedback, 'Approved Offer — values only'],
                   ['Ledger only', built.ledger, 'what the approval mail attaches'],
                   ['Working file', built.working, 'the master model, filled'],
+                  ['First draft', built.baseline, 'BOM pasted, nothing else touched'],
                 ] as const).map(([label, p, hint]) => p && (
                   <div key={label} className="flex items-center gap-2.5 px-3 py-2 rounded-[10px] border border-[var(--line-2)] bg-[var(--s1)]">
                     <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-[var(--t3)]" />

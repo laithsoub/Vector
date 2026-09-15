@@ -56,6 +56,16 @@ export interface Config {
   // the mail is always drafted — never sent by Vector.
   lsd_approver?:     string;
   lsd_approver_cc?:  string;
+  // Session keep-alive. CPQ, the analyst's OneDrive and SharePoint all sign out
+  // when their tab idles, and every LSD fetch reads those tabs — so a timer
+  // reloads them in a minimized debug-rail Edge. See automation/tab_keepalive.py.
+  lsd_keepalive?:      boolean;  // false / "off" turns the timer off (default on)
+  lsd_keepalive_min?:  string;   // minutes between sweeps (blank = 10, floor 2)
+  lsd_keepalive_urls?: string;   // one URL per line; blank = CPQ + the EMEA site
+  lsd_queue?:          boolean;  // false / "off" stops reading Dalia's daily sheet (default on)
+  lsd_queue_min?:      string;   // minutes between reads of her sheet (blank = 5, floor 2)
+  lsd_daily_file?:     string;   // her workbook's GUID or server-relative path (blank = built-in GUID)
+  lsd_queue_bu?:       string;   // BU column values to list, comma-separated (blank = FIRE, "all" = every BU)
 }
 
 // ─── Quick check-up: quote mail vs the Quotations List ───────────────────────

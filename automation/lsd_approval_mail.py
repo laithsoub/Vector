@@ -137,11 +137,27 @@ def build_html(summary, meta, intro=None, approver=""):
                     (money(summary.get("rpi_value"), ccy), "right")],
                    bold=True, bg="#EDEDED")
 
+    # The concession band. Where the target-E2E floor lifted lines off the
+    # customer's own ask, the approver's real decision is how far back down they
+    # may go — Dalia's "at least 35%-37%" — so the mail names it rather than
+    # leaving the counter looking like a flat refusal.
+    band = ""
+    conc = summary.get("e2e_concession") or []
+    if summary.get("floored") and conc:
+        band = (
+            f'<p style="font-family:Calibri,sans-serif;font-size:11pt;">'
+            f'{summary["floored"]} line(s) were requested below the '
+            f'{pct(summary.get("target_e2e"), 0)} target and are proposed AT the target, '
+            f'{money(summary.get("floored_value"), ccy)} above what the customer asked — '
+            f'no line goes out at cost price. If they push back, the lowest I would go is '
+            f'{" then ".join(pct(r, 0) for r in conc)} E2E.</p>')
+
     return (
         f'<div style="font-family:Calibri,sans-serif;font-size:11pt;">'
         f'<p>Hi {_esc(approver) or "there"},<br>{_esc(intro)}</p>'
         f'<p>{head_html}</p>'
         f'<table style="border-collapse:collapse;">{header}{body_rows}{overall}</table>'
+        f'{band}'
         f'</div>')
 
 

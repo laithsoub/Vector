@@ -5,6 +5,30 @@ import { Card, CardTitle, Button, fmtGBP } from '../lib/ui';
 import { cn } from '../lib/cn';
 import { failed, plural } from '../lib/errors';
 import { runTask, isCancel } from '../lib/tasks';
+import { usePricelistVersion, pricelistName, pricelistFooter, acknowledgePricelist } from '../lib/pricelist';
+import { takePricerHandoff, onPricerHandoff, type PricerHandoff } from '../lib/pricerHandoff';
+import { api, type PriceListVersion } from '../lib/api';
+
+/** Where a quantity came from. On a plan it is a count of symbols, and nothing
+ *  in the document repeats that number — so it has to be checkable by hand. */
+interface ItemSource {
+  file?:   string;
+  page?:   number | null;
+  symbol?: string;
+  count?:  number | null;
+}
+
+/** One row of the drawing's own key, and whether it denotes an Eaton product. */
+interface LegendEntry {
+  symbol?:      string;
+  description?: string;
+  family?:      string;
+  cat_no?:      string;
+  is_eaton?:    boolean;
+  why?:         string;
+  page?:        number | null;
+  file?:        string;
+}
 
 interface PricedItem {
   ref:            string;
@@ -20,6 +44,7 @@ interface PricedItem {
   match_type?:    'exact' | 'fuzzy' | 'description' | '';
   original_input?: string;
   search_note?:   string;
+  sources?:       ItemSource[];
 }
 
 interface VisualCandidate {
@@ -44,6 +69,7 @@ interface PriceResult {
   extracted_count: number;
   candidates?:     VisualCandidate[];
   inputs?:         { has_text: boolean; pdf_count: number; image_count: number; qty_hint: number };
+  legend?:         LegendEntry[];
   error?:          string;
 }
 
@@ -163,12 +189,70 @@ function ItemMenu({
   );
 }
 
-function buildEmailText(result: PriceResult, projectName: string): string {
+// Which issue priced these items, stated where the pricing happens. Normally a
+// quiet one-liner; it only raises its voice when the workbook on disk stopped
+// being the one this desk acknowledged, because every price shown after that
+// point came from a sheet nobody has confirmed.
+function PriceListBar({ plv, toast }: {
+  plv: PriceListVersion | null;
+  toast: (type: 'ok'|'err'|'warn', msg: string) => void;
+}) {
+  const [acking, setAcking] = useState(false);
+  if (!plv || plv.error) return null;
+
+  async function confirm() {
+    setAcking(true);
+    try {
+      const v = await acknowledgePricelist();
+      toast('ok', `Now working to ${v.label || 'this price list'}`);
+    } catch (e: any) {
+      toast('err', failed('acknowledge the price list', e));
+    } finally { setAcking(false); }
+  }
+
+  if (plv.changed) {
+    return (
+      <div className="mt-2 flex items-start gap-2 rounded-lg px-2.5 py-2 bg-amber-50 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/50">
+        <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px text-amber-600 dark:text-amber-400" />
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-200">
+            Price list changed — now {plv.label || 'a different issue'}
+          </p>
+          <p className="text-[10.5px] text-amber-700 dark:text-amber-300 mt-0.5">
+            The workbook on disk is not the issue you last confirmed. Anything quoted before now used the previous sheet.
+          </p>
+        </div>
+        <button onClick={confirm} disabled={acking}
+          className="shrink-0 text-[10.5px] font-semibold px-2 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-60 transition-colors">
+          {acking ? 'Saving…' : 'Got it'}
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <p className="mt-2 text-[10.5px] text-[var(--t3)] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+      <span>{pricelistName(plv)}</span>
+      {plv.validFrom && <span className="opacity-70">valid from {plv.validFrom}</span>}
+      {plv.rows > 0 && <span className="opacity-70">{plv.rows.toLocaleString()} parts</span>}
+      {/* The £ columns were computed at this rate; when it moves, so does every price. */}
+      {plv.exchangeRate != null && <span className="opacity-70">EUR→GBP {plv.exchangeRate}</span>}
+      {!plv.acknowledged && (
+        <button onClick={confirm} disabled={acking}
+          className="text-[10.5px] font-medium text-[var(--accent-text)] hover:underline disabled:opacity-60">
+          {acking ? 'Saving…' : 'Confirm this issue'}
+        </button>
+      )}
+    </p>
+  );
+}
+
+function buildEmailText(result: PriceResult, projectName: string, plv: PriceListVersion | null): string {
   const matched = result.items.filter(i => i.matched);
   const lines = [
     `Project: ${projectName || 'Emergency Lighting — Material Schedule'}`,
     `Date: ${new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'long', year: 'numeric' })}`,
-    `Price list: Eaton EL Global Price List Jul 2026`,
+    `Price list: ${pricelistName(plv)}${plv?.validFrom ? ` (valid from ${plv.validFrom})` : ''}`,
     ``,
     `MATERIAL SCHEDULE — EATON EMERGENCY LIGHTING`,
     `${'─'.repeat(70)}`,
@@ -186,7 +270,7 @@ function buildEmailText(result: PriceResult, projectName: string): string {
 
   lines.push(
     '',
-    'Prices shown are Net Trade Price (NTP) from Eaton EL Global Price List Jul 2026.',
+    pricelistFooter(plv),
     'All prices ex VAT. Subject to confirmation.',
   );
 
@@ -224,7 +308,144 @@ function ProgressRow({ idx, item, active }: { idx: number; item: PricedItem; act
   );
 }
 
+/**
+ * Subject with the reply/forward prefixes, the [EXTERNAL] noise and any trailing
+ * chunk counter stripped — what identifies one enquiry. Kept in step with the
+ * copy in Inbox.tsx; both were checked against real subjects off the UK box:
+ * 'Re: [EXTERNAL] FW: 8204 - em lighting - Amazon Exeter' (4 emails, 3 senders)
+ * and 'Bristol Hippodrome 2 of 2' / '3 of 3' (the sender does not even keep the
+ * total straight). Prefixes interleave with the brackets, so ONE loop over both.
+ */
+function baseSubject(s: string) {
+  let t = String(s || '').trim();
+  for (;;) {
+    const next = t
+      .replace(/^\s*(re|fw|fwd|aw|tr|vs)\s*(\[\d+\])?\s*:\s*/i, '')
+      .replace(/^\s*\[[^\]]{1,20}\]\s*/, '');
+    if (next === t) break;
+    t = next;
+  }
+  t = t
+    .replace(/[\s\-–—(\[]*\b(part|pt)?\s*\d{1,3}\s*(of|\/)\s*\d{1,3}\s*[)\]]*\s*$/i, '')
+    .replace(/[\s\-–—(\[]*\b(part|pt)\s*\d{1,3}\s*[)\]]*\s*$/i, '');
+  return t.trim().toLowerCase();
+}
+
+interface MailRow {
+  entryId: string; subject: string; sender: string;
+  attachments?: Array<{ index: number; name: string; isPdf?: boolean }>;
+}
+
+/**
+ * WHERE THE QUANTITIES CAME FROM.
+ *
+ * A schematic carries no parts list. It carries a key — on the Bristol
+ * Hippodrome drawings a BLUE FILLED CIRCLE and a BLUE RECTANGLE were the Eaton
+ * items — and then hundreds of those symbols over the floor plan. The quantity
+ * is how many symbols are drawn, and that number appears nowhere else in the
+ * document, so it cannot be checked against anything but the drawing itself.
+ * This panel is what makes that possible: every material, the symbol it was read
+ * from, the drawing and page it was counted on, and the count.
+ *
+ * Not every PDF has a legend (a BOM has none), so this renders nothing at all
+ * rather than an empty frame when there is nothing to say.
+ */
+function ReadFromDrawings({ result }: { result: PriceResult }) {
+  const legend = result.legend || [];
+  const counted = (result.items || []).filter(i => (i.sources || []).length > 0);
+  if (legend.length === 0 && counted.length === 0) return null;
+
+  const eaton = legend.filter(l => l.is_eaton);
+  const other = legend.filter(l => !l.is_eaton);
+  const place = (s: ItemSource) =>
+    [s.file, s.page != null ? `p${s.page}` : ''].filter(Boolean).join(' \u00b7 ') || 'the upload';
+
+  return (
+    <Card>
+      <CardTitle
+        title="Read from the drawings"
+        sub="Which symbol each quantity was counted from, and where — check these against the drawing before quoting."
+      />
+
+      {eaton.length > 0 && (
+        <div className="mb-3">
+          <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1.5">
+            Legend — {plural(eaton.length, 'Eaton symbol')}
+          </p>
+          <div className="space-y-1.5">
+            {eaton.map((l, i) => (
+              <div key={i} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-[var(--s2)] ring-1 ring-inset ring-[var(--line-2)]">
+                <span className="shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
+                  {l.symbol || 'symbol'}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12px] text-[var(--t1)]">{l.description || '(no text)'}</span>
+                  {(l.why || l.family) && (
+                    <span className="block text-[10.5px] text-[var(--t3)]">{l.why || l.family}</span>
+                  )}
+                </span>
+                <span className="shrink-0 text-[10.5px] text-[var(--t3)]">
+                  {[l.file, l.page != null ? `p${l.page}` : ''].filter(Boolean).join(' \u00b7 ')}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {counted.length > 0 && (
+        <div className="overflow-x-auto vec-scroll">
+          <table className="w-full text-[12px]">
+            <thead>
+              <tr className="text-[10.5px] uppercase tracking-wide text-[var(--t3)] text-left">
+                <th className="font-medium pb-1.5 pr-3">Material</th>
+                <th className="font-medium pb-1.5 pr-3">Read from</th>
+                <th className="font-medium pb-1.5 pr-3">Where</th>
+                <th className="font-medium pb-1.5 text-right">Qty</th>
+              </tr>
+            </thead>
+            <tbody>
+              {counted.map((item, idx) =>
+                (item.sources || []).map((src, j) => (
+                  <tr key={`${idx}_${j}`} className="border-t border-[var(--line)] align-top">
+                    <td className="py-1.5 pr-3">
+                      {j === 0 ? (
+                        <>
+                          <span className="font-mono text-[11.5px] text-[var(--t1)]">{item.cat_no || '—'}</span>
+                          <span className="block text-[10.5px] text-[var(--t3)] truncate max-w-[280px]">{item.description}</span>
+                        </>
+                      ) : (
+                        <span className="text-[10.5px] text-[var(--t4)]">↳</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-3 text-[11px] text-[var(--t2)]">{src.symbol || '—'}</td>
+                    <td className="py-1.5 pr-3 text-[11px] text-[var(--t3)]">{place(src)}</td>
+                    <td className="py-1.5 text-right tabular-nums text-[var(--t1)]">
+                      {src.count != null ? src.count : (item.sources || []).length === 1 ? item.qty : '—'}
+                    </td>
+                  </tr>
+                )),
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {other.length > 0 && (
+        <p className="mt-3 text-[10.5px] text-[var(--t3)] leading-relaxed">
+          {plural(other.length, 'other legend symbol')} read and left out as not Eaton:{' '}
+          {other.map(l => l.symbol || l.description).filter(Boolean).slice(0, 6).join(', ')}
+          {other.length > 6 ? '…' : ''}
+        </p>
+      )}
+    </Card>
+  );
+}
+
 export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg: string) => void }) {
+  // The issue on disk — named in the table header, the footer and the copied
+  // email, so none of those can drift from what actually priced the items.
+  const plv = usePricelistVersion();
   const [text, setText]                     = useState('');
   const [attachments, setAttachments]       = useState<Attachment[]>([]);
   const [loading, setLoading]               = useState(false);
@@ -254,12 +475,22 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
 
   const addFiles = useCallback((files: File[] | FileList) => {
     const newAttachments: Attachment[] = [];
+    // Name+size already on the list means this exact file is already queued.
+    // Since the enquiry picker landed there are three ways in — a drop, the
+    // hand-off from an email, and folding a sibling email in — and the same
+    // drawing reaching the pricer twice does not just clutter the chips: it is
+    // read twice, so every line on it lands in the schedule at double quantity.
+    const seen = new Set(attachments.map(a => `${a.name}:${a.size}`));
+    let dupes = 0;
     for (const f of Array.from(files)) {
       const kind = classifyAttachment(f);
       if (!kind) {
         toast('warn', `${f.name} was skipped — only PDF, image, Excel and CSV files can be priced`);
         continue;
       }
+      const sig = `${f.name}:${f.size}`;
+      if (seen.has(sig)) { dupes++; continue; }
+      seen.add(sig);
       const att: Attachment = {
         id:   `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         file: f,
@@ -275,7 +506,104 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
     if (newAttachments.length > 0) {
       setAttachments(prev => [...prev, ...newAttachments]);
     }
-  }, [toast]);
+    if (dupes) {
+      toast('warn', `${plural(dupes, 'file')} already on the list — not added twice`);
+    }
+  }, [toast, attachments]);
+
+  // ── Arriving from the Inbox ────────────────────────────────────────────────
+  // "Open in EL Pricer" on an email hands the detected list and the attachments
+  // across as ordinary Files, so they land here exactly as a drop would. The tab
+  // stays mounted once visited, so both cases have to be covered: a hand-off
+  // waiting when this first mounts, and one arriving while it is already open.
+  const [handoffFrom, setHandoffFrom] = useState<string | null>(null);
+  // ── The rest of the enquiry ───────────────────────────────────────────────
+  // Moved here from the inline Inbox panel: picking among several emails needs
+  // room, and that panel is 288px tall. Loaded lazily — the mailbox is only read
+  // when an email actually arrives from the Inbox, never on a cold page.
+  const [origin, setOrigin]       = useState<{ entryId: string; subject: string; storeId: string } | null>(null);
+  const [mail, setMail]           = useState<MailRow[]>([]);
+  const [mailBusy, setMailBusy]   = useState(false);
+  const [addedMail, setAddedMail] = useState<Set<string>>(new Set());
+  const [showAllMail, setShowAllMail] = useState(false);
+  const applyHandoff = useCallback((h: PricerHandoff) => {
+    if (h.text.trim()) setText(h.text);
+    if (h.files.length) addFiles(h.files);
+    setHandoffFrom(h.source || 'Outlook email');
+    setOrigin(h.origin || null);
+    setAddedMail(new Set());
+    setShowAllMail(false);
+    // The email is the new subject of the page — don't leave the previous run's
+    // table sitting above it looking like this email's result.
+    setResult(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addFiles]);
+
+  useEffect(() => {
+    const waiting = takePricerHandoff();
+    if (waiting) applyHandoff(waiting);
+    return onPricerHandoff(applyHandoff);
+  }, [applyHandoff]);
+
+  // Pull the mailbox once an email has arrived, so the other chunks of the same
+  // enquiry can be offered. Failure is silent: this is an extra, and the page
+  // has to stay usable with no Outlook at all.
+  useEffect(() => {
+    if (!origin) { setMail([]); return; }
+    let live = true;
+    setMailBusy(true);
+    // The email's OWN mailbox. The quotes come through the shared
+    // UKQuoteFactoryEL store, and reading 'default' here returns the personal
+    // inbox — no siblings, an empty picker, and nothing to say why.
+    api.outlookEmails(origin.storeId || 'default', 60)
+      .then(r => { if (live) setMail((r.emails || []) as MailRow[]); })
+      .catch(() => { /* no Outlook, or it is busy — the picker just stays empty */ })
+      .finally(() => { if (live) setMailBusy(false); });
+    return () => { live = false; };
+  }, [origin]);
+
+  const priceableAtt = (a: { name: string }) =>
+    /\.(pdf|png|jpe?g|gif|bmp|webp|tiff?|xlsx?|xlsm|csv)$/i.test(a.name || '');
+
+  const { relatedMail, otherMail } = React.useMemo(() => {
+    if (!origin) return { relatedMail: [] as MailRow[], otherMail: [] as MailRow[] };
+    const mine = baseSubject(origin.subject);
+    const rel: MailRow[] = [], oth: MailRow[] = [];
+    for (const e of mail) {
+      if (e.entryId === origin.entryId) continue;
+      if (!(e.attachments || []).some(priceableAtt)) continue;
+      // Subject only. Matching the sender as well was tried in the Inbox panel
+      // and is useless here: quotes arrive through shared mailboxes, so it
+      // offered seven unrelated emails on the first case it saw.
+      if (!!mine && baseSubject(e.subject) === mine) rel.push(e); else oth.push(e);
+    }
+    return { relatedMail: rel, otherMail: oth };
+  }, [mail, origin]);
+
+  const shownMail = showAllMail ? [...relatedMail, ...otherMail] : relatedMail;
+
+  /** Fold another email's attachments into this run, as ordinary Files. */
+  async function addFromEmail(e: MailRow) {
+    if (addedMail.has(e.entryId)) return;
+    setAddedMail(prev => new Set(prev).add(e.entryId));
+    const wanted = (e.attachments || []).filter(priceableAtt);
+    const got: File[] = [];
+    for (const a of wanted) {
+      try {
+        const resp = await fetch(`/api/outlook/attachment-view/${encodeURIComponent(e.entryId)}/${a.index}`);
+        if (!resp.ok) throw new Error(String(resp.status));
+        const blob = await resp.blob();
+        got.push(new File([blob], a.name, { type: blob.type || 'application/octet-stream' }));
+      } catch { /* one bad attachment must not lose the others */ }
+    }
+    if (got.length) {
+      addFiles(got);
+      toast('ok', `Added ${plural(got.length, 'file')} from \u201c${e.subject}\u201d`);
+    } else {
+      setAddedMail(prev => { const n = new Set(prev); n.delete(e.entryId); return n; });
+      toast('warn', `Nothing could be read from \u201c${e.subject}\u201d`);
+    }
+  }
 
   // Global paste — capture images from clipboard into the workspace
   useEffect(() => {
@@ -394,6 +722,29 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
         const decoder = new TextDecoder();
         let buf = '';
         let finalData: PriceResult | null = null;
+        // The same items that go into `progress` for the live read-out, kept
+        // here as a plain array too. The read-out only renders while `streaming`
+        // is true, so without this the moment the stream ends every priced line
+        // on screen is thrown away — which is what "it priced everything, then
+        // it all disappeared" is. State cannot be read back inside this loop.
+        const seen: PricedItem[] = [];
+        const handle = (ev: any) => {
+          if (ev.t === 'start') {
+            setProgressTotal(ev.total || 0);
+            setProgress([]);
+            seen.length = 0;
+            setPhase(ev.total ? 'Reading items…' : 'Searching…');
+          } else if (ev.t === 'item' || ev.t === 'update') {
+            seen[ev.i] = ev.item;
+            setProgress(prev => { const next = prev.slice(); next[ev.i] = ev.item; return next; });
+          } else if (ev.t === 'phase') {
+            setPhase(ev.label || '');
+          } else if (ev.t === 'done') {
+            finalData = ev as PriceResult;
+          } else if (ev.t === 'error') {
+            throw new Error(ev.error || 'Stream error');
+          }
+        };
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -405,23 +756,32 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
             if (!line) continue;
             let ev: any;
             try { ev = JSON.parse(line); } catch { continue; }
-            if (ev.t === 'start') {
-              setProgressTotal(ev.total || 0);
-              setProgress([]);
-              setPhase(ev.total ? 'Reading items…' : 'Searching…');
-            } else if (ev.t === 'item' || ev.t === 'update') {
-              setProgress(prev => { const next = prev.slice(); next[ev.i] = ev.item; return next; });
-            } else if (ev.t === 'phase') {
-              setPhase(ev.label || '');
-            } else if (ev.t === 'done') {
-              finalData = ev as PriceResult;
-            } else if (ev.t === 'error') {
-              throw new Error(ev.error || 'Stream error');
-            }
+            handle(ev);
           }
         }
-        if (finalData) finalizeResult(finalData);
-        else toast('warn', 'No items were read from that input — try again');
+        // Whatever is left without a closing newline is still a valid event —
+        // parse it rather than dropping the run's last word on the floor.
+        if (buf.trim()) {
+          try { handle(JSON.parse(buf.trim())); } catch { /* genuinely partial */ }
+        }
+        if (finalData) { finalizeResult(finalData); return; }
+
+        // No 'done' — the reader ended early (the pricer exited, the connection
+        // dropped, the dev server hot-reloaded). KEEP what was already priced:
+        // it is on screen, the user watched it arrive, and telling them to run
+        // the whole thing again throws away real work and real API calls.
+        const kept = seen.filter(Boolean);
+        if (kept.length) {
+          finalizeResult({
+            items:     kept,
+            unmatched: [],
+            total_ntp: kept.filter(i => i.matched).reduce((s, i) => s + (i.line_ntp || 0), 0),
+            source:    'partial',
+          } as PriceResult);
+          toast('warn', `The run ended before it finished — kept the ${plural(kept.length, 'item')} that priced`);
+        } else {
+          toast('warn', 'No items were read from that input — try again');
+        }
       });
     } catch (e: any) {
       if (!isCancel(e)) toast('err', failed('price this list', e));
@@ -433,7 +793,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
 
   function copyEmail() {
     if (!result) return;
-    navigator.clipboard.writeText(buildEmailText(result, projectName));
+    navigator.clipboard.writeText(buildEmailText(result, projectName, plv));
     toast('ok', `Email text copied to the clipboard — ${plural(result.items.filter(i => i.matched).length, 'priced item')}`);
   }
 
@@ -519,12 +879,81 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           />
           {(text || attachments.length > 0 || result) && (
             <button
-              onClick={clearAll}
+              onClick={() => { setHandoffFrom(null); clearAll(); }}
               className="text-[11.5px] text-[var(--t3)] hover:text-red-500 inline-flex items-center gap-1 shrink-0">
               <X className="w-3.5 h-3.5" /> Clear
             </button>
           )}
         </div>
+
+        {/* Says whose email this is, so a page that filled itself in is not
+            mistaken for one somebody left open. */}
+        {handoffFrom && (
+          <div className="mb-2.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent-line)] text-[11px] text-[var(--accent-text)]">
+            <Paperclip className="w-3 h-3 shrink-0" />
+            <span className="truncate">From the Inbox — {handoffFrom}</span>
+          </div>
+        )}
+
+        {/* ── The rest of this enquiry ──────────────────────────────────────
+            An enquiry arrives in chunks and each was being priced on its own,
+            leaving part-schedules to add up by hand. Adding one here drops its
+            attachments straight into the workspace above, so the whole thing is
+            priced as ONE schedule with one total. */}
+        {origin && (relatedMail.length > 0 || otherMail.length > 0 || mailBusy) && (
+          <div className="mb-2.5 rounded-xl ring-1 ring-inset ring-[var(--line-2)] bg-[var(--s2)]">
+            <div className="flex items-center gap-2 px-3 py-2">
+              <p className="text-[11.5px] font-semibold text-[var(--t2)] flex-1 min-w-0 truncate">
+                {mailBusy
+                  ? 'Looking for the rest of this enquiry…'
+                  : relatedMail.length > 0
+                    ? `${plural(relatedMail.length, 'more email')} in this enquiry`
+                    : 'Add files from another email'}
+              </p>
+              {mailBusy && <Loader2 className="w-3 h-3 animate-spin text-[var(--t3)] shrink-0" />}
+              {!mailBusy && otherMail.length > 0 && (
+                <button
+                  onClick={() => setShowAllMail(v => !v)}
+                  className="shrink-0 text-[11px] font-medium text-[var(--t3)] hover:text-[var(--accent-text)] transition-colors">
+                  {showAllMail ? 'Just this enquiry' : 'Every email'}
+                </button>
+              )}
+            </div>
+            {!mailBusy && (
+              <div className="max-h-[180px] overflow-y-auto vec-scroll border-t border-[var(--line)]">
+                {shownMail.length === 0 && (
+                  <p className="px-3 py-2.5 text-[11px] text-[var(--t3)]">
+                    Nothing else matches this subject — “Every email” lists the rest.
+                  </p>
+                )}
+                {shownMail.map(e => {
+                  const n  = (e.attachments || []).filter(priceableAtt).length;
+                  const on = addedMail.has(e.entryId);
+                  return (
+                    <button aria-label={`Add ${e.subject}`}
+                      key={e.entryId}
+                      onClick={() => addFromEmail(e)}
+                      disabled={on || loading}
+                      title={`${e.subject} — ${e.sender}`}
+                      className={cn(
+                        'w-full flex items-center gap-2.5 px-3 py-2 text-left border-b border-[var(--line)] last:border-0 transition-colors',
+                        on ? 'bg-emerald-50/60 dark:bg-emerald-900/15' : 'hover:bg-[var(--s3)]',
+                      )}>
+                      {on
+                        ? <Check className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
+                        : <Plus className="w-3.5 h-3.5 shrink-0 text-[var(--t4)]" />}
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[11.5px] text-[var(--t1)] truncate">{e.subject || '(no subject)'}</span>
+                        <span className="block text-[10.5px] text-[var(--t3)] truncate">{e.sender} · {plural(n, 'file')}</span>
+                      </span>
+                      <span className="shrink-0 text-[10.5px] text-[var(--t3)]">{on ? 'added' : 'add'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Unified drop / paste / type workspace */}
         <div
@@ -623,6 +1052,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           <Sparkles className="w-3 h-3" />
           Uses your Gemini API key configured in Settings. Web search runs automatically for descriptions and uncertain matches.
         </p>
+        <PriceListBar plv={plv} toast={toast} />
       </Card>
       </div>
 
@@ -726,7 +1156,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
         <Card>
           <div className="flex items-center justify-between mb-4">
             <div>
-              <CardTitle title="Material Schedule" sub="Eaton EL Global Price List — Jul 2026 NTP" />
+              <CardTitle title="Material Schedule" sub={`${pricelistName(plv)} NTP`} />
             </div>
             <div className="flex items-center gap-2">
               <input
@@ -810,7 +1240,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           </div>
 
           <p className="mt-3 text-[10.5px] text-[var(--t3)]">
-            Prices are Net Trade Price (NTP) from Eaton EL Global Price List Jul 2026. All prices ex VAT. Subject to confirmation.
+            {pricelistFooter(plv)} All prices ex VAT. Subject to confirmation.
           </p>
 
           {unmatched.length > 0 && (
@@ -857,6 +1287,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
       )}
 
       {/* Error */}
+      {/* How the quantities were arrived at — under the schedule, because it is
+          what you check the schedule against. Renders nothing when the upload
+          carried no legend and no per-item provenance (a pasted list, a BOM). */}
+      {result && !result.error && <ReadFromDrawings result={result} />}
+
       {result?.error && (
         <Card>
           <div className="flex items-center gap-2 text-red-600 dark:text-red-400">

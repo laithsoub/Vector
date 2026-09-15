@@ -54,6 +54,48 @@ def find_inbox(root_folder):
 
 _IMG_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.tif', '.tiff')
 
+
+def _write_thumb(src, max_px):
+    """Downscale an image attachment next to itself; return the path, or '' if
+    it isn't an image we can read.
+
+    The Inbox draws a thumbnail on every image chip, and the alternative was
+    shipping the full attachment to the browser to be drawn at 40px — a phone
+    photo is several MB and decodes to ~12 MP for no reason. PyMuPDF is already
+    a hard requirement (quote_export.py), so this costs no new dependency, and
+    it happens in the process that is being spawned to fetch the file anyway.
+    """
+    if max_px <= 0 or os.path.splitext(src)[1].lower() not in _IMG_EXTS:
+        return ''
+    try:
+        import fitz
+        pix = fitz.Pixmap(src)
+        # shrink(1) halves both dimensions and is the only cheap resampler
+        # PyMuPDF exposes. Stop at 2x the target so the chip stays crisp on a
+        # HiDPI screen without decoding the original.
+        while max(pix.width, pix.height) > max_px * 2:
+            pix.shrink(1)
+        if pix.alpha:                       # JPEG carries no alpha channel
+            pix = fitz.Pixmap(pix, 0)
+        if pix.colorspace and pix.colorspace.name != 'DeviceRGB':
+            pix = fitz.Pixmap(fitz.csRGB, pix)
+        out = src + f'.thumb{max_px}.jpg'
+        pix.save(out, 'jpeg')
+        return out
+    except Exception:
+        # Unreadable, corrupt, or a format MuPDF declines — the caller falls
+        # back to serving the original, so a failed thumbnail is never fatal.
+        return ''
+
+
+def _att_result(path, name, size, thumb_px=0):
+    """The JSON every backend's get-attachment returns."""
+    out = {'path': path, 'name': name, 'size': size}
+    thumb = _write_thumb(path, thumb_px)
+    if thumb:
+        out['thumbPath'] = thumb
+    return out
+
 # MAPI property tags: content-id (inline reference) + hidden-attachment flag.
 _PR_ATTACH_CONTENT_ID = "http://schemas.microsoft.com/mapi/proptag/0x3712001F"
 _PR_ATTACHMENT_HIDDEN = "http://schemas.microsoft.com/mapi/proptag/0x7FFE000B"
@@ -1951,7 +1993,7 @@ def _imap_action(args, cfg):
             safe = fname.replace('/', '_').replace('\\', '_')
             dest_path = os.path.join(args.dest, f'att_{abs(hash(args.id)) % 100000}_{args.index}_{safe}')
             open(dest_path, 'wb').write(content)
-            print(json.dumps({'path': dest_path, 'name': fname, 'size': len(content)}))
+            print(json.dumps(_att_result(dest_path, fname, len(content), args.thumb)))
         except Exception as e:
             print(json.dumps({'error': str(e)}))
         return
@@ -2269,6 +2311,9 @@ def main():
     parser.add_argument('--id',         default='')
     parser.add_argument('--dest',       default='')
     parser.add_argument('--index',      type=int, default=0)
+    # get-attachment: also write a downscaled copy this many pixels on its
+    # longest side, for the Inbox attachment chips.
+    parser.add_argument('--thumb',      type=int, default=0)
     parser.add_argument('--body',       default='')
     # Read --body from stdin instead. Anything secret (the IMAP password) has to
     # come this way: on Windows another process running as the same user can read
@@ -3906,7 +3951,7 @@ def _win32_action(args):
             safe  = att.FileName.replace('/', '_').replace('\\', '_')
             dest_path = os.path.join(args.dest, f'att_{abs(hash(args.id)) % 100000}_{args.index}_{safe}')
             att.SaveAsFile(dest_path)
-            print(json.dumps({'path': dest_path, 'name': att.FileName, 'size': att.Size}))
+            print(json.dumps(_att_result(dest_path, att.FileName, att.Size, args.thumb)))
         except Exception as e:
             print(json.dumps({'error': str(e)}))
         return
@@ -4289,7 +4334,7 @@ def _graph_action(args, token):
             dest_path = os.path.join(args.dest,
                 f'att_{abs(hash(args.id)) % 100000}_{args.index}_{safe}')
             open(dest_path, 'wb').write(content)
-            print(json.dumps({'path': dest_path, 'name': att['name'], 'size': att['size']}))
+            print(json.dumps(_att_result(dest_path, att['name'], att['size'], args.thumb)))
         except Exception as e:
             print(json.dumps({'error': str(e)}))
         return

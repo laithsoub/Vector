@@ -24,6 +24,7 @@ Verdicts
 import argparse
 import csv
 import hashlib
+import json
 import os
 import re
 import sys
@@ -506,6 +507,10 @@ def main():
     ap.add_argument("--out", default=os.path.join(_HERE, "dq_audit.csv"))
     ap.add_argument("--max-emails", type=int, default=0, help="stop after N sent items (0 = no cap)")
     ap.add_argument("--verbose", action="store_true")
+    # Machine-readable copy for the app's filing review. Carries the local path of
+    # each saved attachment so an approved item can be filed without re-reading
+    # Outlook, and the folder candidates so the reviewer sees where it would go.
+    ap.add_argument("--json", default="", help="also write the rows as JSON to this path")
     args = ap.parse_args()
 
     print(f"[*] READ-ONLY audit — last {args.months} month(s). Nothing will be created or uploaded.")
@@ -549,7 +554,7 @@ def main():
     deduped = sorted(uniq.values(), key=lambda r: r["sent"], reverse=True)
     print(f"    {len(deduped)} distinct quote revision(s) after dedupe")
 
-    rows, tally = [], {}
+    rows, tally, json_rows = [], {}, []
     for i, rec in enumerate(deduped, 1):
         folders, bridged = find_folders(rec, by_sf, by_works, bridge)
         if not folders:
@@ -574,6 +579,18 @@ def main():
             "message_in_folder": "yes" if msg else ("no" if folders else ""),
             "attachment": rec["file"], "subject": rec["subject"][:120], "detail": detail,
         })
+        if args.json:
+            # Everything the CSV row has, plus what a writer would need: the
+            # saved PDF, the code suffix that distinguishes revisions, and the
+            # folders as a list rather than a joined string.
+            json_rows.append({
+                **rows[-1],
+                "id": i,
+                "folder_list": folders,
+                "suffix": rec.get("suffix", ""),
+                "local_path": rec.get("path", ""),
+                "subject_full": rec["subject"],
+            })
         split = f"  [{len(folders)} folders]" if len(folders) > 1 else ""
         print(f"  [{i}/{len(deduped)}] {verdict:<16} {rec['rev']:<4} "
               f"{rec['code'] or rec['sfid'] or rec['works']:<20} {rec['file'][:44]}{split}")
@@ -585,6 +602,18 @@ def main():
                             "subject", "detail"])
         w.writeheader()
         w.writerows(rows)
+
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as fh:
+            json.dump({
+                "generatedAt": datetime.now().isoformat(timespec="seconds"),
+                "months": args.months,
+                "tmpdir": tmpdir,
+                "seen": seen, "quotes": len(quotes), "skipped": skipped,
+                "tally": tally,
+                "rows": json_rows,
+            }, fh, ensure_ascii=False, indent=1)
+        print(f"[OK] {len(json_rows)} row(s) → {args.json}")
 
     print("\n=== SUMMARY ===")
     for k in sorted(tally, key=lambda x: -tally[x]):

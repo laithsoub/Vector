@@ -476,6 +476,22 @@ export function SettingsPage({
                  'Who a sub-target margin is mailed to. A display name ("Poulose, Kiran") is resolved against the address book. The mail is always drafted, never sent')}
           {field('lsd_approver_cc',  'Approval cc',
                  'Copied on every approval mail — usually the pricing analyst')}
+          <Field label="Keep tabs alive"
+                 hint="One URL per line. Vector reloads each of these in a minimized debug-rail Edge on a timer, so CPQ and the OneDrive pages are still signed in when a fetch runs. Blank = eaton.bigmachines.com + the QuotationFactoryEMEA site.">
+            <textarea rows={4} spellCheck={false}
+              value={(form!.lsd_keepalive_urls as string) ?? ''}
+              onChange={e => setForm(f => f ? { ...f, lsd_keepalive_urls: e.target.value } : f)}
+              className="mono w-full px-[11px] py-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none transition-colors" />
+          </Field>
+          {field('lsd_keepalive_min', 'Keep-alive every (min)',
+                 'Minutes between background reloads. Blank = 10, minimum 2. Set the toggle below off to stop the sweeps entirely')}
+          <Field label="Keep-alive timer"
+                 hint="Off stops the background reloads; the tabs stay as they are and a fetch may hit an expired session.">
+            <Button tone="outline" size="sm"
+              onClick={() => setForm(f => f ? { ...f, lsd_keepalive: f.lsd_keepalive === false } : f)}>
+              {form!.lsd_keepalive === false ? 'Off' : 'On'}
+            </Button>
+          </Field>
         </div>
 
         {/* Language. Scope is stated because it is real: the translations cover the

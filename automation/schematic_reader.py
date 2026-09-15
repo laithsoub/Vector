@@ -20,7 +20,7 @@ Output: JSON to stdout
     "extracted_count": <n>
   }
 """
-import sys, json, os, re, base64, argparse, ssl, math
+import sys, json, os, re, base64, argparse, ssl, math, hashlib, datetime
 import urllib.request, urllib.error
 
 # Corporate SSL inspection proxies: don't verify certificates (same as Node.js server)
@@ -82,6 +82,70 @@ def load_config():
         return json.loads(open(CONFIG_PATH, encoding='utf-8').read())
     except Exception:
         return {}
+
+
+def pricelist_version():
+    """Identify the price list currently on disk.
+
+    Every price this app quotes comes from one specific issue of the EL global
+    price list, and that issue was previously only recorded as a sentence
+    hardcoded in a prompt ("July 2026, valid from 1 July 2026"). When the file
+    is replaced, that sentence keeps claiming the old date and nothing anywhere
+    notices — so a quote can silently go out on superseded pricing.
+
+    The workbook states its own identity in row 1, so read it from there rather
+    than repeating it in the code: the label, the currency, and the EUR→GBP rate
+    the £ columns were computed with. `fingerprint` is content-derived, so it
+    changes exactly when the file does and can be stored alongside a quote to
+    prove which issue priced it.
+    """
+    info = {
+        'label': '', 'validFrom': '', 'currency': '', 'exchangeRate': None,
+        'fingerprint': '', 'fileSize': 0, 'modified': '', 'rows': 0, 'error': '',
+    }
+    try:
+        st = os.stat(PRICELIST)
+        info['fileSize'] = st.st_size
+        info['modified'] = datetime.datetime.fromtimestamp(st.st_mtime).isoformat(timespec='seconds')
+        h = hashlib.sha256()
+        with open(PRICELIST, 'rb') as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b''):
+                h.update(chunk)
+        info['fingerprint'] = h.hexdigest()[:16]
+    except Exception as e:
+        info['error'] = str(e)
+        return info
+
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(PRICELIST, read_only=True, data_only=True)
+        ws = wb['Price_DB']
+        info['rows'] = max(0, (ws.max_row or 0) - 4)      # 4 header rows
+        head = next(ws.iter_rows(min_row=1, max_row=1, max_col=16, values_only=True), ())
+        cells = [str(c).strip() for c in head if c not in (None, '')]
+        for c in cells:
+            flat = ' '.join(c.split())
+            # "July 2026 Price list / valid from 1st July 2026"
+            if re.search(r'price\s*list', flat, re.I) and re.search(r'\b20\d\d\b', flat):
+                if not info['label']:
+                    info['label'] = flat.split('valid from')[0].strip().rstrip('-–—,') or flat
+                m = re.search(r'valid\s+from\s+(.+)$', flat, re.I)
+                if m:
+                    info['validFrom'] = m.group(1).strip()
+            elif re.match(r'^currency\b', flat, re.I):
+                info['currency'] = flat.split(None, 1)[1].strip() if ' ' in flat else ''
+        # The exchange rate sits in the cell after the "Exchange rate" caption.
+        for i, c in enumerate(head):
+            if c is not None and re.match(r'^\s*exchange\s+rate', str(c), re.I):
+                for nxt in head[i + 1:]:
+                    if isinstance(nxt, (int, float)):
+                        info['exchangeRate'] = float(nxt)
+                        break
+                break
+        wb.close()
+    except Exception as e:
+        info['error'] = str(e)
+    return info
 
 
 def load_pricelist():
@@ -508,6 +572,36 @@ def parse_gemini_items(text: str) -> list[dict]:
     if isinstance(parsed, dict):
         parsed = parsed.get('items') or parsed.get('data') or []
     return parsed if isinstance(parsed, list) else []
+
+
+def parse_gemini_reading(text: str) -> tuple[list, list]:
+    """(items, legend) out of a reply that may be the new object shape or the
+    bare array the model still returns on a document with no legend at all."""
+    cleaned = text.strip()
+    cleaned = re.sub(r'^```(?:json)?\s*', '', cleaned, flags=re.I)
+    cleaned = re.sub(r'\s*```$', '', cleaned)
+    parsed = None
+    try:
+        parsed = json.loads(cleaned)
+    except Exception:
+        for opener, closer in (('{', '}'), ('[', ']')):
+            a, b = cleaned.find(opener), cleaned.rfind(closer)
+            if a != -1 and b > a:
+                try:
+                    parsed = json.loads(cleaned[a:b + 1])
+                    break
+                except Exception:
+                    continue
+    if parsed is None:
+        return [], []
+    if isinstance(parsed, list):
+        return [x for x in parsed if isinstance(x, dict)], []
+    if isinstance(parsed, dict):
+        items = parsed.get('items') or parsed.get('data') or []
+        legend = parsed.get('legend') or []
+        return ([x for x in items if isinstance(x, dict)],
+                [x for x in legend if isinstance(x, dict)])
+    return [], []
 
 
 def extract_from_image(image_path: str, api_key: str) -> list[dict]:
@@ -1201,7 +1295,30 @@ def looks_like_cat_no(text: str) -> bool:
 
 
 def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
-    """Use Gemini vision to extract EL items from a PDF schematic."""
+    """Items only — the shape `--mode pdf` and the older callers expect."""
+    return extract_from_pdf_full(pdf_path, api_key).get('items', [])
+
+
+def extract_from_pdf_full(pdf_path: str, api_key: str, source_name: str = '') -> dict:
+    """Read a PDF schematic: the items, AND the legend that says which symbols on
+    the drawing are Eaton, AND where each item was counted.
+
+    Returns {'items': [...], 'legend': [...]}.
+
+    THE LEGEND IS THE POINT ON A DRAWING. A schematic does not carry a parts list
+    — it carries a key ("blue filled circle = Eaton emergency luminaire, blue
+    rectangle = Eaton exit sign", the Bristol Hippodrome drawings) and then
+    hundreds of those symbols scattered over the floor plan. The quantity is how
+    many times the symbol appears, and that number exists nowhere else in the
+    document. Reading the key without counting the symbols gives a schedule of
+    1-off items; counting without the key prices somebody else's fittings.
+
+    Not every PDF has a legend, and a BOM-style PDF needs none — so the legend is
+    requested, never required, and an empty one changes nothing downstream.
+
+    Each item carries `sources`: [{file, page, symbol, count}], which is what the
+    feedback panel lists so the count can be checked against the drawing.
+    """
     sys.stderr.write(f'[pdf] extracting from {pdf_path} via Gemini\n')
 
     with open(pdf_path, 'rb') as f:
@@ -1213,8 +1330,37 @@ def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
         'Exloc, and all Cooper brands are Eaton products. ALWAYS include them.\n\n'
         'Extract EVERY emergency lighting item from this document that belongs to Eaton '
         'or any Eaton-group brand (Cooper Safety, Menvier, Ceag, Merel, Exloc, etc.).\n\n'
-        'Return ONLY a JSON array. Each item:\n'
-        '{"cat_no": "...", "description": "...", "family": "...", "qty": <number>, "ref": "..."}\n\n'
+        'Return ONLY a JSON OBJECT of this shape:\n'
+        '{"legend": [ ... ], "items": [ ... ]}\n\n'
+        'Each item:\n'
+        '{"cat_no": "...", "description": "...", "family": "...", "qty": <number>, "ref": "...",\n'
+        ' "sources": [{"page": <number>, "symbol": "...", "count": <number>}]}\n\n'
+        '-- THE LEGEND / KEY -----------------------------------------------\n'
+        'Drawings identify products by a SYMBOL explained in a legend, key or '
+        'schedule, not by a parts list. FIRST read that legend. Report every entry:\n'
+        '{"symbol": "<describe it: shape, fill, colour, any letter inside>",\n'
+        ' "description": "<the legend text, verbatim and complete>",\n'
+        ' "family": "<range/type if named>", "cat_no": "<only if the legend prints one, else empty>",\n'
+        ' "is_eaton": <true|false>, "why": "<what makes it Eaton, or not>", "page": <number>}\n\n'
+        'A legend entry is EATON when it names Eaton or an Eaton-group brand '
+        '(Cooper, Menvier, Ceag, Merel, Exloc), prints an Eaton catalogue number, '
+        'or describes an Eaton EL product type. On the Bristol Hippodrome drawings '
+        'the Eaton items were a BLUE FILLED CIRCLE (emergency luminaire) and a BLUE '
+        'RECTANGLE (exit sign) - colour and fill are how a drawing separates the '
+        'emergency fittings from the other trades\' symbols, so ALWAYS record them. '
+        'Mark anything plainly another manufacturer or non-EL with is_eaton false - '
+        'do NOT drop it, mark it.\n\n'
+        '-- COUNTING -------------------------------------------------------\n'
+        'For every legend entry with is_eaton true, COUNT how many times that symbol '
+        'appears on the drawing and emit an ITEM whose "qty" is that count. The '
+        'quantity on a plan exists NOWHERE ELSE in the document - it is how many '
+        'symbols are drawn. Count per page, list each page separately in "sources" '
+        'with the symbol counted and that page\'s count, and make "qty" their sum.\n'
+        'If a symbol cannot honestly be counted (too dense, cut off), still emit the '
+        'item, give your best estimate, and say so in that source\'s "symbol" field '
+        '(e.g. "blue filled circle - approximate, dense plan").\n'
+        'If this is a BOM or schedule rather than a plan there is no legend: return '
+        '"legend": [] and take quantities from the rows, "sources" giving the page.\n\n'
         '"family" = the RANGE / section header the row sits under, verbatim '
         '(e.g. "MICROPOINT 2 HIGH OUTPUT", "OUTDOOR WALL", "FLEXITECH EC"). '
         'Rows under DIFFERENT headers are DIFFERENT products even when their description '
@@ -1239,7 +1385,7 @@ def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
         '  include it exactly as written in cat_no (e.g. "IP65OCGS" or "I-P65-O-CG-S")\n'
         '- For i-P65, also try: IP65LED...CGS, IP65LEDCGS, IP65CGNM patterns\n\n'
         'Be EXHAUSTIVE. It is better to include a doubtful item than to miss a real one.\n'
-        'Return ONLY the JSON array, no markdown, no explanation.'
+        'Return ONLY the JSON object, no markdown, no explanation.'
     )
 
     payload = json.dumps({
@@ -1273,7 +1419,21 @@ def extract_from_pdf(pdf_path: str, api_key: str) -> list[dict]:
         text = ''.join(p.get('text', '') for p in parts_out).strip()
         sys.stderr.write(f'[pdf] finish={cand.get("finishReason","")} items_len={len(text)}\n')
 
-        return parse_gemini_items(text)
+        items, legend = parse_gemini_reading(text)
+        label = source_name or os.path.basename(pdf_path)
+        # Stamp the file onto every source here, where the filename is known. A
+        # pooled run prices several drawings at once, so "page 2" on its own does
+        # not say which drawing to go and check.
+        for it in items:
+            for src in it.get('sources') or []:
+                src.setdefault('file', label)
+            if not it.get('sources'):
+                it['sources'] = [{'file': label, 'page': None, 'symbol': '', 'count': it.get('qty')}]
+        for entry in legend:
+            entry.setdefault('file', label)
+        eaton = sum(1 for e in legend if e.get('is_eaton'))
+        sys.stderr.write(f'[pdf] legend entries={len(legend)} eaton={eaton} items={len(items)}\n')
+        return {'items': items, 'legend': legend}
 
     except urllib.error.HTTPError as e:
         body = e.read().decode()
@@ -1571,6 +1731,11 @@ def price_items(raw_items: list[dict], lookup: dict, entries: list[dict]) -> dic
         desc   = str(item.get('description', '') or '')
         # Range/section header the item sat under (e.g. "MICROPOINT 2 HIGH OUTPUT").
         fam_hint = str(item.get('family', '') or item.get('family_hint', '') or '')
+        # Where this came from: [{file, page, symbol, count}]. Carried through
+        # untouched so the feedback panel can say which drawing and which symbol
+        # produced a quantity — on a plan that number is a count of symbols and
+        # nothing in the document repeats it, so it has to be checkable.
+        sources = [x for x in (item.get('sources') or []) if isinstance(x, dict)]
 
         match, mtype = match_item_with_type(cat_no, lookup) if cat_no else (None, '')
 
@@ -1605,6 +1770,7 @@ def price_items(raw_items: list[dict], lookup: dict, entries: list[dict]) -> dic
                 'match_type':  mtype,
                 'original_input': cat_no if mtype != 'exact' else '',
                 'search_note':    reconcile_note,
+                'sources':        sources,
                 '_fam_hint':      fam_hint,
             })
         else:
@@ -1623,6 +1789,7 @@ def price_items(raw_items: list[dict], lookup: dict, entries: list[dict]) -> dic
                 'match_type':      '',
                 'original_input':  cat_no,
                 'closest_matches': closest,
+                'sources':         sources,
             })
             unmatched.append(cat_no)
 
@@ -1679,7 +1846,11 @@ def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -
     text  = str(manifest.get('text') or '').strip()
     files = manifest.get('files') or []
 
-    pdf_paths   = [str(f['path']) for f in files if f.get('kind') == 'pdf'   and os.path.exists(str(f.get('path', '')))]
+    # (path, display name) — the name is what the feedback panel shows, and it is
+    # the only thing that tells one drawing from another in a pooled run.
+    pdf_files   = [(str(f['path']), str(f.get('name') or os.path.basename(str(f['path']))))
+                   for f in files if f.get('kind') == 'pdf' and os.path.exists(str(f.get('path', '')))]
+    pdf_paths   = [p for p, _ in pdf_files]
     image_paths = [str(f['path']) for f in files if f.get('kind') == 'image' and os.path.exists(str(f.get('path', '')))]
     excel_paths = [str(f['path']) for f in files if f.get('kind') == 'excel' and os.path.exists(str(f.get('path', '')))]
 
@@ -1701,13 +1872,17 @@ def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -
         except Exception as e:
             sys.stderr.write(f'[unified] excel extract failed for {p}: {e}\n')
 
-    # 1b — PDFs
-    for p in pdf_paths:
+    # 1b — PDFs. Each drawing also hands back its legend: which symbols on it are
+    # Eaton and why. Not every PDF has one, so an empty list is normal.
+    legend: list[dict] = []
+    for p, name in pdf_files:
         if not api_key:
             sys.stderr.write('[unified] skipping PDF extraction (no Gemini key)\n')
             break
         try:
-            raw_items.extend(extract_from_pdf(p, api_key))
+            got = extract_from_pdf_full(p, api_key, name)
+            raw_items.extend(got.get('items') or [])
+            legend.extend(got.get('legend') or [])
         except Exception as e:
             sys.stderr.write(f'[unified] PDF extract failed for {p}: {e}\n')
 
@@ -1851,6 +2026,9 @@ def run_unified(manifest_path: str, lookup: dict, entries: list, api_key: str) -
     result['queries']          = queries
     result['source']           = 'unified'
     result['extracted_count']  = len(raw_items)
+    # What the drawings' own key said, and which of its symbols are Eaton. Empty
+    # on a BOM, on an image-only run, or on a plan with no legend — all normal.
+    result['legend']           = legend
     result['inputs'] = {
         'has_text':    bool(text),
         'pdf_count':   len(pdf_paths),
@@ -1980,6 +2158,7 @@ def _stream_price_items(
     raw_items: list, lookup: dict, entries: list, api_key: str,
     source: str, inputs: dict,
     allow_candidate_fallback: bool = False, cand_text: str = '', cand_images: 'list | None' = None,
+    legend: 'list | None' = None,
 ) -> None:
     """Shared streaming core: price every raw item locally (instant), stream each
     row, then AI-resolve the unmatched ones one at a time so the live count keeps
@@ -2099,7 +2278,8 @@ def _stream_price_items(
     unmatched = [pi['cat_no'] for pi in priced if not pi['matched']]
     emit({'t': 'done', 'items': priced, 'unmatched': unmatched,
           'total_ntp': round(total_ntp, 2), 'candidates': candidates, 'queries': [],
-          'source': source, 'extracted_count': total, 'inputs': inputs})
+          'source': source, 'extracted_count': total, 'inputs': inputs,
+          'legend': legend or []})
 
 
 def run_unified_stream(manifest_path: str, lookup: dict, entries: list, api_key: str) -> None:
@@ -2117,7 +2297,9 @@ def run_unified_stream(manifest_path: str, lookup: dict, entries: list, api_key:
 
     text  = str(manifest.get('text') or '').strip()
     files = manifest.get('files') or []
-    pdf_paths   = [str(f['path']) for f in files if f.get('kind') == 'pdf'   and os.path.exists(str(f.get('path', '')))]
+    pdf_files   = [(str(f['path']), str(f.get('name') or os.path.basename(str(f['path']))))
+                   for f in files if f.get('kind') == 'pdf' and os.path.exists(str(f.get('path', '')))]
+    pdf_paths   = [q for q, _ in pdf_files]
     image_paths = [str(f['path']) for f in files if f.get('kind') == 'image' and os.path.exists(str(f.get('path', '')))]
     excel_paths = [str(f['path']) for f in files if f.get('kind') == 'excel' and os.path.exists(str(f.get('path', '')))]
 
@@ -2139,12 +2321,22 @@ def run_unified_stream(manifest_path: str, lookup: dict, entries: list, api_key:
         except Exception as e:
             sys.stderr.write(f'[unified-stream] excel extract failed for {p}: {e}\n')
 
-    for p in pdf_paths:
+    legend: list[dict] = []
+    for p, name in pdf_files:
         if not api_key:
             break
-        emit({'t': 'phase', 'label': f'Reading {os.path.basename(p)}…'})
+        emit({'t': 'phase', 'label': f'Reading {name}…'})
         try:
-            raw_items.extend(extract_from_pdf(p, api_key))
+            got = extract_from_pdf_full(p, api_key, name)
+            raw_items.extend(got.get('items') or [])
+            legend.extend(got.get('legend') or [])
+            # Say what the drawing's key turned out to be while the run is still
+            # going — on a plan this is the whole basis of the quantities, so it
+            # should not first appear when everything is finished.
+            eaton = [e for e in (got.get('legend') or []) if e.get('is_eaton')]
+            if eaton:
+                emit({'t': 'phase',
+                      'label': f'{name}: {len(eaton)} Eaton symbol(s) in the legend — counting'})
         except Exception as e:
             sys.stderr.write(f'[unified-stream] PDF extract failed for {p}: {e}\n')
 
@@ -2165,15 +2357,24 @@ def run_unified_stream(manifest_path: str, lookup: dict, entries: list, api_key:
         allow_candidate_fallback=True,
         cand_text=text,
         cand_images=image_paths,
+        legend=legend,
     )
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['pdf', 'list', 'image', 'unified', 'lookup', 'search'], required=True)
-    parser.add_argument('--input', required=True, help='Path for pdf/image/list-text/unified-manifest')
+    parser.add_argument('--mode', choices=['pdf', 'list', 'image', 'unified', 'lookup', 'search', 'version'], required=True)
+    parser.add_argument('--input', default='', help='Path for pdf/image/list-text/unified-manifest')
     parser.add_argument('--stream', action='store_true', help='Emit NDJSON per-item progress (list mode)')
     args = parser.parse_args()
+
+    # Identify the price list without loading it — the app asks on every start.
+    if args.mode == 'version':
+        print(json.dumps(pricelist_version()))
+        return
+    if not args.input:
+        print(json.dumps({'error': '--input is required for this mode'}))
+        sys.exit(2)
 
     lookup, entries = load_pricelist()
     if not lookup:

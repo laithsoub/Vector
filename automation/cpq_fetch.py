@@ -53,6 +53,17 @@ LINE_FIELDS = [
     "customerConditionInPer_l",              # Customer Condition % (standard disc)
     "netFixedAmountString_l",                # Net Fixed Amount / Requested Price
     "extraDiscount_l_c",                     # Requested Discount %
+    # The same requested discount under its other name. CPQ derives
+    # extraDiscount_l_c from the net price against the standard price, so on a
+    # transaction whose price book never loaded (list price 0, no customer
+    # condition, no net fixed amount) it reads a hard 0 while the discount the
+    # salesman actually typed sits in discountOffList_l. Measured on the live
+    # API (2026-09-04): where both are populated they agree to the rounding
+    # (W262217374E line 1, 26.6 / 26.6; line 2, 27.82 / 27.83), and on
+    # W262219747E only discountOffList_l carries the request (40%). Do NOT use
+    # discountPercentNetRequested_l — that one is the discount off LIST (66.97%
+    # on the same line), not the additional discount the ledger wants.
+    "discountOffList_l",                     # Requested Discount %, fallback
     "cost_l",                                # Cost
 ]
 
@@ -443,7 +454,11 @@ def write_export(transaction, doc_id, rows, out_dir, log):
         reqp = _num(r.get("netFixedAmountString_l"))
         put("net_fixed", reqp)
         put("requested", reqp)
-        put("req_disc_pct", _num(r.get("extraDiscount_l_c")))
+        # Requested Discount %: whichever of the two spellings actually carries
+        # it. A zero here is CPQ's "nothing to report", not a 0% request — see
+        # the note on discountOffList_l above.
+        rdisc = _num(r.get("extraDiscount_l_c")) or _num(r.get("discountOffList_l"))
+        put("req_disc_pct", rdisc)
         put("cost", _num(r.get("cost_l")))
         ws.append(line)
 

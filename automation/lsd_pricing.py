@@ -7,11 +7,18 @@ Drop a CPQ "Export Line Items" transaction; get back a case folder holding
         <the transaction as dropped>              (untouched)
         Approved Offer - Approved (<W>).xlsx      the Feedback sheet, values only
         Working File (<W>).xlsb                   the master model, filled + toggled
+        Working File (<W>) - as pasted.xlsb       the first draft: ONLY pasted
 
 The Working File is the real master CPQ model with this transaction pasted into
 'Paste BOM Here', the ledger header set, APRC/currency toggled, and the decided
 Add. Discount written into column R — every derived column left LIVE, so the file
 shows how the feedback was produced rather than just asserting it.
+
+The "as pasted" copy is the same model with the transaction and the header and
+NOTHING ELSE: no values over the ledger's formulas, no decided discount. It is the
+first draft — the file as it stands one second after the paste — and it is what
+tells a model number from an engine number, so it is written on every build.
+Pass "baseline": false to skip it (it costs a 7 MB copy and an Excel pass).
 
 THE RULE — "requested" (default, Dalia, 2026-09-02). Holding the target E2E was
 pushing prices far above the prior year: on W262217374E chasing 40% E2E took the
@@ -23,9 +30,23 @@ customer's own request is:
     (H1 3.5% / H2 6%),  unit net = customer prior-year average x (1 + rate)
                         (country average when the customer has no history)
 
-A line that lands below its target E2E is PRICED THAT WAY and flagged for
-approval — on this case that is 34% against a 40% target, which Kiran has to
-agree to. The engine does not raise the price to hide it.
+THE TARGET E2E IS A FLOOR AGAIN (Dalia + Laith, 2026-09-08, on W262223256E).
+The uncapped requested rule priced EFM-APS100 at 80.00 against a 79.63 cost —
+"we cannot release any item with the cost price" — and two Addressable lines at
+29% / 19% where "E2E for Addressable should be at least 35%-37%". So after the
+RPI gate the line is lifted again:
+
+    unit net = MAX( unit net , total cost / (1 - target E2E) / qty )
+
+skipped when the line has a real PY CUSTOMER AVERAGE ("except if we have any
+customer reference last year" — a country average does NOT excuse it), and
+skipped on a carried revision line. The engine lands ON the target, never in the
+35-37% band: that band is a CONCESSION the approver grants, so every floored line
+carries `e2e_band` with what 37% and 35% would be and the approval mail offers it
+— but only where those rungs are actually under that line's target. They are the
+ADDRESSABLE band (target 40%); against Notification-UL's 35% there is no band.
+A line that still lands below its target — carried, or held down by a customer
+reference — is PRICED THAT WAY and flagged for approval, not raised to hide it.
 
 THE OLD RULE — "e2e" (LSD Daily Work Procedure, 2026-08-05; pass rule="e2e" in
 the job to get it back). Measured on 165 case models / 2148 priced lines, it
@@ -52,6 +73,29 @@ customer master) is read straight out of the master .xlsb with pyxlsb — the sa
 sheets the model's own XLOOKUPs use: 'E2E Guidelines ', 'PV 2025 ',
 'MV Ledger 2025', 'Customer Master Data'.
 
+CUSTOMER EXCEPTIONS. Some customers are not priced on the half-year RPI rate at
+all — see RPI_EXCEPTIONS. They are not one-offs; the same handful of big stock
+customers come up every year, on an agreed fixed price with a negotiated
+increase, so the rate is a dated standing rule rather than a manual override. The
+floor mechanism is unchanged (prior-year average x (1 + rate)); only the rate
+moves, and a case priced on one says so in its headline and its log.
+
+LIST PRICE, in order (the source is carried out on the line as `list_src`). The
+MODEL'S OWN BOOK WINS over the transaction — Dalia, 2026-09-08: "LP not updated on
+working file, as discussed it should be updated manually as per latest LSD pricing
+model." CPQ quotes off whatever price book its session loaded, which is routinely
+the previous cut. A hard ZERO off CPQ is its price book failing to load, not a
+free line, and is treated as a blank — Dalia's decision, 2026-09-07:
+    1 'EL Trigger 26' / 'Fire Trigger 26' by material          — the LATEST list
+    2 the transaction's own List Price      — only when the material is on no book
+    3 an IDENTICAL Trigger entry, same description + same cost — a discontinued
+      material reaching the price of whatever replaced it; its own row carries
+      #VALUE! in the list column
+    4 'Guidance' by country&material (column H)                — the PREVIOUS list
+The ledger is list-based end to end (K = I * (1 - J)), so a blank list is not
+cosmetic: N and P go #DIV/0!, S and T go 0, and the line puts its whole cost
+against zero revenue. Two such lines took W262219747E to 13.85% overall E2E.
+
 Usage
 -----
     python lsd_pricing.py --job job.json --out result.json
@@ -64,7 +108,8 @@ job.json:
      "customer": "74895", "country": "UAE", "customer_name": "...",
      "project": "MOPA Project", "transaction": "W262168503E", "crm": "...",
      "ledger": "R2321", "half": "H1"|"H2"|"auto", "aprc": "525"|"530-535"|"auto",
-     "rule": "requested" (default) | "e2e"}
+     "rule": "requested" (default) | "e2e",
+     "baseline": false               skip the "as pasted" copy (default: write it)}
 
 `preview` needs no Excel — it prices the lines and returns them as JSON.
 `build` needs Excel (pywin32 COM) because only Excel can write a .xlsb.
@@ -84,6 +129,48 @@ warnings.filterwarnings("ignore")
 # ─── The rule's locked constants ─────────────────────────────────────────────
 RPI_RATE = {"H1": 0.035, "H2": 0.06}   # half-year RPI floor
 ADD_DISC_CAP = 0.20                    # the 20% flatten in the MIN shortcut
+
+# ─── customers the half-year rate does not apply to ──────────────────────────
+# Not an exception in the sense of a one-off: it happens every year with the big
+# stock customers, so it is a standing rule with a date on it (Laith, 2026-09-07).
+#
+# Khaled Al Saigh and the two KYR entities are FIRE stock customers — very few
+# projects, and only strategic ones around 500k. They hold an agreed FIXED price
+# for the whole year, so the price to quote is last year's price, not the book's.
+# That is exactly what the RPI floor already does (prior-year average x 1+rate);
+# only the rate is different. From September the increase under negotiation is
+# 2.5%, NOT the 6% H2 rate, because the delivery invoices in January — and the
+# 2.5% itself still has to be approved.
+#
+# Matched on customer number first (the master's own Customer Master Data) and on
+# the name only as a fallback, because a stock order can come through under a
+# ship-to whose number is not one of these three.
+RPI_EXCEPTIONS = (
+    {
+        "label": "Khaled Al Saigh / KYR",
+        "customers": {"1213394", "586252", "1270464"},
+        "names": ("al saigh", "al sayegh", "kyr"),
+        "from_month": 9,                 # September onwards, in the quote's own year
+        "rate": 0.025,
+        "why": ("agreed fixed price for the year and the delivery invoices in "
+                "January, so the increase negotiated from September is 2.5%, "
+                "not the H2 6%"),
+    },
+)
+
+# The band Dalia will come down to when the target E2E cannot be held, quoted by
+# her on W262223256E: "E2E for Addressable should be at least 35%-37%". It is a
+# CONCESSION the approver grants, not a price the engine picks — every line is
+# priced at its group target and the band rides along for the ask.
+#
+# These are ABSOLUTE rungs, and she named them for ADDRESSABLE, whose target is
+# 40%. They are not a shape to rescale onto another group: Notification-UL's
+# target is 35%, so "concede to 37%, then 35%" is not a concession there — it is
+# at or above the target. Nothing here invents a Notification-UL band, because
+# she has never quoted one; a rung is only ever offered against a target it
+# genuinely sits below, per line (`e2e_band`) and for the quote as a whole.
+E2E_CONCESSION = (0.37, 0.35)
+
 FIVEX = 4.9999                         # model gate: QTY/PYctryQTY <= 499.99%
 STD_DISCOUNT = 0.55                    # default customer condition when the BOM omits it
 EPS = 1e-9
@@ -161,16 +248,41 @@ def _half_from_date(d):
     return "H1" if d.month <= 6 else "H2"
 
 
-def guess_half(bom_path):
-    """CPQ exports are named <number>_<YYYY-MM-DD>.xlsx — the transaction's own
-    date decides the RPI rate. Fall back to today."""
+def guess_date(bom_path):
+    """CPQ exports are named <number>_<YYYY-MM-DD>.xlsx — that is the
+    transaction's own date. Fall back to today."""
     m = re.search(r"(\d{4})-(\d{2})-(\d{2})", os.path.basename(str(bom_path)))
     if m:
         try:
-            return _half_from_date(_dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))))
+            return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
         except ValueError:
             pass
-    return _half_from_date(_dt.date.today())
+    return _dt.date.today()
+
+
+def guess_half(bom_path):
+    """The half-year the transaction falls in — it decides the RPI rate."""
+    return _half_from_date(guess_date(bom_path))
+
+
+def rpi_exception(meta):
+    """The standing exception covering this customer, or None.
+
+    Keyed on the customer number where the job carries one, and on the customer
+    name otherwise — 'kyr' as a whole word, so a name that merely contains those
+    three letters does not qualify. The date decides too: the September rule does
+    not apply to a June transaction being re-run today, which is why this reads
+    the transaction's own date and not the clock."""
+    cust = canon(meta.get("customer"))
+    name = re.sub(r"[^a-z0-9 ]+", " ", str(meta.get("customer_name") or "").lower())
+    name = re.sub(r"\s+", " ", name).strip()
+    when = meta.get("as_of") or _dt.date.today()
+    for exc in RPI_EXCEPTIONS:
+        hit = (cust and cust in exc["customers"]) or (
+            name and any(re.search(rf"\b{re.escape(n)}\b", name) for n in exc["names"]))
+        if hit and when.month >= exc["from_month"]:
+            return exc
+    return None
 
 
 def safe_name(s, limit=90):
@@ -207,6 +319,23 @@ def _row_to_line(cells):
     std_pct = num(at("std_pct"))
     # The export carries 'Customer Condition %' as 55 (a percent), the ledger
     # divides by 100. An empty column means the default 55% (procedure 5c).
+    #
+    # THE 55% BELONGS TO THIS COLUMN AND NO OTHER. Measured across the analyst's
+    # 208 archived exports, 2790 line rows (2026-09-07): Customer Condition % is
+    # 55 on 1800 rows and blank on 903 — every other discount column is empty or
+    # zero (Suggested Discount % is 0 or blank on 2721 of them, and nothing reads
+    # it). So the default belongs to the STANDARD discount, never to the requested
+    # or the suggested one.
+    #
+    # A hard ZERO here is left ALONE rather than defaulted, unlike a zero List
+    # Price. It has never been seen on a real CPQ export — the 15 rows that look
+    # like it (W262032328E Maarfie) are blank, and the analyst's own model prices
+    # them at 0.55, which is what the blank already does. Defaulting an unseen
+    # case would be guessing at a price; it is flagged instead, because taking a
+    # real 0 literally moves the BUILD-UP (standard price reads the full list, so
+    # the case reports a 55% additional discount that nobody asked for) even
+    # though the net price still lands on what the customer requested.
+    std_zero = std_pct is not None and abs(std_pct) < EPS
     std = (std_pct / 100) if std_pct is not None else STD_DISCOUNT
     if std > 1:                                  # already-fractional guard
         std = std / 100
@@ -217,6 +346,16 @@ def _row_to_line(cells):
     if req is None:
         req = num(at("net_price"))
 
+    # Requested Discount % — a hard 0 in that column is CPQ saying "nothing",
+    # not the customer asking to pay the standard price. CPQ derives the column
+    # from the net price against the standard price, so a transaction whose
+    # price book never loaded writes 0 into it on every line (W262219747E,
+    # 2026-09-04). Reading that 0 as a real request prices the whole quote at
+    # full standard, which is exactly the failure this guard exists to stop.
+    req_disc_pct = num(at("req_disc_pct"))
+    if req_disc_pct is not None and abs(req_disc_pct) < EPS:
+        req_disc_pct = None
+
     return {
         "material": canon(mat_raw),
         "description": at("description"),
@@ -225,8 +364,9 @@ def _row_to_line(cells):
         "qty": qty,
         "list": num(at("list")),
         "std_disc": std,
+        "std_zero": std_zero,
         "requested": req,
-        "req_disc_pct": num(at("req_disc_pct")),
+        "req_disc_pct": req_disc_pct,
         "cost": num(at("cost")),
     }
 
@@ -305,39 +445,161 @@ def _read_xlsb_rows(path):
 
 
 # ─── reference data out of the master model ──────────────────────────────────
+def _trigger_cols(v):
+    """A Trigger sheet's header row → {mat, desc, cost, list, target} column
+    indexes, or None when this row is not the header.
+
+    Both Trigger sheets carry a narrow trigger-price table on the far left (A
+    Material, B Trigger Price) and the real price book to the right of it, and
+    the price book's own block has moved twice already. So the block is found
+    from the list-price column outwards: the material column is the LAST cell
+    reading exactly 'Material' to its left, and description and cost are taken
+    from between the two. Anything outside that span belongs to another table
+    (the left-hand trigger prices, the EL sheet's service price list) and is
+    ignored — which is what keeps 'COST MARCH 2026', four columns past the list,
+    out of the cost slot.
+
+    'List price 26 Q2 increase' (EL, both cuts) and 'List Price 2026 Q2 (3%
+    increase)' (Fire, JULY V2) win over the AUG cut's 'Price list', so a sheet
+    carrying both still reads the same column it always did.
+    """
+    head = {}
+    for col, val in v.items():
+        t = re.sub(r"\s+", " ", str(val if val is not None else "")).strip().lower()
+        if t:
+            head[col] = t
+
+    def where(pred):
+        return sorted(c for c, t in head.items() if pred(t))
+
+    lst = where(lambda t: t.startswith("list price")) or where(lambda t: t.startswith("price list"))
+    if not lst:
+        return None
+    li = lst[0]
+    mats = [c for c in where(lambda t: t == "material") if c < li]
+    if not mats:
+        return None
+    mi = mats[-1]
+
+    def between(pred):
+        hit = [c for c in where(pred) if mi < c < li]
+        return hit[-1] if hit else None
+
+    # Target price is carried for the record only — nothing prices off it — so it
+    # is looked up by name anywhere on the row and left None when the cut drops it.
+    tgt = where(lambda t: t.startswith("target price"))
+    # Brand ("Eaton: Menvier" / "Eaton: JSB" / "Eaton: Cooper") is metadata only:
+    # it names the maker in the cheaper-equivalent flag and nothing prices off
+    # it, so a cut that drops the column costs the wording, not the price.
+    brand = where(lambda t: t == "brand")
+    return {"mat": mi, "list": li,
+            "desc": between(lambda t: t == "description"),
+            "cost": between(lambda t: "cost" in t),
+            "target": tgt[0] if tgt else None,
+            "brand": brand[0] if brand else None}
+
+
 def load_reference(master):
-    """Read the four lookup tables the ledger uses. Keys are built exactly like
-    the model's CONCATENATE so a Python price equals the Excel price."""
+    """Read the lookup tables the ledger uses. Keys are built exactly like the
+    model's CONCATENATE so a Python price equals the Excel price."""
     import pyxlsb
-    e2e, pv, mv, cust, trig = {}, {}, {}, {}, {}
+    e2e, pv, mv, cust, trig, twin, twin_desc, dead, guide = (
+        {}, {}, {}, {}, {}, {}, {}, {}, {})
     with pyxlsb.open_workbook(str(master)) as wb:
         names = {n.strip(): n for n in wb.sheets}
 
         # Trigger sheets — the list-price / cost reference by material. A CPQ export
-        # of a net-priced deal (most FIRE quotes) carries NO list price, so the
-        # ledger's list has to come from here instead. The two sheets have different
-        # layouts and currencies (verified against the V2 master, 2026-08-26):
-        #   'EL Trigger 26'   D=material  F=cost  H=list  J=target  — prices in EUR
-        #   'Fire Trigger 26' E=material  G=cost  I=list  H=trigger — prices in USD
-        for tname, cols, ccy in (
-            ("EL Trigger 26",   {"mat": 3, "cost": 5, "list": 7, "target": 9}, "EUR"),
-            ("Fire Trigger 26", {"mat": 4, "cost": 6, "list": 8, "target": 7}, "USD"),
-        ):
+        # of a net-priced deal (most FIRE quotes) carries NO list price (or a hard
+        # zero, which is CPQ's price book failing to load), so the ledger's list has
+        # to come from here instead. Dalia approved that route for every zero on
+        # 2026-09-07, and it is now the normal way a FIRE line gets its list.
+        #
+        # The columns are READ OFF THE HEADER ROW, not assumed — see _trigger_cols.
+        # The sheets are re-cut whenever the price book moves, and the AUG 2026 V2
+        # master proved it: 'Fire Trigger 26' went from E=material G=cost I=list to
+        # F=material K=list ("Price list", effective 1st July 26, +2.5% on the Q2
+        # column) with no cost column at all, and 'EL Trigger 26' shifted its header
+        # up a row. Hard-coded indexes read 'Range' as a price and silently priced
+        # nothing.
+        #
+        # A row whose list cell is not a number ('Discontd.', or #VALUE! in the older
+        # cut) is a DISCONTINUED material. Those rows are indexed in `twin` so the
+        # entry that replaced them can be found: on the same description AND cost
+        # where the sheet still carries a cost, on the description alone where it
+        # does not — and then only when every priced row sharing that description
+        # agrees on the price, because 18 of the AUG sheet's descriptions do not.
+        for tname, ccy in (("EL Trigger 26", "EUR"), ("Fire Trigger 26", "USD")):
             if tname not in names:
                 continue
             with wb.get_sheet(names[tname]) as sh:
+                cols = None
                 for row in sh.rows():
                     v = {c.c: c.v for c in row}
+                    if cols is None:
+                        cols = _trigger_cols(v)
+                        continue          # the header row is never data
                     mat = v.get(cols["mat"])
                     if mat in (None, "", "Material"):
                         continue
                     listp = num(v.get(cols["list"]))
-                    if not listp:                       # only rows that actually carry a list
+                    cost = num(v.get(cols["cost"])) if cols["cost"] is not None else None
+                    desc = (str(v.get(cols["desc"]) or "").strip().lower()
+                            if cols["desc"] is not None else "")
+                    if not listp:
+                        # No usable list — the material is discontinued. Remember what
+                        # the sheet says it IS, so the twin lookup below can find the
+                        # entry that replaced it. Keyed on the sheet's own description
+                        # and cost, never the BOM's: CPQ spells the description
+                        # differently ('FXN723 DET/OPT/A' against 'Addressable Optical
+                        # Smoke Sensor') and rounds the cost to four places.
+                        if desc:
+                            dead.setdefault(canon(mat),
+                                            (desc, round(cost, 6) if cost else None))
                         continue
                     # first spelling wins, like Excel VLOOKUP; EL sheet listed first
                     trig.setdefault(canon(mat), {
-                        "list": listp, "cost": num(v.get(cols["cost"])),
-                        "target": num(v.get(cols["target"])), "ccy": ccy})
+                        "list": listp, "cost": cost, "ccy": ccy, "desc": desc,
+                        "brand": (str(v.get(cols["brand"]) or "").strip()
+                                  if cols.get("brand") is not None else ""),
+                        "target": (num(v.get(cols["target"]))
+                                   if cols["target"] is not None else None)})
+                    rec = {"list": listp, "cost": cost, "ccy": ccy,
+                           "material": canon(mat)}
+                    if desc and cost:
+                        twin.setdefault((desc, round(cost, 6)), rec)
+                    if desc:
+                        # False = this description carries more than one price, so it
+                        # cannot stand in for a discontinued material on its own.
+                        seen = twin_desc.get(desc)
+                        if seen is None:
+                            twin_desc[desc] = rec
+                        elif seen and abs(seen["list"] - listp) > 1e-6:
+                            twin_desc[desc] = False
+
+        # 'Guidance' — the per-country price book the ledger's own column O reads
+        # (O = XLOOKUP(country&material, Guidance!C:C, Guidance!K:K), which is why a
+        # material missing from it shows #N/A there in the analyst's files too).
+        #   A=country  B=material  C=country&material  H=Price List  I=Standard Price
+        #   J=Add. Discount  K=Unit Price
+        # It is a list-price source of last resort: its H is the PREVIOUS list, about
+        # 6.6% under the Trigger sheet's "2026 Q2 (3% increase)" column, so it is only
+        # used when neither the transaction nor the Trigger sheet has anything.
+        if "Guidance" in names:
+            with wb.get_sheet(names["Guidance"]) as sh:
+                for row in sh.rows():
+                    v = {c.c: c.v for c in row}
+                    key = v.get(2)
+                    listp = num(v.get(7))
+                    if key in (None, "", "Concatenate") or not listp:
+                        continue
+                    rec = {"list": listp, "std": num(v.get(8)),
+                           "add": num(v.get(9)), "unit": num(v.get(10)),
+                           "country": v.get(0)}
+                    guide.setdefault(canon(key), rec)
+                    # Same material, any country — the list is identical across the
+                    # region on every row checked, so this rescues a country the
+                    # sheet spells differently from the ledger.
+                    guide.setdefault(canon(v.get(1)), rec)
 
         # 'E2E Guidelines ' — I = pricing group description, N = E2E% target
         if "E2E Guidelines" in names:
@@ -375,7 +637,8 @@ def load_reference(master):
                     if cid not in (None, "", "Custmer #"):
                         cust.setdefault(canon(cid), (v.get(1), v.get(2)))
 
-    return {"e2e": e2e, "pv": pv, "mv": mv, "cust": cust, "trig": trig}
+    return {"e2e": e2e, "pv": pv, "mv": mv, "cust": cust, "trig": trig,
+            "twin": twin, "twin_desc": twin_desc, "dead": dead, "guide": guide}
 
 
 def detect_aprc(lines):
@@ -384,6 +647,63 @@ def detect_aprc(lines):
     fire = sum(1 for l in lines if str(l["group"] or "").strip().lower() in FIRE_GROUPS)
     el = len(lines) - fire
     return "530-535" if fire > el else "525"
+
+
+# ─── the cheaper identical equivalent ────────────────────────────────────────
+# Menvier, JSB and Cooper ship the same part under the same code bar one letter
+# — M, J and C — and the Trigger sheet names the maker in its Brand column
+# ("Eaton: Menvier", "Eaton: JSB", "Eaton: Cooper"). The prices are not always
+# equal, and Dalia routinely asks for the dearer one to be dropped for "its
+# identical cheaper equivalent" (Laith, on the call 2026-09-10).
+#
+# This only ever SUGGESTS. Swapping a material changes what the customer is
+# offered, so the analyst — and the customer — have to agree to it; the engine
+# has no business doing it quietly, the same reason the discontinued-twin
+# substitution is flagged rather than applied.
+BRAND_LETTERS = ("M", "J", "C")
+# How much cheaper the sibling has to be before it is worth an analyst's time.
+# Across the 3,325 materials in the V2 master, 9 pairs differ at all and only 5
+# differ by more than a rounding: the APS pull stations at 30-46% and JFC6/MFC6
+# at 13% are real money, while MJOM/MCOM at 0.03 and the RT2 thermostats at 0.70
+# are noise that would train the analyst to skip the flag.
+EQUIV_MIN_SAVING = 0.02
+
+
+def _brand_siblings(mat):
+    """Codes differing from `mat` only by a brand letter. ULEFMDO10 →
+    ULEFJDO10, ULEFCDO10.
+
+    Only a position already holding M, J or C is swapped, so a code that merely
+    contains an M somewhere does not sprout fake siblings. The candidates still
+    have to exist in the Trigger sheet AND carry the same description before
+    anything is said about them — one letter is not evidence of one part.
+    """
+    out = []
+    for i, ch in enumerate(mat):
+        if ch in BRAND_LETTERS:
+            for other in BRAND_LETTERS:
+                if other != ch:
+                    out.append(mat[:i] + other + mat[i + 1:])
+    return out
+
+
+def _cheaper_equivalent(mat, listp, rec, trig, to_deal):
+    """The cheapest same-part sibling under another brand letter, or None."""
+    if not listp or not rec or not rec.get("desc"):
+        return None
+    best = None
+    for sib in _brand_siblings(mat):
+        s = trig.get(sib)
+        if not s or not s.get("list") or not s.get("desc"):
+            continue
+        if s["desc"] != rec["desc"]:            # same description = same part
+            continue
+        cand = to_deal(s["list"], s["ccy"])
+        if cand is None or cand > listp * (1 - EQUIV_MIN_SAVING):
+            continue
+        if best is None or cand < best["list"]:
+            best = {"material": sib, "list": cand, "brand": s.get("brand") or ""}
+    return best
 
 
 # ─── the pricing rule ────────────────────────────────────────────────────────
@@ -447,26 +767,41 @@ def _rpi_gate(w, y, qty, py_ctry_qty, rate):
     return None, None
 
 
+def _line_variance(l, price):
+    """One line's (AG, AE) contribution at `price` — the ledger's AB/AD chain.
+
+    The two branches are NOT the same measurement, and conflating them is how a
+    quote reads 36% RPI without anybody having raised a price:
+      * with a customer average, AG is a real increase ON THIS CUSTOMER and the
+        mix term is the small (QTY - QFC) x (W - Y) offset;
+      * with only a COUNTRY average, the whole gap (S - Y) x QTY lands in mix.
+        For a customer who bought none of this last year that is a comparison to
+        the Gulf's prior-year average, not a price increase to anyone.
+    """
+    if not l["qty"] or price is None:
+        return 0.0, 0.0
+    if l["ctry_qty"] and (l["qty"] / l["ctry_qty"]) > FIVEX:
+        return 0.0, 0.0                                # 5x: the model zeroes both
+    if l["cust_avg"]:
+        pv_ = (price - l["cust_avg"]) * l["qty"]
+        qfc = ((l["cust_qty"] / l["ctry_qty"]) * l["qty"]
+               if (l["cust_qty"] and l["ctry_qty"]) else 0.0)
+        return pv_, pv_ + ((l["qty"] - qfc) * (l["cust_avg"] - l["ctry_avg"])
+                           if l["ctry_avg"] else 0.0)
+    if l["ctry_avg"]:
+        return 0.0, (price - l["ctry_avg"]) * l["qty"]
+    return 0.0, 0.0
+
+
 def _variance(lines, price_key):
     """(AG, AE) — price variance and price+mix variance — over `lines` at the
     unit price in `price_key`. The ledger's own AB/AD chain, so the same code
     serves the proposed price and the customer's target price."""
     ag = ae = 0.0
     for l in lines:
-        price = l.get(price_key)
-        if not l["qty"] or price is None:
-            continue
-        if l["ctry_qty"] and (l["qty"] / l["ctry_qty"]) > FIVEX:
-            continue                                   # 5x: the model zeroes both
-        if l["cust_avg"]:
-            pv_ = (price - l["cust_avg"]) * l["qty"]
-            ag += pv_
-            qfc = ((l["cust_qty"] / l["ctry_qty"]) * l["qty"]
-                   if (l["cust_qty"] and l["ctry_qty"]) else 0.0)
-            ae += pv_ + ((l["qty"] - qfc) * (l["cust_avg"] - l["ctry_avg"])
-                         if l["ctry_avg"] else 0.0)
-        elif l["ctry_avg"]:
-            ae += (price - l["ctry_avg"]) * l["qty"]
+        a, e = _line_variance(l, l.get(price_key))
+        ag += a
+        ae += e
     return ag, ae
 
 
@@ -535,12 +870,43 @@ def headline(summary, meta, diff):
     if summary.get("below_target"):
         head += (f" Margin {e2e} against a "
                  f"{summary['target_e2e']:.0%} target — needs approval.")
+    elif summary.get("floored"):
+        band = ", ".join(f"{r:.0%}" for r in summary.get("e2e_concession") or ())
+        head += (f" {summary['floored']} line(s) asked below the "
+                 f"{summary['target_e2e']:.0%} target and were priced AT it, "
+                 f"+{summary['floored_value']:,.2f} over the ask"
+                 + (f" — concede no further than {band} if the customer pushes back."
+                    if band else " — needs approval."))
     elif diff and not diff["added"]:
         head += " Nothing to approve: no price on this revision is new."
     elif summary.get("action"):
         head += f" {summary['action']} line(s) need a decision."
     else:
         head += " No line needs a decision."
+    # A double-digit RPI is the first thing the approver challenges, and the total
+    # on its own does not survive the challenge — say which line it came from and
+    # whether it is an increase to anybody at all.
+    drv = (summary.get("rpi_drivers") or [None])[0]
+    if (summary.get("total_rpi") or 0) > 0.10 and drv and (drv.get("share") or 0) > 0.4:
+        head += (f" The {summary['total_rpi']:.1%} RPI is {drv['share']:.0%} "
+                 f"{drv['material']} alone")
+        if drv.get("ref_below_cost"):
+            head += (f", whose prior-year average {drv['ctry_avg']:,.2f} is below its "
+                     f"{drv['cost']:,.2f} cost - the material was repriced, so no margin "
+                     f"meets the gate")
+        if summary.get("rpi_no_history") and abs(summary["rpi_no_history"]
+                                                 - (summary.get("rpi_value") or 0)) < 1:
+            head += ("; this customer bought none of these last year, so it is a "
+                     "comparison to the Gulf average, not an increase to them")
+        head += "."
+    # The rate is the first thing the approver asks about when it is not the
+    # half-year's, so it goes in the headline rather than three tables down.
+    xc = summary.get("rpi_exception")
+    if xc:
+        head += (f" Priced on the {xc['label']} rate: last year's price + "
+                 f"{xc['rate']:.1%} instead of the {xc['standard']:.1%} "
+                 f"{summary.get('half')} rate — {xc['why']}. The rate itself "
+                 f"needs approving.")
     return head
 
 
@@ -548,6 +914,11 @@ def price_lines(lines, ref, meta):
     """Apply the rule to every line. Returns (priced, summary)."""
     half = meta["half"]
     rate = RPI_RATE[half]
+    # A standing customer exception replaces the half-year rate outright — the
+    # floor is still prior-year x (1 + rate), only the rate is negotiated.
+    exc = rpi_exception(meta)
+    if exc:
+        rate = exc["rate"]
     rule = str(meta.get("rule") or "requested").strip().lower()
     if rule not in ("requested", "e2e"):
         rule = "requested"
@@ -576,16 +947,64 @@ def price_lines(lines, ref, meta):
         std = ln["std_disc"]
         cost = ln["cost"]
 
-        # List price (and cost) fall back to the Trigger sheet by material when the
-        # BOM omits them — a CPQ export of a net-priced FIRE deal carries neither,
-        # and the ledger's whole list-based machinery needs a list to work at all.
-        list_from_trigger = False
+        # List price (and cost) come from the master's own books, in order of how
+        # current the number is:
+        #   1 the Trigger sheet's own row for this material — THE LATEST LIST;
+        #   2 the transaction's own List Price, when the material is on no book;
+        #   3 the Trigger row of an IDENTICAL entry — same description, same cost to
+        #     the cent — which is how a discontinued material reaches its successor's
+        #     price (its own row carries #VALUE! in the list column);
+        #   4 the Guidance sheet by country&material, the previous list, ~6.6% under.
+        # Anything that lands on a line by route 3 or 4 is flagged, because it is a
+        # substitution and the analyst has to agree with it.
+        #
+        # The Trigger sheet OVERRIDES the transaction (Dalia, 2026-09-08, on
+        # W262223256E): "LP not updated on working file, as discussed it should be
+        # updated manually as per latest LSD pricing model." CPQ quotes off whatever
+        # price book its session loaded, which on that case was the pre-July cut —
+        # 5069.88 against the master's 5171.51 on the same material. The manual step
+        # she describes is exactly this lookup, so the engine does it.
+        # Under the 'requested' rule this does NOT move the price: the customer asks
+        # in money, and `req_disc` is re-derived off the new standard price, so the
+        # ledger shows a deeper Add. Discount against a higher list for the same
+        # unit net. It moves the price only where the customer asked in PERCENT.
+        # A hard 0 in the transaction's List Price column is CPQ's price book
+        # failing to load, not a free line — it is treated exactly like a blank.
+        list_zero = listp is not None and abs(listp) < EPS
+        list_src = None
+        txn_list = listp or None
         t = ref["trig"].get(mat)
-        if (not listp) and t:
+        if t and t["list"]:
             listp = _to_deal(t["list"], t["ccy"])
-            list_from_trigger = True
-        if (not cost) and t:
+            list_src = "trigger"
+        if (not cost) and t and t["cost"]:
             cost = _to_deal(t["cost"], t["ccy"])
+
+        twin = None
+        if not listp:
+            key = ref["dead"].get(mat)
+            if key:
+                desc_k, cost_k = key
+                twin = ref["twin"].get((desc_k, cost_k)) if cost_k is not None else None
+                # The AUG cut of the Fire sheet dropped its cost column, so a
+                # discontinued material can only be matched on its description —
+                # and only where every priced row with that description agrees.
+                if twin is None:
+                    twin = ref["twin_desc"].get(desc_k) or None
+            if twin and canon(twin["material"]) != mat:
+                listp = _to_deal(twin["list"], twin["ccy"])
+                list_src = "twin"
+                if not cost:
+                    cost = _to_deal(twin["cost"], twin["ccy"])
+
+        grec = None
+        if not listp:
+            country = canon(meta.get("country"))
+            grec = ref["guide"].get(country + mat) or ref["guide"].get(mat)
+            if grec:
+                # Guidance is a USD book, like the Fire Trigger sheet it sits beside.
+                listp = _to_deal(grec["list"], "USD")
+                list_src = "guidance"
 
         unit_std = listp * (1 - std) if listp else None
         total_std = unit_std * qty if unit_std is not None else None
@@ -615,8 +1034,20 @@ def price_lines(lines, ref, meta):
             candidates = [req_disc]
         else:
             candidates = [c for c in (req_disc, disc_at_tgt, ADD_DISC_CAP) if c is not None]
+            if rule == "requested":
+                # Nothing was requested, so there is nothing to copy across. Falling
+                # through to MIN(@target, 20%) is the only defensible reading, but
+                # it is a different rule from the one the case was run under and the
+                # analyst has to see that it happened.
+                flags.append(("action", "the transaction carries no requested price and no "
+                                        "requested discount - priced at MIN(target E2E, 20%) "
+                                        "instead, confirm before sending"))
         add_disc = min(candidates) if candidates else 0.0
-        if add_disc < 0:
+        # A tolerance, not `< 0`: a line asking for exactly the standard price
+        # computes an add. discount of -1e-17 and was reporting itself as "priced
+        # 0.0% ABOVE the standard price", which sent the analyst looking at a
+        # rounding artefact. Half a basis point is well under anything real.
+        if add_disc < -5e-5:
             # Target E2E is a FLOOR: when cost outruns the standard price the
             # discount goes negative and the line is priced ABOVE standard. That
             # is the model's own behaviour, so it is kept — and surfaced.
@@ -665,29 +1096,178 @@ def price_lines(lines, ref, meta):
         else:
             rpi_floor, rpi_mode = _rpi_target(cust_avg, ctry_avg, qty, ctry_qty, cust_qty, rate)
         raised = False
+        # The gate measures this CUSTOMER's own prior-year price, but what has to
+        # clear the rate is the TOTAL RPI — price variance plus mix (Dalia, on
+        # the call 2026-09-10). The ledger average blends countries that do not
+        # sell at one level: Jordan, Egypt and Iraq go out under Saudi and the
+        # UAE, so a line can sit below what this customer paid last year and
+        # still clear 6% on the company's reading. "Even if customer gets
+        # negative RPI (lower price), IT CAN PASS." Lifting it would raise a
+        # price nobody needed to raise.
+        #
+        # This can only bite where a CUSTOMER average exists. On a country-only
+        # line the gate is y*(1+rate) and Total RPI reduces to (s-y)/y, so the
+        # two conditions are the same inequality and the branch never fires —
+        # which is the intent: it is the customer-vs-ledger split that is at
+        # issue here, not the no-history case.
+        if (rpi_floor is not None and unit_net is not None
+                and rpi_floor > unit_net + 1e-6
+                and rpi_before is not None and rpi_before >= rate - EPS):
+            rpi_floor = None
+            rpi_mode = (f"total RPI {rpi_before:.1%} already clears {rate:.0%} on the "
+                        f"ledger average, so the price is left under this customer's "
+                        f"own last-year price - passes on the company reading")
         if rpi_floor is not None and unit_net is not None and rpi_floor > unit_net + 1e-6:
             unit_net = rpi_floor
             add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
-            binds = f"RPI {half} floor"
+            binds = f"RPI {exc['rate']:.1%} floor" if exc else f"RPI {half} floor"
             raised = True
+
+        # ── the E2E floor ────────────────────────────────────────────────────
+        # The requested rule alone will price a line at cost — EFM-APS100 on
+        # W262223256E came out at 80.00 against a 79.63 cost, an E2E of 0.5%, and
+        # "we cannot release any item with the cost price" (Dalia, 2026-09-08).
+        # So the group's target E2E is a FLOOR again, as it was under the 'e2e'
+        # rule: the target is what the line is priced at, and the 35-37% band she
+        # will accept is a CONCESSION for the approval mail, never where the engine
+        # lands on its own (Laith, 2026-09-08: "ideally it's 40").
+        #
+        # The carve-out is hers: "except if we have any customer reference last
+        # year" — a real PY CUSTOMER AVERAGE (ledger W, off 'PV 2025 ') means this
+        # customer has already paid a price for this material, and that history
+        # outranks the target. The COUNTRY average (Y) does not: every line on
+        # W262223256E has one, and all three of her comments are on lines that do.
+        # Carried revision lines keep their approved price, same as the RPI floor.
+        e2e_floor = None
+        if (carried is None and unit_std and not cust_avg
+                and net_at_tgt is not None and qty):
+            e2e_floor = net_at_tgt / qty
+        if e2e_floor is not None and unit_net is not None and e2e_floor > unit_net + 1e-6:
+            unit_net = e2e_floor
+            add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
+            binds = f"target E2E {tgt_e2e:.0%} floor"
+            floored = True
+        else:
+            floored = False
 
         rpi_after = _rpi_pct(unit_net, cust_avg, ctry_avg, qty, ctry_qty, cust_qty) if unit_net else None
         total_net = unit_net * qty if unit_net is not None else None
         e2e = (1 - total_cost / total_net) if (total_cost is not None and total_net) else None
 
+        # The ledger shows RPI% and Total RPI% side by side and they are not the
+        # same number: RPI% is this customer's own price variance, Total RPI%
+        # adds the mix against the ledger average. Both are needed here — the
+        # two cases Dalia described are exactly the two ways they disagree.
+        var_line = {"qty": qty, "ctry_qty": ctry_qty, "cust_avg": cust_avg,
+                    "cust_qty": cust_qty, "ctry_avg": ctry_avg}
+        pv_value, ae_value = _line_variance(var_line, unit_net)
+        pv_pct = (pv_value / (total_net - pv_value)
+                  if total_net and abs(total_net - pv_value) > EPS else None)
+
+        # The cheaper identical equivalent, if this part also ships under another
+        # brand letter. Suggestion only — see _cheaper_equivalent.
+        cheaper = _cheaper_equivalent(mat, listp, t, ref["trig"], _to_deal)
+
+        # What the line would be worth at each rung of the band Dalia will accept,
+        # so the approval mail can offer a concession without anyone reopening the
+        # model. Only meaningful where the target floor is what set the price.
+        band = None
+        if floored and cost is not None and tgt_e2e:
+            band = {f"{r:.0%}": round(cost / (1 - r), 4)
+                    for r in E2E_CONCESSION if r < tgt_e2e - 1e-9}
+
         # ── flags: what a human should still look at ─────────────────────────
         if not listp:
             flags.append(("action", "no list price - not on the transaction, and the material "
-                                    "is not in the Trigger sheet; cannot price"))
-        elif list_from_trigger:
-            flags.append(("verify", "list price from the Trigger sheet (the transaction "
-                                    "carried none) - verify"))
+                                    "is in none of the master's books; cannot price"))
+        elif list_src == "trigger":
+            # The material matched exactly, so this is the price book being read,
+            # not a substitution — it is noted, not queried. Say whether it
+            # REPLACED a stale number off CPQ or filled a blank, because those read
+            # very differently against the transaction the customer has seen.
+            if txn_list and abs(txn_list - listp) > 0.005:
+                flags.append(("info",
+                              f"list price updated to {listp:,.4f} from the Trigger sheet - "
+                              f"the transaction carried {txn_list:,.4f} "
+                              f"({listp / txn_list - 1:+.1%}), an older price book"))
+            elif not txn_list:
+                flags.append(("info", f"list price {listp:,.4f} from the Trigger sheet - the "
+                                      + ("transaction priced it at 0"
+                                         if list_zero else "transaction carried none")))
+        elif list_src == "twin":
+            flags.append(("action",
+                          f"list price {listp:,.4f} borrowed from {twin['material']} - this "
+                          f"material's own Trigger row carries no list (discontinued), and "
+                          f"that entry is the same description at the same cost - confirm"))
+        elif list_src == "guidance":
+            flags.append(("action",
+                          f"list price {listp:,.4f} from the Guidance sheet"
+                          + (f" ({grec['country']})" if grec.get("country") else "")
+                          # No ';' in a flag — flags are joined with '; '.
+                          + " - the previous list, not the 2026 Q2 one, and the Trigger "
+                            "sheet has nothing for this material - confirm"))
         if tgt_e2e is None and ln["group"]:
             flags.append(("verify", f"pricing group '{ln['group']}' is not in E2E Guidelines"))
+        if ln.get("std_zero"):
+            flags.append(("action", f"customer condition reads 0 on the transaction, so the "
+                                    f"standard price is the full list and this line shows a "
+                                    f"{add_disc:.0%} additional discount - if the price book "
+                                    f"simply did not load it should be {STD_DISCOUNT:.0%}, "
+                                    f"confirm before sending"))
+        if listp and total_cost is None:
+            # No cost anywhere means no margin on this line, so it cannot be part
+            # of an E2E the approver reads. The AUG 2026 cut of 'Fire Trigger 26'
+            # dropped its cost column, so a FIRE line whose CPQ export carries no
+            # cost has nothing left to fall back on — the model is blind here too,
+            # and the engine says so rather than reporting a margin it cannot see.
+            flags.append(("verify", "no cost - not on the transaction and the Trigger sheet "
+                                    "has none for this material, so this line carries no E2E"))
         if raised:
-            flags.append(("info", f"raised to the {half} RPI floor ({rpi_mode})"))
+            flags.append(("action" if exc else "info",
+                          f"raised to last year's price + {exc['rate']:.1%} ({rpi_mode}) - "
+                          f"the {exc['label']} rate, which needs approving"
+                          if exc else f"raised to the {half} RPI floor ({rpi_mode})"))
+        if floored:
+            asked = (f"{ln['requested']:,.4f}" if ln["requested"] is not None else
+                     f"{req_disc:.1%} off" if req_disc is not None else "nothing")
+            flags.append(("action",
+                          f"raised to the {tgt_e2e:.0%} target E2E - the customer asked {asked}"
+                          + (" - concede no further than "
+                             + ", ".join(f"{k} = {v:,.4f}" for k, v in band.items())
+                             if band else "")))
         if rpi_mode and rpi_floor is None and (cust_avg or ctry_avg):
             flags.append(("info", rpi_mode))
+        # A prior-year reference that sits BELOW today's cost cannot be priced to
+        # — the gate would sell the line at a loss — and every cent of the gap
+        # lands in mix variance, so one such line can carry a whole quote's RPI.
+        # EFM-APS100 on W262223256E: 62.13 average, 79.63 cost, and its 5,999.23
+        # is 69% of that case's 8,683.38. It is not a price rise anyone decided.
+        if ctry_avg and not cust_avg and cost and ctry_avg * (1 + rate) < cost:
+            flags.append(("verify",
+                          f"last year's average {ctry_avg:,.2f} is BELOW today's cost "
+                          f"{cost:,.2f} - the material was repriced, so the gate cannot be "
+                          f"met at any margin and this line's RPI is a comparison to the "
+                          f"prior-year Gulf average, not an increase to this customer"))
+        # The mirror of the case above: this customer pays well over their own
+        # last-year price, but the mix against the ledger average drags the total
+        # negative. Nothing to chase — if the margin is right it goes for approval
+        # as it stands. These are usually service-level lines that come out of the
+        # calculation altogether, and about nine in ten of them are CBS, not Fire
+        # (Dalia, on the call 2026-09-10).
+        if (pv_pct is not None and pv_pct > rate + EPS
+                and rpi_after is not None and rpi_after < -EPS):
+            flags.append(("action",
+                          f"price variance {pv_pct:.0%} on this customer but total RPI "
+                          f"{rpi_after:.0%} - the mix against the ledger average is what "
+                          f"is negative. If the margin is right this goes for approval as "
+                          f"it stands; check first whether it is a service-level line that "
+                          f"belongs outside the calculation"))
+        if cheaper:
+            flags.append(("verify",
+                          f"{cheaper['material']} is the same part at "
+                          f"{cheaper['list']:,.2f} against {listp:,.2f}"
+                          + (f" ({cheaper['brand']})" if cheaper["brand"] else "")
+                          + " - the cheaper equivalent, if the customer will take it"))
         if cust_avg and not ctry_avg:
             flags.append(("verify", "customer average only - no ledger reference, RPI reads 0"))
         if not cust_avg and not ctry_avg:
@@ -720,13 +1300,24 @@ def price_lines(lines, ref, meta):
 
         out.append({
             "material": mat, "description": ln["description"], "group": ln["group"],
-            "qty": qty, "list": listp, "std_disc": std, "unit_std": unit_std,
+            "qty": qty, "list": listp, "list_src": list_src, "std_disc": std, "unit_std": unit_std,
             "total_std": total_std, "cost": cost, "total_cost": total_cost,
             "target_e2e": tgt_e2e, "net_at_target": net_at_tgt, "disc_at_target": disc_at_tgt,
             "requested": ln["requested"], "req_disc": req_disc,
             "cust_avg": cust_avg, "cust_qty": cust_qty,
             "ctry_avg": ctry_avg, "ctry_qty": ctry_qty,
             "rpi_floor": rpi_floor, "rpi_before": rpi_before, "rpi_after": rpi_after,
+            # This line's own AE contribution, so the tab and the log can name the
+            # lines a headline RPI actually came from instead of quoting a total.
+            "rpi_value": round(ae_value, 2),
+            # This customer's own price variance, beside the total that includes
+            # mix — the ledger's RPI% and Total RPI% columns.
+            "pv_value": round(pv_value, 2), "pv_pct": pv_pct,
+            "cheaper_equiv": cheaper,
+            "ref_below_cost": bool(ctry_avg and not cust_avg and cost
+                                   and ctry_avg * (1 + rate) < cost),
+            "txn_list": txn_list,
+            "e2e_floor": e2e_floor, "floored": floored, "e2e_band": band,
             "add_disc": add_disc, "unit_net": unit_net, "total_net": total_net,
             "e2e": e2e, "binds": binds, "raised": raised, "severity": sev,
             "carried": carried is not None,
@@ -764,14 +1355,40 @@ def price_lines(lines, ref, meta):
     # margin was approved when it was set, whatever the quantity does to it now.
     below = [l for l in out if l["e2e"] is not None and l["target_e2e"]
              and l["e2e"] < l["target_e2e"] - 1e-6 and not l["carried"]]
+    floored_lines = [l for l in out if l.get("floored")]
+    # The target the approval ask is quoted against — the sub-target lines' when
+    # there are any, otherwise the target the floor had to lift lines up to.
+    tgts = [l["target_e2e"] for l in (below or floored_lines) if l["target_e2e"]]
+    # The LOWEST target among the lines the floor lifted: a concession rung has to
+    # clear the strictest of them to be a concession at all.
+    floored_tgts = [l["target_e2e"] for l in floored_lines if l["target_e2e"]]
     summary = {
         "lines": len(out),
         "rule": rule,
         "half": half,
         "rpi_rate": rate,          # the mail quotes it: "increased prices by 6% on LY price"
+        # Set when a standing customer exception replaced the half-year rate, so
+        # the tab and the approval mail can say WHY the number is not 3.5%/6%.
+        "rpi_exception": ({"label": exc["label"], "rate": exc["rate"],
+                           "why": exc["why"], "standard": RPI_RATE[half]}
+                          if exc else None),
         # How far the quote sits under target, for the approval ask.
         "below_target": len(below),
-        "target_e2e": (round(max(l["target_e2e"] for l in below), 4) if below else None),
+        "target_e2e": round(max(tgts), 4) if tgts else None,
+        # Lines the target-E2E floor lifted off the customer's own ask. These are
+        # the approval ask now: the margin is fine, the PRICE is above what the
+        # customer requested, and the concession band is what Kiran signs off.
+        "floored": len(floored_lines),
+        "floored_value": round(sum((l["unit_net"] - (l["requested"] if l["requested"] is not None
+                                                     else l["unit_net"])) * (l["qty"] or 0)
+                                   for l in floored_lines), 2),
+        # Only the rungs that are a concession for EVERY floored line. The rungs
+        # are absolute and Dalia named them against Addressable's 40% target, so
+        # on a quote whose floored lines are Notification-UL (target 35%) there
+        # is nothing to offer and the mail must say "needs approval" rather than
+        # invite Kiran down to a 37% that is above the target he is approving.
+        "e2e_concession": [r for r in E2E_CONCESSION
+                           if floored_tgts and r < min(floored_tgts) - EPS],
         "grand_total": round(grand, 2),
         "total_standard": round(std_tot, 2),
         "overall_add_disc": round(1 - grand / std_tot, 4) if std_tot else None,
@@ -783,6 +1400,24 @@ def price_lines(lines, ref, meta):
         # rather than making the caller re-derive them from the lines.
         "pv_value": round(ag, 2),
         "rpi_value": round(ae, 2),
+        # WHERE the RPI came from. A total on its own is unreadable: a quote to a
+        # customer with no history measures every line against the Gulf's
+        # prior-year average, and one repriced material can carry the whole
+        # number. `no_history` is the share of AE from lines this customer has
+        # never bought; `drivers` names the biggest contributors.
+        "rpi_no_history": round(sum(l["rpi_value"] for l in out if not l["cust_avg"]), 2),
+        "rpi_below_cost": round(sum(l["rpi_value"] for l in out if l["ref_below_cost"]), 2),
+        "rpi_drivers": [{"material": l["material"], "rpi_value": l["rpi_value"],
+                         "share": round(l["rpi_value"] / ae, 4) if ae else None,
+                         "ctry_avg": l["ctry_avg"], "cost": l["cost"],
+                         "unit_net": l["unit_net"], "ref_below_cost": l["ref_below_cost"],
+                         # A repriced material's RPI is arithmetic, not a decision.
+                         # It only needs a warning when the MARGIN is also wrong —
+                         # "leave it as long as margin is okay" (Dalia, 2026-09-10).
+                         "margin_ok": bool(l["e2e"] is not None and l["target_e2e"]
+                                           and l["e2e"] >= l["target_e2e"] - 1e-6)}
+                        for l in sorted(out, key=lambda x: -abs(x["rpi_value"] or 0))[:3]
+                        if l["rpi_value"]],
         # Everything the approval mail needs, in its own shape.
         "at_target": at_target,
         "groups": _by_group(out),
@@ -797,6 +1432,19 @@ def price_lines(lines, ref, meta):
 
 
 # ─── building the case folder (needs Excel) ──────────────────────────────────
+def _locked(path):
+    """True when `path` exists and something else holds it open for writing —
+    on Windows that is Excel, and opening it 'r+b' is what the write will do.
+    A file that is not there yet is not locked."""
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r+b"):
+            return False
+    except OSError:
+        return True
+
+
 def _excel():
     try:
         import win32com.client as w
@@ -868,6 +1516,21 @@ def build_case(bom_path, priced, summary, meta, log):
     led_path = os.path.join(
         case_dir, f"{pre}Working file - {safe_name(meta.get('project') or tag, 60)}.xlsm")
 
+    # Every output this build will overwrite, checked BEFORE Excel is opened.
+    # The .xlsm ledger is written last, four minutes in, so leaving it to fail on
+    # its own PermissionError threw away the whole run — and only the .xlsb was
+    # ever guarded. One check, up front, naming everything that is locked.
+    locked = [p for p in (work_path, fb_path, led_path,
+                          os.path.join(case_dir,
+                                       f"{pre}Working File ({safe_name(tag, 60)}) - as pasted.xlsb"))
+              if _locked(p)]
+    if locked:
+        raise RuntimeError(
+            "Open in Excel, so this build cannot overwrite "
+            + (f"{len(locked)} of its files" if len(locked) > 1 else "it") + ": "
+            + ", ".join(os.path.basename(p) for p in locked)
+            + ". Close and build again.")
+
     # 2 ── the Working File: the master model, filled and toggled
     try:
         shutil.copy2(meta["master"], work_path)
@@ -880,7 +1543,23 @@ def build_case(bom_path, priced, summary, meta, log):
     _check_cancel(meta, "before opening Excel")
     app = _excel()
     wb = None
+    base_path = None
     try:
+        # 2a ── the "as pasted" Working File, on request. The master with nothing in
+        # it but the transaction and the header: every ledger column left as its own
+        # formula, so Add. Discount is whatever the MODEL derives (R13 = the export's
+        # Requested Discount % / 100) and no decision of ours has been written yet.
+        # It is a diagnostic — the file as it stands one second after the paste —
+        # and it is the only way to tell a model result from an engine result.
+        # Written on every build unless the job says otherwise: the question it
+        # answers ("is this number the model's or Vector's?") is asked of every
+        # case, and it cannot be answered after the fact from the built file
+        # alone, because every column in that one has been written over.
+        if meta.get("baseline", True):
+            base_path = os.path.join(
+                case_dir, f"{pre}Working File ({safe_name(tag, 60)}) - as pasted.xlsb")
+            base_path = _build_baseline(app, base_path, meta, log)
+
         wb = app.Workbooks.Open(os.path.abspath(work_path), UpdateLinks=0)
         _fill_working(wb, priced, meta, log)
         _check_cancel(meta, "after filling the ledger")
@@ -955,29 +1634,65 @@ def build_case(bom_path, priced, summary, meta, log):
 
     return {"case_dir": case_dir, "bom": bom_copy, "working": work_path,
             "feedback": fb_path, "ledger": led_path, "checks": checks,
-            "approval": approval}
+            "approval": approval, "baseline": base_path}
 
 
-def _fill_working(wb, priced, meta, log):
-    """Paste the transaction, set the header, toggle APRC, and write the decision.
+def _build_baseline(app, path, meta, log):
+    """The master with the transaction pasted and nothing else — no values written
+    over the ledger's formulas, no decided discount.
 
-    Source columns (SAP, qty, list, std disc, cost, requested + add. discount) are
-    written as VALUES row by row — that is the procedure's own fix for the
-    duplicate-material trap, where the ledger's XLOOKUPs give every repeat of a
-    material the FIRST row's quantity. Every derived column is left as a live
-    formula so the file still shows its work."""
+    This is the file the analyst would see one second after pasting the BOM, and it
+    is deliberately NOT corrected: the duplicate-material trap is live (every repeat
+    of a material XLOOKUPs the first row's quantity), Add. Discount is whatever the
+    model itself reads out of the export's Requested Discount % column, and a
+    material the transaction carries no list price for shows the model's own
+    #DIV/0!. Comparing it with the built Working File is how you tell which numbers
+    the model produced and which ones Vector decided."""
+    try:
+        shutil.copy2(meta["master"], path)
+    except PermissionError:
+        log(f"{os.path.basename(path)} is open in Excel — skipped the as-pasted copy.", "warn")
+        return None
+    wb = None
+    try:
+        wb = app.Workbooks.Open(os.path.abspath(path), UpdateLinks=0)
+        _paste_bom(wb, meta)
+        _set_header(wb, meta, log)
+        app.CalculateFullRebuild()
+        led = wb.Worksheets(LEDGER_SHEET)
+        _refresh_pivots(wb, led, log)
+        t11 = num(led.Range("T11").Value) or 0.0
+        log(f"Wrote {os.path.basename(path)} — the model on its own, before any "
+            f"decision: total net {t11:,.2f}")
+        wb.Save()
+    except Exception as e:
+        log(f"Could not write the as-pasted copy: {e}", "warn")
+        path = None
+    finally:
+        try:
+            if wb is not None:
+                wb.Close(SaveChanges=False)
+        except Exception:
+            pass
+    return path
+
+
+def _paste_bom(wb, meta):
+    """The transaction into 'Paste BOM Here', verbatim, header row included."""
     paste = wb.Worksheets("Paste BOM Here")
     paste.Cells.ClearContents()
     rows = meta["_bom_rows"]
     header = meta["_bom_header"]
     width = max(len(header), max((len(r) for r in rows), default=0), 40)
-
     block = [[_com_value(header[i] if i < len(header) else None) for i in range(width)]]
     for r in rows:
         block.append([_com_value(r[i] if i < len(r) else None) for i in range(width)])
     paste.Range(paste.Cells(1, 1), paste.Cells(len(block), width)).Value = block
-    log(f"Pasted the transaction into 'Paste BOM Here' ({len(rows)} rows)")
+    return len(rows)
 
+
+def _set_header(wb, meta, log):
+    """Customer / ledger / project / transaction / CRM and the APRC toggle."""
     led = wb.Worksheets(LEDGER_SHEET)
     led.Range("C5").Value = _com_value(num(meta.get("customer")) or meta.get("customer"))
     led.Range("D5").Value = _com_value(meta.get("ledger") or "R2321")
@@ -998,6 +1713,20 @@ def _fill_working(wb, priced, meta, log):
     aprc = meta.get("aprc") or "525"
     led.Range("P6").Value = 525.0 if str(aprc) == "525" else "530-535"
     log(f"APRC set to {aprc} → {'EUR' if str(aprc) == '525' else 'USD'}")
+
+
+def _fill_working(wb, priced, meta, log):
+    """Paste the transaction, set the header, toggle APRC, and write the decision.
+
+    Source columns (SAP, qty, list, std disc, cost, requested + add. discount) are
+    written as VALUES row by row — that is the procedure's own fix for the
+    duplicate-material trap, where the ledger's XLOOKUPs give every repeat of a
+    material the FIRST row's quantity. Every derived column is left as a live
+    formula so the file still shows its work."""
+    n_rows = _paste_bom(wb, meta)
+    log(f"Pasted the transaction into 'Paste BOM Here' ({n_rows} rows)")
+    _set_header(wb, meta, log)
+    led = wb.Worksheets(LEDGER_SHEET)
 
     # Per-row values over the XLOOKUP columns + the decision in Q and R.
     n = len(priced)
@@ -1411,6 +2140,9 @@ def _export_feedback(app, wb, out_path, log):
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 def resolve_meta(job, lines, bom_path, ref):
     meta = dict(job)
+    # The transaction's own date, not the clock — a June case re-run in September
+    # is still a June case, and the customer exceptions are dated.
+    meta["as_of"] = guess_date(bom_path)
     meta["half"] = job.get("half") if job.get("half") in ("H1", "H2") else guess_half(bom_path)
     aprc = str(job.get("aprc") or "auto")
     meta["aprc"] = aprc if aprc in ("525", "530-535") else detect_aprc(lines)
@@ -1469,14 +2201,21 @@ def main():
 
         ref = load_reference(master)
         log(f"Reference loaded: {len(ref['e2e'])} E2E targets, {len(ref['pv'])} customer "
-            f"prior-year rows, {len(ref['mv'])} ledger prior-year rows")
+            f"prior-year rows, {len(ref['mv'])} ledger prior-year rows, "
+            f"{len(ref['trig'])} Trigger list prices, {len(ref['guide'])} Guidance rows")
 
         meta = resolve_meta(job, lines, bom, ref)
-        log(f"Half-year {meta['half']} (RPI floor {RPI_RATE[meta['half']]:.1%}) · "
+        _exc = rpi_exception(meta)
+        _rate = _exc["rate"] if _exc else RPI_RATE[meta["half"]]
+        log(f"Half-year {meta['half']} (RPI floor {_rate:.1%}) · "
             f"APRC {meta['aprc']} · ledger {meta['ledger']}")
+        if _exc:
+            log(f"{_exc['label']}: {_rate:.1%} in place of the {meta['half']} "
+                f"{RPI_RATE[meta['half']]:.1%} — {_exc['why']}. Needs approving.")
         log("Rule: requested discount as asked, then the prior-year average "
-            f"x {1 + RPI_RATE[meta['half']]:.2f} where the line prices under the gate — "
-            "the target E2E does not hold the price up."
+            f"x {1 + _rate:.3f} where the line prices under the gate, then the "
+            "group's target E2E as a floor — except on a line the customer has "
+            "a prior-year price of its own for."
             if str(meta.get("rule") or "requested").lower() != "e2e" else
             "Rule: MIN(requested, @target E2E, 20%) with the algebraic RPI solve (old).")
 
@@ -1524,6 +2263,34 @@ def main():
             log(f"{summary['below_target']} line(s) price under their target E2E "
                 f"(overall {summary['overall_e2e']:.0%} against "
                 f"{summary['target_e2e']:.0%}) — this margin needs approval.", "warn")
+        for d in (summary.get("rpi_drivers") or []):
+            if (d.get("share") or 0) > 0.25:
+                log(f"RPI: {d['material']} carries {d['rpi_value']:,.2f} of "
+                    f"{summary['rpi_value']:,.2f} ({d['share']:.0%}) — priced "
+                    f"{d['unit_net']:,.2f} against a {d['ctry_avg']:,.2f} prior-year average"
+                    + (f", which is below its {d['cost']:,.2f} cost: the material was "
+                       f"repriced and no margin can meet the gate"
+                       + (" - the margin is on target, so this is left as it is; "
+                          "the price history is in the PV book" if d.get("margin_ok")
+                          else "")
+                       if d.get("ref_below_cost") else ""),
+                    "warn" if (d.get("ref_below_cost") and not d.get("margin_ok")) else "info")
+        if summary.get("rpi_no_history") and abs(summary["rpi_no_history"]
+                                                 - (summary.get("rpi_value") or 0)) < 1:
+            log(f"All {summary['rpi_value']:,.2f} of the RPI is against the ledger's "
+                f"prior-year COUNTRY average — this customer bought none of these lines "
+                f"last year, so no price was raised on them.", "info")
+        if summary.get("floored"):
+            # The band can legitimately be empty — every rung at or above the
+            # strictest floored target is no concession — and the sentence has to
+            # end rather than trail off into nothing.
+            conc = ", ".join(f"{r:.0%}" for r in summary.get("e2e_concession") or ())
+            log(f"{summary['floored']} line(s) asked for a price under their target E2E "
+                f"and were raised to it, {summary['floored_value']:,.2f} over what the "
+                f"customer asked — nothing is released at cost."
+                + (f" Concede no further than {conc}." if conc
+                   else " There is no concession rung under that target — it needs approval."),
+                "warn")
         if summary["action"] or summary["verify"]:
             log(f"{summary['action']} line(s) need a decision, {summary['verify']} need a "
                 f"reference check", "warn")

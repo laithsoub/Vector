@@ -1,88 +1,31 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { Printer, ChevronDown, Copy, Check } from 'lucide-react';
+import React, { useState } from 'react';
+import { Printer, Copy, Check } from 'lucide-react';
 
 import { DATA, SIZES_1PH, SIZES_3PH } from './lib/cbuData';
 import { useSalesmen } from './lib/salesmen';
+import { Dropdown, DItem } from './components/Dropdown';
 
 const f2 = (n:number) => `£${n.toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
 
-// ── Dropdown component ────────────────────────────────────────────────────────
-const DropdownClose = React.createContext<()=>void>(()=>{});
-
-function Dropdown({label,value,placeholder,children,required}:{label:string;value:string;placeholder:string;children:React.ReactNode;required?:boolean}) {
-  const [open,setOpen] = useState(false);
-  const ref        = useRef<HTMLDivElement>(null);
-  const btnRef     = useRef<HTMLButtonElement>(null);
-  const dropRef    = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({top:0,left:0,width:0});
-
-  const close = () => setOpen(false);
-
-  useEffect(()=>{
-    const h=(e:MouseEvent)=>{
-      const t = e.target as Node;
-      if (!ref.current?.contains(t) && !dropRef.current?.contains(t)) setOpen(false);
-    };
-    document.addEventListener('mousedown',h);
-    return ()=>document.removeEventListener('mousedown',h);
-  },[]);
-
-  const handleOpen = () => {
-    if (btnRef.current) {
-      const r = btnRef.current.getBoundingClientRect();
-      setPos({ top: r.bottom + window.scrollY + 4, left: r.left + window.scrollX, width: Math.max(r.width, 220) });
-    }
-    setOpen(v=>!v);
-  };
-
-  return (
-    <DropdownClose.Provider value={close}>
-      <div ref={ref} className="relative">
-        <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wide mb-1">
-          {label}{required&&<span className="text-red-400 ml-0.5">*</span>}
-        </label>
-        <button ref={btnRef} onClick={handleOpen}
-          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-xl border bg-zinc-50 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 hover:border-blue-400 transition-all text-left${open?' border-blue-400 ring-2 ring-blue-100 dark:ring-blue-900/30':''}`}>
-          <span className={value?'font-semibold text-zinc-900 dark:text-white':'text-zinc-400'}>{value||placeholder}</span>
-          <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform shrink-0 ml-1${open?' rotate-180':''}`}/>
-        </button>
-        {open && createPortal(
-          <div ref={dropRef} style={{position:'absolute', top: pos.top, left: pos.left, width: pos.width, zIndex: 9999}}
-            className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl overflow-auto max-h-80">
-            {children}
-          </div>,
-          document.body
-        )}
-      </div>
-    </DropdownClose.Provider>
-  );
-}
-
-// Item inside a Dropdown — calls close via context then runs onClick
-function DItem({onClick,active,children}:{onClick:()=>void;active:boolean;children:React.ReactNode}) {
-  const close = React.useContext(DropdownClose);
-  return (
-    <button onClick={()=>{ onClick(); close(); }}
-      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors${active?' bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300 font-semibold':''}`}>
-      {children}
-    </button>
-  );
-}
-
 // ── Main export ───────────────────────────────────────────────────────────────
-export default function CBUCalculator() {
-  const [size,  setSize]   = useState('');
+export default function CBUCalculator({ size, onSize }: { size: string; onSize: (s: string) => void }) {
+  const setSize = onSize;
   const [pn,    setPN]     = useState('');
   const [qr,    setQR]     = useState('');
   const [smIdx, setSmIdx]  = useState<number|null>(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
+  // Systems going into one quote, in print order. Empty means "just the one on
+  // screen", so the single-system flow is unchanged. The same size may appear
+  // more than once — a site with two identical 10KVA systems is two briefs.
+  const [systems, setSystems] = useState<string[]>([]);
 
   const SALESMEN = useSalesmen();
   const cfg = size ? DATA[size] : null;
   const sm  = smIdx !== null ? SALESMEN[smIdx] ?? null : null;
-  const ok  = !!cfg && !!pn.trim() && !!qr.trim() && sm !== null;
+  const toPrint = systems.length ? systems : (size ? [size] : []);
+  const ok  = toPrint.length > 0 && toPrint.every(s => DATA[s]) && !!pn.trim() && !!qr.trim() && sm !== null;
+  const quoteTotal = toPrint.reduce((t, s) => t + (DATA[s]?.total || 0), 0);
 
   const ycls = "bg-yellow-50 dark:bg-yellow-900/20 border border-zinc-200 dark:border-zinc-700 px-2 py-1 text-xs font-semibold text-zinc-800 dark:text-zinc-100 rounded";
 
@@ -95,7 +38,7 @@ export default function CBUCalculator() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          system:   size,
+          systems:  toPrint,
           project:  pn.trim(),
           quote:    qr.trim(),
           engineer: sm.name,
@@ -112,9 +55,20 @@ export default function CBUCalculator() {
       const url  = URL.createObjectURL(blob);
       const a    = document.createElement('a');
       a.href     = url;
-      a.download = `CBU_Tech_Brief_${qr.trim()}.pdf`;
+      // The server builds the name — quote reference as typed, revision and all,
+      // plus the system, so two sizes quoted under one reference do not collide.
+      // Falling back to the old name only if an older sidecar answers without it.
+      a.download = json.fileName || `CBU_Tech_Brief_${qr.trim()}.pdf`;
+      // A detached anchor's click is ignored by some engines, WebView2 included,
+      // which is how the desktop app ended up falling through to the download
+      // header instead of using this name at all.
+      a.style.display = 'none';
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+      // Revoked on the next tick: revoking synchronously can cancel the save
+      // before the engine has read the blob.
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch (e: any) {
       setError(e.message || 'Unknown error');
     } finally {
@@ -152,7 +106,11 @@ export default function CBUCalculator() {
         <button onClick={handleExport} disabled={!ok || loading}
           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all${ok&&!loading?' bg-blue-600 hover:bg-blue-700 text-white':' bg-zinc-100 dark:bg-zinc-800 text-zinc-400 cursor-not-allowed'}`}>
           <Printer className="w-3.5 h-3.5"/>
-          {loading ? 'Generating…' : ok ? 'Export CBU Tech Brief PDF' : 'Fill all fields to export'}
+          {loading
+            ? `Generating${toPrint.length > 1 ? ` ${toPrint.length} briefs` : ''}…`
+            : !ok ? 'Fill all fields to export'
+            : toPrint.length > 1 ? `Export ${toPrint.length} systems + Commissioning + T&C`
+            : 'Export CBU Tech Brief PDF'}
         </button>
       </div>
 
@@ -186,6 +144,39 @@ export default function CBUCalculator() {
             <span>{cfg?.duration || <span className="text-zinc-400">—</span>}</span>
             {cfg?.duration && <CopyBtn val={cfg.duration} id="duration"/>}
           </div>
+        </div>
+
+        {/* Row 1b: systems in this quote — one brief each, merged into one PDF */}
+        <div className="flex flex-wrap items-center gap-1.5 px-3 py-2 border-b border-zinc-100 dark:border-zinc-800">
+          <span className="text-[10px] font-bold text-zinc-500 dark:text-zinc-400 uppercase tracking-wide mr-1">Systems in this quote</span>
+          {systems.map((s, i) => (
+            <span key={i}
+              className={`inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-md text-[11px] font-semibold border${
+                s === size
+                  ? ' bg-blue-50 dark:bg-blue-900/30 border-blue-300 dark:border-blue-700 text-blue-700 dark:text-blue-300'
+                  : ' bg-zinc-50 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200'}`}>
+              <button onClick={() => setSize(s)} title="Show this system's BoM">{i + 1}. {s}</button>
+              <button aria-label={`Remove ${s}`} title="Remove"
+                onClick={() => setSystems(list => list.filter((_, j) => j !== i))}
+                className="px-1 rounded text-zinc-400 hover:text-red-500">×</button>
+            </span>
+          ))}
+          <button disabled={!cfg} onClick={() => setSystems(list => [...list, size])}
+            className={`px-2 py-0.5 rounded-md text-[11px] font-bold border border-dashed${cfg
+              ? ' border-blue-300 dark:border-blue-700 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20'
+              : ' border-zinc-200 dark:border-zinc-700 text-zinc-400 cursor-not-allowed'}`}>
+            + Add {cfg ? size : 'selected system'}
+          </button>
+          {systems.length > 0 && (
+            <span className="ml-auto flex items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+              Quote total <span className="font-mono font-bold text-zinc-800 dark:text-zinc-100">{f2(quoteTotal)}</span>
+              <CopyBtn val={quoteTotal.toFixed(2)} id="quote-total"/>
+              <button onClick={() => setSystems([])} className="hover:text-red-500">Clear</button>
+            </span>
+          )}
+          {systems.length === 0 && (
+            <span className="text-[10px] text-zinc-400">Empty = export just the selected system. Each added system prints its own brief; Commissioning + T&C go once at the end.</span>
+          )}
         </div>
 
         {/* Row 2: Project info */}

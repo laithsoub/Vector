@@ -46,14 +46,27 @@ Log "edge path: $edge"
 # only binds with a dedicated --user-data-dir. Log into SharePoint once in this
 # profile; cookies persist here for Connect to JOE.
 $edgeProfile = Join-Path $env:LOCALAPPDATA 'VectorEdgeDebug'
+
+# The tabs every LSD run reads. They open here so the sessions are already warm
+# by the time anyone clicks Fetch; the server then reloads them on a timer
+# (automation/tab_keepalive.py) so they never idle out. Extra pages — the
+# analyst's OneDrive views for LSD Daily work and Pricing cases — are added in
+# Settings → LSD Pricing → "Keep tabs alive", and the timer opens those itself.
+$keepAlive = @(
+    'https://eaton.bigmachines.com/',
+    'https://eaton.sharepoint.com/sites/QuotationFactoryEMEA'
+)
 if ($edge -and -not $debugUp) {
-    Start-Process $edge -ArgumentList @(
+    # Minimized, not headless: headless would hold the same profile lock and
+    # could never be signed in by hand, and an SSO login has to be typed once.
+    Start-Process $edge -WindowStyle Minimized -ArgumentList (@(
         '--remote-debugging-port=9222',
         '--no-first-run',
-        "--user-data-dir=`"$edgeProfile`"",
-        'https://eaton.sharepoint.com/sites/QuotationFactoryEMEA'
-    )
-    Log "edge launched with debugging (user-data-dir=$edgeProfile)"
+        '--no-default-browser-check',
+        '--start-minimized',
+        "--user-data-dir=`"$edgeProfile`""
+    ) + $keepAlive)
+    Log "edge launched minimized with debugging (user-data-dir=$edgeProfile), tabs: $($keepAlive -join ', ')"
 } elseif ($debugUp) {
     Log "reusing the debug Edge already on 9222"
 }
