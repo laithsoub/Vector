@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;450;500;600;700&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{color:var(--accent-hover)}
+  .vec-root{
+    --accent:#5b8cff; --accent-hover:#7aa2ff; --accent-ink:#ffffff;
+    --accent-soft:color-mix(in oklab, var(--accent) 16%, transparent);
+    --accent-line:color-mix(in oklab, var(--accent) 34%, transparent);
+    --accent-text:color-mix(in oklab, var(--accent) 72%, #ffffff);
+    --bg:#0a0a0f; --bg-grad:#0d0d16;
+    --s1:#101017; --s2:#14141d; --s3:#1b1b26; --s-hover:#20202c;
+    --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.11); --line-3:rgba(255,255,255,.16);
+    --t1:#f5f5f8; --t2:#a4a4b2; --t3:#6d6d7d; --t4:#4c4c5a;
+    --ok:#34d399; --ok-soft:rgba(52,211,153,.13);
+    --warn:#fbbf24; --warn-soft:rgba(251,191,36,.13);
+    --err:#f87171; --err-soft:rgba(248,113,113,.13);
+    --violet:#a78bfa; --violet-soft:rgba(167,139,250,.14);
+    --highlight:inset 0 1px 0 rgba(255,255,255,.045);
+    --card-sh:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
+    --pop-sh:0 1px 2px rgba(0,0,0,.4), 0 24px 60px -18px rgba(0,0,0,.85);
+    --glow:0 0 0 1px var(--accent-line), 0 8px 26px -10px color-mix(in oklab, var(--accent) 55%, transparent);
+    --term:#07070b;
+  }
+  .vec-root.light{
+    --accent-soft:color-mix(in oklab, var(--accent) 11%, transparent);
+    --accent-line:color-mix(in oklab, var(--accent) 30%, transparent);
+    --accent-text:color-mix(in oklab, var(--accent) 82%, #000000);
+    --bg:#f4f4f7; --bg-grad:#ececf2;
+    --s1:#ffffff; --s2:#ffffff; --s3:#f5f5f8; --s-hover:#eeeef3;
+    --line:rgba(17,17,28,.09); --line-2:rgba(17,17,28,.13); --line-3:rgba(17,17,28,.2);
+    --t1:#15151d; --t2:#585866; --t3:#8a8a98; --t4:#b0b0bd;
+    --ok:#059669; --ok-soft:rgba(5,150,105,.1);
+    --warn:#b45309; --warn-soft:rgba(180,83,9,.1);
+    --err:#dc2626; --err-soft:rgba(220,38,38,.09);
+    --violet:#7c3aed; --violet-soft:rgba(124,58,237,.1);
+    --highlight:inset 0 1px 0 rgba(255,255,255,.9);
+    --card-sh:0 1px 2px rgba(17,17,28,.05), 0 8px 24px -12px rgba(17,17,28,.14);
+    --pop-sh:0 1px 2px rgba(17,17,28,.06), 0 24px 60px -18px rgba(17,17,28,.24);
+    --glow:0 0 0 1px var(--accent-line), 0 8px 22px -10px color-mix(in oklab, var(--accent) 40%, transparent);
+    --term:#0b0b12;
+  }
+  @keyframes vecUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+  @keyframes vecFade{from{opacity:0}to{opacity:1}}
+  @keyframes vecBounce{0%,80%,100%{transform:translateY(0);opacity:.5}40%{transform:translateY(-4px);opacity:1}}
+  .vec-anim{animation:vecUp .42s cubic-bezier(.16,1,.3,1) both}
+  @media (prefers-reduced-motion:reduce){.vec-anim{animation:none}}
+  .vec-scroll{scrollbar-width:thin;scrollbar-color:var(--line-3) transparent}
+  .vec-scroll::-webkit-scrollbar{width:10px;height:10px}
+  .vec-scroll::-webkit-scrollbar-thumb{background:var(--line-3);border-radius:8px;border:3px solid transparent;background-clip:padding-box}
+  .vec-scroll::-webkit-scrollbar-thumb:hover{background:var(--t3)}
+</style>
+</helmet>
+
+<div class="vec-root {{ themeClass }}" style="--accent: {{ accent }}; height:100vh; display:flex; overflow:hidden; font-family:'Geist',ui-sans-serif,system-ui,sans-serif; background:var(--bg); color:var(--t1); -webkit-font-smoothing:antialiased; font-size:13px; line-height:1.45; letter-spacing:-0.006em; background-image:radial-gradient(120% 90% at 100% 0%, var(--bg-grad) 0%, var(--bg) 55%);">
+
+  <!-- ─────────── SIDEBAR ─────────── -->
+  <aside style="width:250px; flex:none; display:flex; flex-direction:column; background:var(--s1); border-right:1px solid var(--line);">
+    <div style="height:60px; flex:none; display:flex; align-items:center; gap:11px; padding:0 16px; border-bottom:1px solid var(--line);">
+      <div style="position:relative; width:30px; height:30px; flex:none;">
+        <div style="width:30px; height:30px; border-radius:9px; background:linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6)); display:flex; align-items:center; justify-content:center; box-shadow:var(--glow);">
+          <span style="color:var(--accent-ink); font-size:15px; font-weight:700; letter-spacing:-0.06em; line-height:1;">V</span>
+        </div>
+        <span style="position:absolute; bottom:-2px; right:-2px; width:10px; height:10px; border-radius:50%; background:var(--ok); border:2px solid var(--s1);"></span>
+      </div>
+      <div style="min-width:0; flex:1; line-height:1.1;">
+        <div style="font-size:13.5px; font-weight:600; letter-spacing:-0.02em;">Vector</div>
+        <div style="font-size:10px; color:var(--t3); margin-top:2px;">Quote Automation · v3.0</div>
+      </div>
+    </div>
+
+    <nav class="vec-scroll" style="flex:1; overflow-y:auto; padding:14px 10px; display:flex; flex-direction:column; gap:18px;">
+      <div style="display:flex; flex-direction:column; gap:2px;">
+        <div style="padding:0 10px 7px; font-size:10px; font-weight:600; letter-spacing:.13em; text-transform:uppercase; color:var(--t3);">Workflow</div>
+        <sc-for list="{{ navWorkflow }}" as="it" hint-placeholder-count="7">
+          <button onClick="{{ it.onClick }}" style="{{ it.style }}" style-hover="{{ it.hoverStyle }}">
+            {{ it.iconEl }}
+            <span style="flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ it.label }}</span>
+            <sc-if value="{{ it.badge }}" hint-placeholder-val="{{ false }}"><span style="{{ it.badgeStyle }}">{{ it.badge }}</span></sc-if>
+            <sc-if value="{{ it.locked }}" hint-placeholder-val="{{ false }}">{{ it.lockEl }}</sc-if>
+          </button>
+        </sc-for>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:2px;">
+        <div style="padding:0 10px 7px; font-size:10px; font-weight:600; letter-spacing:.13em; text-transform:uppercase; color:var(--t3);">Tools</div>
+        <sc-for list="{{ navTools }}" as="it" hint-placeholder-count="5">
+          <button onClick="{{ it.onClick }}" style="{{ it.style }}" style-hover="{{ it.hoverStyle }}">
+            {{ it.iconEl }}
+            <span style="flex:1; text-align:left; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ it.label }}</span>
+            {{ it.lockEl }}
+          </button>
+        </sc-for>
+      </div>
+    </nav>
+
+    <div style="padding:8px 10px 12px; border-top:1px solid var(--line); display:flex; flex-direction:column; gap:2px;">
+      <button onClick="{{ goSettings }}" style="{{ settingsStyle }}" style-hover="{{ settingsHover }}">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="flex:none;"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"></path></svg>
+        <span style="flex:1; text-align:left;">Settings</span>
+      </button>
+      <div style="display:flex; align-items:center; gap:10px; padding:9px 10px 4px; min-width:0;">
+        <div style="width:28px; height:28px; flex:none; border-radius:50%; background:linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 50%, #8b5cf6)); display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; color:var(--accent-ink);">LS</div>
+        <div style="min-width:0; flex:1; line-height:1.25;">
+          <div style="font-size:12px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">laith.soub</div>
+          <div style="font-size:10px; color:var(--t3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">laith.soub@eaton.com</div>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ─────────── MAIN ─────────── -->
+  <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
+    <header style="height:60px; flex:none; display:flex; align-items:center; gap:14px; padding:0 22px; background:color-mix(in oklab, var(--s1) 82%, transparent); backdrop-filter:blur(12px); border-bottom:1px solid var(--line); z-index:5;">
+      <div style="min-width:0;">
+        <h1 style="margin:0; font-size:15px; font-weight:600; letter-spacing:-0.02em; line-height:1.1;">{{ title }}</h1>
+        <p style="margin:3px 0 0; font-size:11.5px; color:var(--t3); line-height:1;">{{ subtitle }}</p>
+      </div>
+      <div style="flex:1;"></div>
+      <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--t3); font-variant-numeric:tabular-nums; padding-right:2px;">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg>
+        1h 24m
+      </div>
+      <button style="height:32px; padding:0 11px; display:flex; align-items:center; gap:7px; border-radius:9px; border:1px solid color-mix(in oklab, var(--ok) 32%, transparent); background:var(--ok-soft); color:var(--ok); font-size:11.5px; font-weight:600; cursor:pointer; font-family:inherit;">
+        <span style="width:6px; height:6px; border-radius:50%; background:var(--ok);"></span>Laith
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="opacity:.6;"><path d="M20 11a8 8 0 1 0-1 4"></path><path d="M20 5v6h-6"></path></svg>
+      </button>
+      <button style="height:32px; padding:0 11px; display:flex; align-items:center; gap:7px; border-radius:9px; border:1px solid var(--line-2); background:var(--s2); color:var(--t2); font-size:11.5px; font-weight:500; cursor:pointer; font-family:inherit;" style-hover="background:var(--s-hover); color:var(--t1);">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H8l-4 4z"></path><line x1="12" y1="8" x2="12" y2="13"></line><line x1="9.5" y1="10.5" x2="14.5" y2="10.5"></line></svg>Feedback
+      </button>
+      <button onClick="{{ toggleTheme }}" title="Toggle theme" style="width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; border:1px solid var(--line-2); background:var(--s2); color:var(--t2); cursor:pointer;" style-hover="background:var(--s-hover); color:var(--t1);">{{ themeIconEl }}</button>
+      <button style="position:relative; width:32px; height:32px; flex:none; display:flex; align-items:center; justify-content:center; border-radius:9px; border:1px solid var(--line-2); background:var(--s2); color:var(--t2); cursor:pointer;" style-hover="background:var(--s-hover); color:var(--t1);">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>
+        <span style="position:absolute; top:6px; right:8px; width:6px; height:6px; border-radius:50%; background:var(--err); border:1.5px solid var(--s2);"></span>
+      </button>
+    </header>
+
+    <main class="vec-scroll" style="flex:1; overflow-y:auto; min-height:0;">
+
+      <!-- ═════ DASHBOARD ═════ -->
+      <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ true }}">
+      <div class="{{ animClass }}" style="padding:22px;">
+        <div style="max-width:1240px; margin:0 auto; display:flex; flex-direction:column; gap:18px;">
+          <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px;">
+            <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="4">
+              <div style="position:relative; background:var(--s2); border:1px solid var(--line); border-radius:14px; padding:16px 17px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <span style="width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; color:{{ k.color }}; background:{{ k.soft }};">{{ k.iconEl }}</span>
+                  <sc-if value="{{ k.trend }}" hint-placeholder-val="{{ false }}">
+                    <span style="display:inline-flex; align-items:center; gap:3px; font-size:11px; font-weight:600; color:var(--ok); font-variant-numeric:tabular-nums;">
+                      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 8-8"></path><path d="M14 7h7v7"></path></svg>{{ k.trend }}
+                    </span>
+                  </sc-if>
+                </div>
+                <div style="margin-top:14px; font-size:10px; font-weight:600; letter-spacing:.09em; text-transform:uppercase; color:var(--t3);">{{ k.label }}</div>
+                <div style="margin-top:3px; font-size:27px; font-weight:600; letter-spacing:-0.03em; font-variant-numeric:tabular-nums; line-height:1;">{{ k.value }}</div>
+                <div style="margin-top:5px; font-size:11px; color:var(--t3);">{{ k.sub }}</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:18px; align-items:start;">
+            <div style="display:flex; flex-direction:column; gap:18px; min-width:0;">
+              <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+                <div style="padding:16px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line);">
+                  <div>
+                    <h2 style="margin:0; font-size:14px; font-weight:600; letter-spacing:-0.015em;">Upload workflow</h2>
+                    <p style="margin:4px 0 0; font-size:11.5px; color:var(--t3);">Drop files → tag → run. Each run pushes to SharePoint.</p>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:0;">
+                    <sc-for list="{{ wfSteps }}" as="s" hint-placeholder-count="3">
+                      <div style="display:flex; align-items:center; gap:8px;">
+                        <sc-if value="{{ s.showLine }}" hint-placeholder-val="{{ false }}"><span style="width:22px; height:1px; background:var(--line-2);"></span></sc-if>
+                        <span style="display:flex; align-items:center; gap:6px; font-size:11px; font-weight:500; color:{{ s.textColor }};">
+                          <span style="width:17px; height:17px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:9px; font-weight:700; color:{{ s.badgeInk }}; background:{{ s.badgeBg }};">{{ s.badge }}</span>{{ s.label }}
+                        </span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div style="padding:16px 20px; border-bottom:1px solid var(--line);">
+                  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                    <h3 style="margin:0; font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:9px;"><span style="width:19px; height:19px; border-radius:50%; background:var(--s3); border:1px solid var(--line-2); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; font-variant-numeric:tabular-nums;">1</span>Files</h3>
+                    <span style="font-size:10.5px; font-weight:600; padding:3px 8px; border-radius:20px; background:var(--s3); border:1px solid var(--line); color:var(--t2);">4 files</span>
+                  </div>
+                  <label style="display:flex; align-items:center; justify-content:center; gap:11px; padding:16px; border:1.5px dashed var(--line-3); border-radius:12px; cursor:pointer; background:var(--s1);" style-hover="border-color:var(--accent-line); background:var(--accent-soft);">
+                    <span style="width:34px; height:34px; border-radius:10px; background:var(--accent-soft); color:var(--accent-text); display:flex; align-items:center; justify-content:center;"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1-.5-8 5.5 5.5 0 0 1 10.6-1A3.5 3.5 0 0 1 17 18"></path><path d="M12 13v6M9.5 15.5L12 13l2.5 2.5"></path></svg></span>
+                    <div><div style="font-size:12.5px; font-weight:500; color:var(--t1);">Drop quote files here</div><div style="font-size:10.5px; color:var(--t3); margin-top:2px;">PDF, XLSX, DOCX · max 30 MB each</div></div>
+                  </label>
+                  <div style="margin-top:10px; display:flex; flex-direction:column; gap:2px;">
+                    <sc-for list="{{ files }}" as="f" hint-placeholder-count="4">
+                      <div style="display:flex; align-items:center; gap:10px; padding:7px 9px; border-radius:9px; font-size:11.5px;" style-hover="background:var(--s3);">
+                        <span style="width:8px; height:8px; border-radius:2px; flex:none; background:{{ f.dot }};"></span>
+                        <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500;">{{ f.name }}</span>
+                        <span style="font-size:10.5px; color:var(--t3); font-variant-numeric:tabular-nums; flex:none;">{{ f.size }}</span>
+                        <span style="{{ f.tagStyle }}">{{ f.line }}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div style="padding:16px 20px; border-bottom:1px solid var(--line);">
+                  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:13px;">
+                    <h3 style="margin:0; font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:9px;"><span style="width:19px; height:19px; border-radius:50%; background:var(--s3); border:1px solid var(--line-2); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; font-variant-numeric:tabular-nums;">2</span>Details</h3>
+                    <span style="display:inline-flex; align-items:center; gap:6px; font-size:10.5px; font-weight:600; padding:3px 9px; border-radius:20px; background:var(--ok-soft); color:var(--ok);"><span style="width:5px; height:5px; border-radius:50%; background:var(--ok);"></span>Ready</span>
+                  </div>
+                  <div style="display:grid; grid-template-columns:1fr 1fr; gap:20px;">
+                    <div>
+                      <div style="font-size:10.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--t3); margin-bottom:9px;">Product line · per quote</div>
+                      <div style="display:flex; flex-direction:column; gap:6px;">
+                        <sc-for list="{{ lines }}" as="l" hint-placeholder-count="4">
+                          <div style="display:flex; align-items:center; gap:8px; font-size:11px;">
+                            <span style="width:3px; height:16px; border-radius:3px; flex:none; background:{{ l.dot }};"></span>
+                            <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--t2);">{{ l.file }}</span>
+                            <span style="{{ l.pillStyle }}">{{ l.label }}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </div>
+                    <div>
+                      <div style="font-size:10.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--t3); margin-bottom:9px;">Quote received *</div>
+                      <div style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:11px;">
+                        <sc-for list="{{ dateChips }}" as="d" hint-placeholder-count="4"><button style="{{ d.style }}">{{ d.tag }}<span style="opacity:.55; margin-left:5px; font-variant-numeric:tabular-nums;">{{ d.date }}</span></button></sc-for>
+                      </div>
+                      <div style="position:relative;">
+                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--t3);"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 9h18M8 3v4M16 3v4"></path></svg>
+                        <input type="text" value="20/07/2026" style="width:100%; height:34px; padding:0 11px 0 34px; border-radius:9px; border:1px solid var(--line-2); background:var(--s1); color:var(--t1); font-size:12px; font-family:inherit; font-variant-numeric:tabular-nums; outline:none;" />
+                      </div>
+                      <p style="margin:9px 0 0; font-size:10px; color:var(--t3); line-height:1.5;">Sets arrival, on-hold and recovery dates. Processed date is always today.</p>
+                    </div>
+                  </div>
+                </div>
+                <div style="padding:16px 20px;">
+                  <div style="display:flex; align-items:center; gap:9px; margin-bottom:13px;"><h3 style="margin:0; font-size:12.5px; font-weight:600; display:flex; align-items:center; gap:9px;"><span style="width:19px; height:19px; border-radius:50%; background:var(--s3); border:1px solid var(--line-2); display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:700; font-variant-numeric:tabular-nums;">3</span>Run</h3></div>
+                  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+                    <div style="border:1px solid var(--accent-line); border-radius:12px; padding:14px; background:var(--accent-soft);">
+                      <div style="display:flex; align-items:center; gap:7px; margin-bottom:9px;"><span style="font-size:9.5px; font-weight:700; letter-spacing:.05em; padding:2px 7px; border-radius:6px; background:var(--accent); color:var(--accent-ink);">STEP 1</span><span style="display:inline-flex; align-items:center; gap:5px; font-size:10px; font-weight:600; color:var(--ok);"><span style="width:5px; height:5px; border-radius:50%; background:var(--ok);"></span>Ready</span></div>
+                      <h4 style="margin:0; font-size:12.5px; font-weight:600;">Quotation list upload</h4>
+                      <p style="margin:4px 0 12px; font-size:10.5px; color:var(--t2); line-height:1.45;">Extract quotes → push to SharePoint list</p>
+                      <button style="width:100%; height:34px; border:0; border-radius:9px; background:var(--accent); color:var(--accent-ink); font-size:12px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:7px; cursor:pointer; font-family:inherit; box-shadow:var(--glow);" style-hover="background:var(--accent-hover);"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><path d="M7 5l12 7-12 7z"></path></svg>Run Step 1</button>
+                    </div>
+                    <div style="border:1px solid var(--line-2); border-radius:12px; padding:14px; background:var(--s1);">
+                      <div style="display:flex; align-items:center; gap:7px; margin-bottom:9px;"><span style="font-size:9.5px; font-weight:700; letter-spacing:.05em; padding:2px 7px; border-radius:6px; background:var(--ok-soft); color:var(--ok);">STEP 2</span></div>
+                      <h4 style="margin:0; font-size:12.5px; font-weight:600;">D&amp;Q Store builder</h4>
+                      <p style="margin:4px 0 12px; font-size:10.5px; color:var(--t2); line-height:1.45;">Create folders → match emails → upload PDFs</p>
+                      <button style="width:100%; height:34px; border:1px solid var(--line-2); border-radius:9px; background:var(--s2); color:var(--t1); font-size:12px; font-weight:600; display:flex; align-items:center; justify-content:center; gap:7px; cursor:pointer; font-family:inherit;" style-hover="background:var(--s-hover);"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><path d="M7 5l12 7-12 7z"></path></svg>Run Step 2</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight);">
+                <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:18px;">
+                  <div><h3 style="margin:0; font-size:13px; font-weight:600; letter-spacing:-0.01em;">Processing volume</h3><p style="margin:4px 0 0; font-size:11px; color:var(--t3);">Successful runs · last 14 days</p></div>
+                  <span style="display:inline-flex; align-items:center; gap:6px; font-size:10.5px; font-weight:600; padding:4px 10px; border-radius:20px; background:var(--ok-soft); color:var(--ok);"><span style="width:5px; height:5px; border-radius:50%; background:var(--ok);"></span>82 runs</span>
+                </div>
+                <div style="display:flex; align-items:flex-end; gap:6px; height:120px;">
+                  <sc-for list="{{ chart }}" as="b" hint-placeholder-count="14">
+                    <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:7px; min-width:0;"><div title="{{ b.value }}" style="width:100%; max-width:22px; height:{{ b.h }}; border-radius:5px 5px 3px 3px; background:{{ b.fill }};"></div><span style="font-size:9px; color:var(--t3); font-variant-numeric:tabular-nums;">{{ b.label }}</span></div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:18px; min-width:0;">
+              <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+                <div style="padding:14px 18px; display:flex; align-items:center; gap:9px; border-bottom:1px solid var(--line);">
+                  <span style="color:var(--violet); display:flex;"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3.5 6.5l8.5 6 8.5-6"></path></svg></span>
+                  <h3 style="margin:0; font-size:13px; font-weight:600; flex:1;">New mail</h3>
+                  <span style="display:inline-flex; align-items:center; gap:5px; font-size:10px; font-weight:600; padding:3px 8px; border-radius:20px; background:var(--violet-soft); color:var(--violet);"><span style="width:5px; height:5px; border-radius:50%; background:var(--violet);"></span>2 unread</span>
+                </div>
+                <div>
+                  <sc-for list="{{ mails }}" as="m" hint-placeholder-count="4">
+                    <button onClick="{{ openInbox }}" style="width:100%; text-align:left; display:block; padding:11px 18px; border:0; background:{{ m.bg }}; border-bottom:1px solid var(--line); cursor:pointer; font-family:inherit;" style-hover="background:var(--s3);">
+                      <div style="display:flex; align-items:center; gap:8px; margin-bottom:3px;">
+                        <sc-if value="{{ m.unread }}" hint-placeholder-val="{{ false }}"><span style="width:6px; height:6px; border-radius:50%; background:var(--violet); flex:none;"></span></sc-if>
+                        <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:{{ m.weight }}; color:{{ m.subjColor }};">{{ m.subject }}</span>
+                        <span style="font-size:10px; color:var(--t3); flex:none; font-variant-numeric:tabular-nums;">{{ m.time }}</span>
+                      </div>
+                      <div style="display:flex; align-items:center; gap:7px;"><span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:var(--t3);">{{ m.sender }}</span><sc-if value="{{ m.pdf }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex; align-items:center; gap:3px; font-size:9.5px; font-weight:600; color:var(--accent-text); flex:none;"><svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg>PDF</span></sc-if></div>
+                    </button>
+                  </sc-for>
+                </div>
+              </div>
+
+              <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+                <div style="padding:14px 18px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line);"><h3 style="margin:0; font-size:13px; font-weight:600;">Recent jobs</h3><a onClick="{{ openHistory }}" style="font-size:11px; font-weight:500; cursor:pointer;">All →</a></div>
+                <div>
+                  <sc-for list="{{ jobs }}" as="j" hint-placeholder-count="5">
+                    <div style="display:flex; align-items:center; gap:11px; padding:10px 18px; border-bottom:1px solid var(--line);"><span style="width:8px; height:8px; border-radius:50%; flex:none; background:{{ j.dot }}; box-shadow:0 0 0 3px {{ j.ring }};"></span><div style="min-width:0; flex:1;"><div style="font-size:11.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ j.title }}</div><div style="font-size:10px; color:var(--t3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:'Geist Mono',monospace;">{{ j.meta }}</div></div><span style="font-size:10px; color:var(--t3); flex:none; font-variant-numeric:tabular-nums;">{{ j.time }}</span></div>
+                  </sc-for>
+                </div>
+              </div>
+
+              <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight);">
+                <div style="margin-bottom:14px;"><h3 style="margin:0; font-size:13px; font-weight:600;">Archive</h3><p style="margin:4px 0 0; font-size:11px; color:var(--t3);">Files moved out of PDF Quotes</p></div>
+                <div style="display:flex; flex-direction:column; gap:14px;">
+                  <sc-for list="{{ archive }}" as="a" hint-placeholder-count="2">
+                    <div>
+                      <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:6px;"><span style="font-size:11.5px; font-weight:600;">{{ a.date }}</span><span style="font-size:10px; font-weight:600; padding:2px 8px; border-radius:20px; background:var(--s3); border:1px solid var(--line); color:var(--t2);">{{ a.total }} files</span></div>
+                      <div style="display:flex; flex-direction:column; gap:3px; border-left:1px solid var(--line-2); padding-left:10px;">
+                        <sc-for list="{{ a.files }}" as="fn" hint-placeholder-count="2"><span style="font-size:10.5px; color:var(--t3); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ fn }}</span></sc-for>
+                        <span style="font-size:10px; color:var(--t4);">+ {{ a.more }} more</span>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ═════ ASSISTANT ═════ -->
+      <sc-if value="{{ isAssistant }}" hint-placeholder-val="{{ false }}">
+      <div class="{{ animClass }}" style="height:100%; display:flex;">
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column; border-right:1px solid var(--line);">
+          <div style="flex:1; overflow-y:auto; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:28px; text-align:center;" class="vec-scroll">
+            <div style="width:56px; height:56px; border-radius:16px; background:var(--violet-soft); border:1px solid color-mix(in oklab, var(--violet) 30%, transparent); display:flex; align-items:center; justify-content:center; margin-bottom:18px;"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="var(--violet)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.4 5.4 1.9-5.4 1.9L12 18l-1.9-5.4L4.7 10.7l5.4-1.9z"></path></svg></div>
+            <h2 style="margin:0; font-size:19px; font-weight:600; letter-spacing:-0.02em;">What can I help with?</h2>
+            <p style="margin:9px 0 0; font-size:13px; color:var(--t2); max-width:430px; line-height:1.55;">Ask anything about your workflow, or paste an email and I'll figure out exactly what needs to be done.</p>
+            <div style="margin-top:28px; display:grid; grid-template-columns:repeat(3,1fr); gap:10px; width:100%; max-width:640px;">
+              <sc-for list="{{ prompts }}" as="p" hint-placeholder-count="6">
+                <button style="{{ p.cardStyle }}" style-hover="{{ p.hoverStyle }}">
+                  <span style="width:28px; height:28px; border-radius:9px; display:flex; align-items:center; justify-content:center; flex:none; color:{{ p.iconColor }}; background:{{ p.iconBg }};">{{ p.iconEl }}</span>
+                  <div style="min-width:0;"><div style="font-size:12.5px; font-weight:600; line-height:1.3;">{{ p.label }}</div><div style="font-size:10.5px; color:var(--t3); margin-top:2px; line-height:1.35;">{{ p.sub }}</div></div>
+                </button>
+              </sc-for>
+            </div>
+          </div>
+          <div style="flex:none; border-top:1px solid var(--line); background:var(--s1); padding:14px 20px 16px;">
+            <div style="display:flex; gap:10px; align-items:flex-end;">
+              <div style="flex:1; position:relative;">
+                <textarea rows="1" placeholder="Ask anything, or paste an email…" style="width:100%; resize:none; border-radius:12px; padding:11px 66px 11px 14px; background:var(--s2); border:1px solid var(--line-2); color:var(--t1); font-size:13px; font-family:inherit; line-height:1.5; outline:none;"></textarea>
+                <span style="position:absolute; right:12px; bottom:11px; display:inline-flex; align-items:center; gap:3px; font-size:10px; color:var(--t3);"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10l-4 4 4 4"></path><path d="M5 14h11a4 4 0 0 0 4-4V6"></path></svg>Send</span>
+              </div>
+              <button style="width:40px; height:40px; flex:none; border:0; border-radius:12px; background:var(--violet); color:#fff; display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 8px 22px -10px color-mix(in oklab, var(--violet) 70%, transparent);"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l16-8-6 16-3-6z"></path></svg></button>
+            </div>
+            <p style="margin:9px 0 0; text-align:center; font-size:10px; color:var(--t4);">Shift+Enter for new line · history saved locally</p>
+          </div>
+        </div>
+        <aside style="width:340px; flex:none; display:flex; flex-direction:column; background:var(--s1);">
+          <div style="flex:none; display:flex; align-items:center; gap:9px; padding:14px 18px; border-bottom:1px solid var(--line);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--t3)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span style="font-size:13px; font-weight:600; flex:1;">SharePoint search</span></div>
+          <div style="flex:none; display:flex; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line);">
+            <input placeholder="SR number, customer, title…" style="flex:1; height:34px; padding:0 11px; border-radius:9px; background:var(--s2); border:1px solid var(--line-2); color:var(--t1); font-size:12px; font-family:inherit; outline:none;" />
+            <button style="height:34px; padding:0 14px; border:0; border-radius:9px; background:var(--t1); color:var(--bg); font-size:11.5px; font-weight:600; cursor:pointer; font-family:inherit;">Search</button>
+          </div>
+          <div style="flex:1; overflow-y:auto; padding:14px 16px; display:flex; flex-direction:column; gap:9px;" class="vec-scroll">
+            <sc-for list="{{ spResults }}" as="r" hint-placeholder-count="4">
+              <div style="display:flex; align-items:flex-start; gap:11px; padding:12px; border-radius:12px; background:var(--s2); border:1px solid var(--line);" style-hover="border-color:var(--accent-line);">
+                <span style="width:30px; height:30px; flex:none; border-radius:9px; background:var(--accent-soft); color:var(--accent-text); display:flex; align-items:center; justify-content:center;"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg></span>
+                <div style="min-width:0; flex:1;"><div style="display:flex; align-items:center; gap:6px;"><span style="font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ r.title }}</span><span style="font-size:8.5px; font-weight:700; text-transform:uppercase; padding:1px 5px; border-radius:5px; background:var(--accent-soft); color:var(--accent-text); flex:none;">{{ r.ext }}</span></div><div style="font-size:10.5px; color:var(--t3); margin-top:3px; line-height:1.4;">{{ r.meta }}</div></div>
+              </div>
+            </sc-for>
+          </div>
+        </aside>
+      </div>
+      </sc-if>
+
+      <!-- ═════ INBOX ═════ -->
+      <sc-if value="{{ isInbox }}" hint-placeholder-val="{{ false }}">
+      <div class="{{ animClass }}" style="height:100%; display:flex;">
+        <div style="width:210px; flex:none; border-right:1px solid var(--line); padding:16px 12px; display:flex; flex-direction:column; gap:3px; background:var(--s1);">
+          <sc-for list="{{ folders }}" as="f" hint-placeholder-count="5">
+            <button style="{{ f.style }}" style-hover="{{ f.hover }}">{{ f.iconEl }}<span style="flex:1; text-align:left;">{{ f.label }}</span><span style="font-size:10.5px; font-variant-numeric:tabular-nums; color:{{ f.countColor }};">{{ f.count }}</span></button>
+          </sc-for>
+        </div>
+        <div style="width:360px; flex:none; border-right:1px solid var(--line); display:flex; flex-direction:column; min-width:0;">
+          <div style="flex:none; padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center;">
+            <div style="flex:1; position:relative;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--t3)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:10px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><input placeholder="Search mail…" style="width:100%; height:32px; padding:0 10px 0 30px; border-radius:9px; background:var(--s2); border:1px solid var(--line-2); color:var(--t1); font-size:12px; font-family:inherit; outline:none;" /></div>
+          </div>
+          <div style="flex:1; overflow-y:auto;" class="vec-scroll">
+            <sc-for list="{{ inbox }}" as="m" hint-placeholder-count="6">
+              <button onClick="{{ m.onClick }}" style="{{ m.rowStyle }}" style-hover="background:var(--s3);">
+                <div style="display:flex; align-items:center; gap:9px;">
+                  <span style="width:30px; height:30px; flex:none; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:600; color:#fff; background:{{ m.avatarBg }};">{{ m.initials }}</span>
+                  <div style="min-width:0; flex:1;"><div style="display:flex; align-items:center; gap:6px;"><span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:{{ m.weight }}; color:{{ m.nameColor }};">{{ m.from }}</span><span style="font-size:10px; color:var(--t3); flex:none; font-variant-numeric:tabular-nums;">{{ m.time }}</span></div><div style="font-size:11.5px; font-weight:{{ m.weight }}; color:{{ m.subjColor }}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:1px;">{{ m.subject }}</div></div>
+                </div>
+                <div style="display:flex; align-items:center; gap:7px; margin-top:5px; padding-left:39px;"><span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10.5px; color:var(--t3);">{{ m.preview }}</span><sc-if value="{{ m.pdf }}" hint-placeholder-val="{{ false }}"><span style="display:inline-flex; align-items:center; gap:3px; font-size:9px; font-weight:600; color:var(--accent-text); flex:none;"><svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l5 5v13H7z"></path></svg>{{ m.attach }}</span></sc-if></div>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
+          <div style="flex:none; padding:20px 26px; border-bottom:1px solid var(--line);">
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px;">
+              <div style="min-width:0;"><h2 style="margin:0; font-size:17px; font-weight:600; letter-spacing:-0.02em; line-height:1.3;">{{ read.subject }}</h2>
+                <div style="display:flex; align-items:center; gap:10px; margin-top:12px;"><span style="width:34px; height:34px; flex:none; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:600; color:#fff; background:{{ read.avatarBg }};">{{ read.initials }}</span><div><div style="font-size:12.5px; font-weight:600;">{{ read.fromName }}</div><div style="font-size:11px; color:var(--t3);">{{ read.from }} · to me</div></div></div>
+              </div>
+              <span style="font-size:11px; color:var(--t3); flex:none; font-variant-numeric:tabular-nums;">{{ read.date }}</span>
+            </div>
+          </div>
+          <div style="flex:1; overflow-y:auto; padding:24px 26px;" class="vec-scroll">
+            <div style="max-width:640px; font-size:13px; line-height:1.7; color:var(--t2); display:flex; flex-direction:column; gap:14px;">
+              <sc-for list="{{ read.body }}" as="para" hint-placeholder-count="3"><p style="margin:0;">{{ para }}</p></sc-for>
+            </div>
+            <sc-if value="{{ read.hasAttach }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:22px; max-width:640px;">
+              <div style="font-size:10px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--t3); margin-bottom:9px;">{{ read.attachLabel }}</div>
+              <div style="display:flex; flex-wrap:wrap; gap:10px;">
+                <sc-for list="{{ read.attachments }}" as="at" hint-placeholder-count="2">
+                  <div style="display:flex; align-items:center; gap:10px; padding:10px 13px; border-radius:11px; background:var(--s2); border:1px solid var(--line);"><span style="width:30px; height:30px; flex:none; border-radius:8px; background:var(--err-soft); color:var(--err); display:flex; align-items:center; justify-content:center;"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"></path><path d="M14 3v5h5"></path></svg></span><div><div style="font-size:11.5px; font-weight:500;">{{ at.name }}</div><div style="font-size:10px; color:var(--t3); font-variant-numeric:tabular-nums;">{{ at.size }}</div></div></div>
+                </sc-for>
+              </div>
+            </div>
+            </sc-if>
+          </div>
+          <div style="flex:none; padding:14px 26px; border-top:1px solid var(--line); display:flex; gap:10px;">
+            <button onClick="{{ openDashboard }}" style="height:36px; padding:0 16px; border:0; border-radius:9px; background:var(--accent); color:var(--accent-ink); font-size:12px; font-weight:600; display:flex; align-items:center; gap:7px; cursor:pointer; font-family:inherit; box-shadow:var(--glow);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>Add to queue</button>
+            <button style="height:36px; padding:0 16px; border:1px solid var(--line-2); border-radius:9px; background:var(--s2); color:var(--t1); font-size:12px; font-weight:600; display:flex; align-items:center; gap:7px; cursor:pointer; font-family:inherit;" style-hover="background:var(--s-hover);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 10L4 15l5 5"></path><path d="M4 15h11a5 5 0 0 0 5-5V4"></path></svg>Reply</button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ═════ CRM ═════ -->
+      <sc-if value="{{ isCrm }}" hint-placeholder-val="{{ false }}">
+      <div class="{{ animClass }}" style="padding:22px;">
+        <div style="max-width:1240px; margin:0 auto; display:flex; flex-direction:column; gap:18px;">
+          <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+            <div style="flex:1; min-width:220px; max-width:420px; position:relative;"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="var(--t3)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="position:absolute; left:11px; top:50%; transform:translateY(-50%);"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><input placeholder="Search accounts & quotes — name, salesman, ref…" style="width:100%; height:36px; padding:0 12px 0 34px; border-radius:10px; background:var(--s2); border:1px solid var(--line-2); color:var(--t1); font-size:12.5px; font-family:inherit; outline:none;" /></div>
+            <span style="font-size:11.5px; color:var(--t3); font-variant-numeric:tabular-nums;">128 accounts · synced 2h ago</span>
+            <div style="flex:1;"></div>
+            <button style="height:34px; padding:0 12px; border:1px solid var(--line-2); border-radius:9px; background:var(--s2); color:var(--t2); font-size:11.5px; font-weight:500; display:flex; align-items:center; gap:7px; cursor:pointer; font-family:inherit;" style-hover="background:var(--s-hover); color:var(--t1);"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7" ry="3"></ellipse><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"></path><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"></path></svg>Sync from SharePoint</button>
+            <button style="height:34px; padding:0 13px; border:0; border-radius:9px; background:var(--accent); color:var(--accent-ink); font-size:11.5px; font-weight:600; display:flex; align-items:center; gap:7px; cursor:pointer; font-family:inherit; box-shadow:var(--glow);"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"></path></svg>Add account</button>
+          </div>
+
+          <sc-for list="{{ crmSections }}" as="sec" hint-placeholder-count="3">
+            <div>
+              <div style="display:flex; align-items:baseline; gap:8px; margin-bottom:11px;"><h2 style="margin:0; font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; color:var(--t2);">{{ sec.title }}</h2><span style="font-size:11px; color:var(--t4); font-variant-numeric:tabular-nums;">{{ sec.count }}</span></div>
+              <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:14px;">
+                <sc-for list="{{ sec.cards }}" as="c" hint-placeholder-count="3">
+                  <div style="background:var(--s2); border:1px solid var(--line); border-radius:14px; padding:16px; box-shadow:var(--card-sh), var(--highlight); cursor:pointer;" style-hover="border-color:var(--accent-line);">
+                    <div style="display:flex; align-items:flex-start; gap:11px; margin-bottom:14px;">
+                      <div style="width:38px; height:38px; flex:none; border-radius:11px; background:linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6)); display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:var(--accent-ink);">{{ c.initials }}</div>
+                      <div style="min-width:0; flex:1;"><div style="font-size:13.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ c.name }}</div><div style="font-size:11px; color:var(--t3); margin-top:2px;">{{ c.last }}</div></div>
+                      <span style="font-size:9.5px; font-weight:600; padding:2px 8px; border-radius:20px; background:var(--s3); border:1px solid var(--line); color:var(--t2); flex:none;">{{ c.country }}</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+                      <div style="background:var(--s3); border-radius:9px; padding:8px 6px; text-align:center;"><div style="font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1;">{{ c.quotes }}</div><div style="font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--t3); margin-top:4px;">Quotes</div></div>
+                      <div style="background:var(--s3); border-radius:9px; padding:8px 6px; text-align:center;"><div style="font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1;">{{ c.contacts }}</div><div style="font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--t3); margin-top:4px;">Contacts</div></div>
+                      <div style="background:var(--s3); border-radius:9px; padding:8px 6px; text-align:center;"><div style="font-size:14px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1; color:var(--accent-text);">{{ c.total }}</div><div style="font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--t3); margin-top:4px;">Total</div></div>
+                    </div>
+                    <div style="font-size:10.5px; color:var(--t3); margin-top:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ c.salesmen }}</div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ═════ HISTORY ═════ -->
+      <sc-if value="{{ isHistory }}" hint-placeholder-val="{{ false }}">
+      <div class="{{ animClass }}" style="padding:22px;">
+        <div style="max-width:1240px; margin:0 auto; display:flex; flex-direction:column; gap:18px;">
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:18px;">
+            <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+              <div style="padding:16px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line);"><div><h3 style="margin:0; font-size:13px; font-weight:600;">Last 14 days</h3><p style="margin:4px 0 0; font-size:11px; color:var(--t3);">63 runs in last 7 days</p></div><div style="display:flex; gap:12px; font-size:10.5px; color:var(--t2);"><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:2px; background:var(--accent);"></span>Ok</span><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:2px; background:var(--warn);"></span>Warn</span><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:2px; background:var(--err);"></span>Err</span></div></div>
+              <div style="padding:18px 20px;"><div style="display:flex; align-items:flex-end; gap:5px; height:120px;">
+                <sc-for list="{{ histBars }}" as="b" hint-placeholder-count="14">
+                  <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:7px; min-width:0;"><div style="width:100%; max-width:20px; display:flex; flex-direction:column-reverse; border-radius:4px; overflow:hidden;"><div style="height:{{ b.okH }}; background:var(--accent);"></div><div style="height:{{ b.warnH }}; background:var(--warn);"></div><div style="height:{{ b.errH }}; background:var(--err);"></div></div><span style="font-size:9px; color:var(--t3); font-variant-numeric:tabular-nums;">{{ b.label }}</span></div>
+                </sc-for>
+              </div></div>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:14px;">
+              <div style="flex:1; background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight); display:flex; align-items:center; gap:14px;"><span style="width:40px; height:40px; border-radius:11px; background:var(--ok-soft); color:var(--ok); display:flex; align-items:center; justify-content:center;"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4 10-10"></path></svg></span><div><div style="font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--t3); font-weight:600;">Successful · 7d</div><div style="font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1.1;">61</div></div></div>
+              <div style="flex:1; background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight); display:flex; align-items:center; gap:14px;"><span style="width:40px; height:40px; border-radius:11px; background:var(--err-soft); color:var(--err); display:flex; align-items:center; justify-content:center;"><svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"></path><line x1="12" y1="10" x2="12" y2="14"></line><line x1="12" y1="17" x2="12" y2="17"></line></svg></span><div><div style="font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--t3); font-weight:600;">Errors · 7d</div><div style="font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1.1;">2</div></div></div>
+            </div>
+          </div>
+
+          <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+            <div style="padding:13px 20px; display:flex; align-items:center; gap:12px; border-bottom:1px solid var(--line); flex-wrap:wrap;">
+              <h3 style="margin:0; font-size:13px; font-weight:600;">Run log</h3><span style="font-size:10.5px; font-weight:600; padding:2px 8px; border-radius:20px; background:var(--s3); border:1px solid var(--line); color:var(--t2);">63 jobs</span>
+              <div style="flex:1;"></div>
+              <div style="display:inline-flex; padding:2px; border-radius:9px; background:var(--s3); gap:2px;"><span style="padding:4px 10px; border-radius:7px; font-size:11px; font-weight:600; background:var(--s1); box-shadow:var(--card-sh); color:var(--t1);">All</span><span style="padding:4px 10px; border-radius:7px; font-size:11px; color:var(--t3);">Ok</span><span style="padding:4px 10px; border-radius:7px; font-size:11px; color:var(--t3);">Warn</span><span style="padding:4px 10px; border-radius:7px; font-size:11px; color:var(--t3);">Err</span></div>
+              <button style="height:30px; padding:0 11px; border:1px solid var(--line-2); border-radius:8px; background:var(--s2); color:var(--t2); font-size:11px; font-weight:500; display:flex; align-items:center; gap:6px; cursor:pointer; font-family:inherit;" style-hover="background:var(--s-hover); color:var(--t1);"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 11l4 4 4-4"></path><path d="M5 21h14"></path></svg>Export CSV</button>
+            </div>
+            <div style="overflow-x:auto;">
+              <table style="width:100%; border-collapse:collapse; font-size:11.5px;">
+                <thead><tr style="background:var(--s1);">
+                  <th style="{{ thStyle }}">Time</th><th style="{{ thStyle }}">Step</th><th style="{{ thStyle }}">Product</th><th style="{{ thStyle }}">Customer</th><th style="{{ thStyle }}">SF ID</th><th style="{{ thStyle }}">Status</th><th style="{{ thStyle }}">Dur</th><th style="{{ thStyle }}">Items</th><th style="{{ thStyle }}">Note</th>
+                </tr></thead>
+                <tbody>
+                  <sc-for list="{{ runLog }}" as="r" hint-placeholder-count="8">
+                    <tr style="border-top:1px solid var(--line);" style-hover="background:var(--s3);">
+                      <td style="padding:9px 14px; color:var(--t3); font-variant-numeric:tabular-nums; white-space:nowrap;">{{ r.time }}</td>
+                      <td style="padding:9px 14px;"><span style="{{ r.stepStyle }}">{{ r.step }}</span></td>
+                      <td style="padding:9px 14px;"><span style="display:inline-flex; align-items:center; gap:6px; white-space:nowrap;"><span style="width:3px; height:12px; border-radius:2px; background:{{ r.prodColor }};"></span>{{ r.product }}</span></td>
+                      <td style="padding:9px 14px; font-weight:500; white-space:nowrap;">{{ r.customer }}</td>
+                      <td style="padding:9px 14px; font-family:'Geist Mono',monospace; color:var(--accent-text); white-space:nowrap;">{{ r.sfid }}</td>
+                      <td style="padding:9px 14px;"><span style="{{ r.statusStyle }}"><span style="width:5px; height:5px; border-radius:50%; background:{{ r.statusDot }};"></span>{{ r.status }}</span></td>
+                      <td style="padding:9px 14px; color:var(--t3); font-variant-numeric:tabular-nums;">{{ r.dur }}</td>
+                      <td style="padding:9px 14px; font-variant-numeric:tabular-nums;">{{ r.items }}</td>
+                      <td style="padding:9px 14px; color:{{ r.noteColor }}; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ r.note }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ═════ ANALYTICS ═════ -->
+      <sc-if value="{{ isAnalytics }}" hint-placeholder-val="{{ false }}">
+      <div class="{{ animClass }}" style="padding:22px;">
+        <div style="max-width:1240px; margin:0 auto; display:flex; flex-direction:column; gap:18px;">
+          <div style="display:flex; align-items:flex-end; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+            <div><h2 style="margin:0; font-size:20px; font-weight:600; letter-spacing:-0.025em;">Operational health</h2><p style="margin:5px 0 0; font-size:12px; color:var(--t3);">1,284 runs across 30 days</p></div>
+            <div style="display:inline-flex; padding:2px; border-radius:10px; background:var(--s3); gap:2px;"><span style="padding:5px 11px; border-radius:8px; font-size:11.5px; color:var(--t3);">7d</span><span style="padding:5px 11px; border-radius:8px; font-size:11.5px; color:var(--t3);">14d</span><span style="padding:5px 11px; border-radius:8px; font-size:11.5px; font-weight:600; background:var(--s1); box-shadow:var(--card-sh); color:var(--t1);">30d</span><span style="padding:5px 11px; border-radius:8px; font-size:11.5px; color:var(--t3);">90d</span></div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:14px;">
+            <sc-for list="{{ heroKpis }}" as="k" hint-placeholder-count="4">
+              <div style="background:var(--s2); border:1px solid var(--line); border-radius:14px; padding:16px 17px; box-shadow:var(--card-sh), var(--highlight);">
+                <div style="display:flex; align-items:baseline; justify-content:space-between;"><span style="font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--t3);">{{ k.label }}</span><span style="display:inline-flex; align-items:center; gap:2px; font-size:11px; font-weight:600; color:{{ k.trendColor }}; font-variant-numeric:tabular-nums;">{{ k.trend }}</span></div>
+                <div style="margin-top:8px; font-size:24px; font-weight:600; letter-spacing:-0.03em; font-variant-numeric:tabular-nums; line-height:1;">{{ k.value }}</div>
+                <div style="margin-top:12px; display:flex; align-items:flex-end; gap:2px; height:26px;"><sc-for list="{{ k.spark }}" as="s" hint-placeholder-count="16"><div style="flex:1; height:{{ s.h }}; border-radius:2px; background:{{ k.color }}; opacity:{{ s.op }};"></div></sc-for></div>
+                <div style="margin-top:8px; font-size:10px; color:var(--t4);">vs previous period</div>
+              </div>
+            </sc-for>
+          </div>
+
+          <div style="display:grid; grid-template-columns:2fr 1fr; gap:18px;">
+            <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+              <div style="padding:16px 20px; display:flex; align-items:center; justify-content:space-between; border-bottom:1px solid var(--line);"><div><h3 style="margin:0; font-size:13px; font-weight:600;">Daily throughput</h3><p style="margin:4px 0 0; font-size:11px; color:var(--t3);">All runs by outcome</p></div><div style="display:flex; gap:12px; font-size:10.5px; color:var(--t2);"><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:2px; background:var(--accent);"></span>Success</span><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:2px; background:var(--warn);"></span>Warn</span><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:2px; background:var(--err);"></span>Err</span></div></div>
+              <div style="padding:18px 20px;"><div style="display:flex; align-items:flex-end; gap:4px; height:150px;">
+                <sc-for list="{{ throughput }}" as="b" hint-placeholder-count="24"><div style="flex:1; display:flex; flex-direction:column-reverse; border-radius:3px; overflow:hidden; min-width:0;"><div style="height:{{ b.okH }}; background:var(--accent);"></div><div style="height:{{ b.warnH }}; background:var(--warn);"></div><div style="height:{{ b.errH }}; background:var(--err);"></div></div></sc-for>
+              </div></div>
+            </div>
+            <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight);">
+              <h3 style="margin:0 0 4px; font-size:13px; font-weight:600;">Outcome mix</h3><p style="margin:0 0 18px; font-size:11px; color:var(--t3);">Success vs warning vs error</p>
+              <div style="display:flex; align-items:center; justify-content:center; padding:6px 0;">
+                <div style="position:relative; width:150px; height:150px; border-radius:50%; background:conic-gradient(var(--accent) 0 96.8%, var(--warn) 96.8% 98.7%, var(--err) 98.7% 100%);">
+                  <div style="position:absolute; inset:18px; border-radius:50%; background:var(--s2); display:flex; flex-direction:column; align-items:center; justify-content:center;"><div style="font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; line-height:1;">1,284</div><div style="font-size:10px; color:var(--t3); margin-top:3px;">runs</div></div>
+                </div>
+              </div>
+              <div style="display:flex; justify-content:center; gap:16px; margin-top:16px; font-size:11px; color:var(--t2);"><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:50%; background:var(--accent);"></span>96.8%</span><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:50%; background:var(--warn);"></span>1.9%</span><span style="display:flex; align-items:center; gap:5px;"><span style="width:8px; height:8px; border-radius:50%; background:var(--err);"></span>1.3%</span></div>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+            <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight);">
+              <h3 style="margin:0 0 16px; font-size:13px; font-weight:600;">By product line</h3>
+              <div style="display:flex; flex-direction:column; gap:12px;">
+                <sc-for list="{{ byProduct }}" as="p" hint-placeholder-count="6">
+                  <div><div style="display:flex; justify-content:space-between; margin-bottom:5px; font-size:11.5px;"><span style="color:var(--t2); font-weight:500;">{{ p.label }}</span><span style="color:var(--t3); font-variant-numeric:tabular-nums;">{{ p.total }}</span></div><div style="height:7px; border-radius:4px; background:var(--s3); overflow:hidden;"><div style="height:100%; width:{{ p.w }}; border-radius:4px; background:{{ p.color }};"></div></div></div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+              <div style="padding:16px 20px 12px;"><h3 style="margin:0; font-size:13px; font-weight:600;">Top customers</h3><p style="margin:4px 0 0; font-size:11px; color:var(--t3);">By value of uploaded quotes</p></div>
+              <div>
+                <sc-for list="{{ topCustomers }}" as="c" hint-placeholder-count="5">
+                  <div style="display:flex; align-items:center; gap:12px; padding:9px 20px; border-top:1px solid var(--line);"><span style="width:18px; font-size:10.5px; color:var(--t4); text-align:center; font-variant-numeric:tabular-nums; flex:none;">{{ c.rank }}</span><div style="min-width:0; flex:1;"><div style="font-size:12px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ c.name }}</div><div style="height:4px; border-radius:3px; background:var(--s3); margin-top:6px; overflow:hidden;"><div style="height:100%; width:{{ c.w }}; background:var(--accent); border-radius:3px;"></div></div></div><span style="font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; flex:none;">{{ c.value }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:18px;">
+            <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight);">
+              <h3 style="margin:0 0 3px; font-size:13px; font-weight:600;">Activity heatmap</h3><p style="margin:0 0 16px; font-size:11px; color:var(--t3);">When the team uploads. Darker = busier.</p>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <sc-for list="{{ heatmap }}" as="row" hint-placeholder-count="7">
+                  <div style="display:flex; align-items:center; gap:6px;"><span style="width:26px; font-size:9.5px; color:var(--t3); flex:none;">{{ row.day }}</span><div style="display:flex; gap:4px; flex:1;"><sc-for list="{{ row.cells }}" as="cell" hint-placeholder-count="12"><div style="flex:1; height:15px; border-radius:3px; background:var(--accent); opacity:{{ cell }};"></div></sc-for></div></div>
+                </sc-for>
+              </div>
+              <div style="display:flex; align-items:center; gap:6px; margin-top:14px; font-size:9.5px; color:var(--t3);">Quiet<span style="display:flex; gap:3px;"><span style="width:12px; height:12px; border-radius:3px; background:var(--accent); opacity:.12;"></span><span style="width:12px; height:12px; border-radius:3px; background:var(--accent); opacity:.35;"></span><span style="width:12px; height:12px; border-radius:3px; background:var(--accent); opacity:.6;"></span><span style="width:12px; height:12px; border-radius:3px; background:var(--accent); opacity:.85;"></span><span style="width:12px; height:12px; border-radius:3px; background:var(--accent); opacity:1;"></span></span>Busy</div>
+            </div>
+            <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:18px 20px; box-shadow:var(--card-sh), var(--highlight);">
+              <div style="display:flex; align-items:flex-start; justify-content:space-between; margin-bottom:16px;"><div><h3 style="margin:0; font-size:13px; font-weight:600;">Top failure reasons</h3><p style="margin:4px 0 0; font-size:11px; color:var(--t3);">Most-seen error notes</p></div><span style="font-size:10.5px; font-weight:600; padding:3px 9px; border-radius:20px; background:var(--err-soft); color:var(--err);">17 errors</span></div>
+              <div style="display:flex; flex-direction:column; gap:12px;">
+                <sc-for list="{{ failReasons }}" as="f" hint-placeholder-count="5">
+                  <div><div style="display:flex; justify-content:space-between; margin-bottom:5px; font-size:11.5px;"><span style="color:var(--t2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">{{ f.reason }}</span><span style="color:var(--t3); font-variant-numeric:tabular-nums; flex:none; margin-left:10px;">{{ f.count }}</span></div><div style="height:6px; border-radius:4px; background:var(--s3); overflow:hidden;"><div style="height:100%; width:{{ f.w }}; background:var(--err); border-radius:4px;"></div></div></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ═════ SETTINGS ═════ -->
+      <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+      <div class="{{ animClass }}" style="padding:22px;">
+        <div style="max-width:680px; margin:0 auto; display:flex; flex-direction:column; gap:18px;">
+          <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:20px; box-shadow:var(--card-sh), var(--highlight);">
+            <h3 style="margin:0; font-size:13px; font-weight:600;">Connect to SharePoint</h3><p style="margin:4px 0 14px; font-size:11.5px; color:var(--t3);">For remote/web use — supply your own JOE cookies. Bound to this session only.</p>
+            <div style="display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:12px;"><span style="width:8px; height:8px; border-radius:50%; background:var(--ok);"></span><span style="color:var(--t2);">Connected as Laith Soub</span></div>
+            <div style="display:flex; flex-direction:column; gap:10px;">
+              <textarea placeholder="FedAuth=…" style="width:100%; height:56px; padding:10px 12px; border-radius:10px; background:var(--s1); border:1px solid var(--line-2); color:var(--t2); font-size:11px; font-family:'Geist Mono',monospace; resize:none; outline:none;"></textarea>
+              <textarea placeholder="rtFa=…" style="width:100%; height:56px; padding:10px 12px; border-radius:10px; background:var(--s1); border:1px solid var(--line-2); color:var(--t2); font-size:11px; font-family:'Geist Mono',monospace; resize:none; outline:none;"></textarea>
+            </div>
+            <button style="margin-top:14px; height:36px; padding:0 16px; border:0; border-radius:9px; background:var(--accent); color:var(--accent-ink); font-size:12px; font-weight:600; display:inline-flex; align-items:center; gap:7px; cursor:pointer; font-family:inherit; box-shadow:var(--glow);"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4 10-10"></path></svg>Connect this session</button>
+          </div>
+
+          <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:20px; box-shadow:var(--card-sh), var(--highlight);">
+            <h3 style="margin:0 0 16px; font-size:13px; font-weight:600;">Paths & keys</h3>
+            <div style="display:flex; flex-direction:column; gap:15px;">
+              <sc-for list="{{ settingsFields }}" as="fld" hint-placeholder-count="5">
+                <div><label style="display:block; font-size:10px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--t3); margin-bottom:7px;">{{ fld.label }}</label><input value="{{ fld.value }}" style="width:100%; height:34px; padding:0 11px; border-radius:9px; background:var(--s1); border:1px solid var(--line-2); color:var(--t1); font-size:12px; font-family:'Geist Mono',monospace; outline:none;" /><p style="margin:6px 0 0; font-size:10px; color:var(--t4); line-height:1.4;">{{ fld.hint }}</p></div>
+              </sc-for>
+            </div>
+            <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line);">
+              <label style="display:block; font-size:10px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--t3); margin-bottom:9px;">Language</label>
+              <div style="display:flex; gap:8px;"><span style="padding:7px 16px; border-radius:9px; font-size:11.5px; font-weight:600; background:var(--t1); color:var(--bg);">English</span><span style="padding:7px 16px; border-radius:9px; font-size:11.5px; font-weight:500; background:var(--s1); border:1px solid var(--line-2); color:var(--t3);">Deutsch</span><span style="padding:7px 16px; border-radius:9px; font-size:11.5px; font-weight:500; background:var(--s1); border:1px solid var(--line-2); color:var(--t3);">Français</span></div>
+            </div>
+            <div style="margin-top:18px; padding-top:16px; border-top:1px solid var(--line); display:flex; gap:10px;">
+              <button style="height:40px; padding:0 18px; border:0; border-radius:10px; background:var(--accent); color:var(--accent-ink); font-size:13px; font-weight:600; display:inline-flex; align-items:center; gap:8px; cursor:pointer; font-family:inherit; box-shadow:var(--glow);"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4 10-10"></path></svg>Save changes</button>
+              <button style="height:40px; padding:0 18px; border:0; border-radius:10px; background:transparent; color:var(--t2); font-size:13px; font-weight:500; cursor:pointer; font-family:inherit;" style-hover="background:var(--s3);">Revert</button>
+            </div>
+          </div>
+
+          <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; padding:20px; box-shadow:var(--card-sh), var(--highlight);">
+            <h3 style="margin:0; font-size:13px; font-weight:600;">Dark mode schedule</h3><p style="margin:4px 0 16px; font-size:11.5px; color:var(--t3);">Auto-switch between light and dark by time of day.</p>
+            <div style="display:flex; align-items:center; gap:11px; margin-bottom:16px;"><span style="position:relative; width:40px; height:22px; border-radius:20px; background:var(--accent); flex:none;"><span style="position:absolute; top:2px; left:20px; width:18px; height:18px; border-radius:50%; background:#fff;"></span></span><span style="font-size:12px; color:var(--t2);">Schedule active</span></div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:14px;">
+              <div><label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:var(--t2); margin-bottom:7px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--warn)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"></path></svg>Light mode from</label><input value="07:00" style="width:100%; height:34px; padding:0 11px; border-radius:9px; background:var(--s1); border:1px solid var(--line-2); color:var(--t1); font-size:12px; font-family:'Geist Mono',monospace; outline:none;" /></div>
+              <div><label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; color:var(--t2); margin-bottom:7px;"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="var(--violet)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14a8 8 0 1 1-10-10 6 6 0 0 0 10 10z"></path></svg>Dark mode from</label><input value="18:00" style="width:100%; height:34px; padding:0 11px; border-radius:9px; background:var(--s1); border:1px solid var(--line-2); color:var(--t1); font-size:12px; font-family:'Geist Mono',monospace; outline:none;" /></div>
+            </div>
+          </div>
+
+          <div style="background:var(--s2); border:1px solid var(--line); border-radius:16px; box-shadow:var(--card-sh), var(--highlight); overflow:hidden;">
+            <div style="padding:13px 18px; display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--line);"><span style="font-size:13px; font-weight:600; flex:1;">Server log</span><span style="font-size:10px; color:var(--t3);">150 lines</span></div>
+            <div style="background:var(--term); padding:14px 16px; font-family:'Geist Mono',monospace; font-size:10.5px; line-height:1.7; height:220px; overflow-y:auto;" class="vec-scroll">
+              <sc-for list="{{ logLines }}" as="l" hint-placeholder-count="8"><div style="color:{{ l.color }}; white-space:pre-wrap;">{{ l.text }}</div></sc-for>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ═════ COMING SOON ═════ -->
+      <sc-if value="{{ isComingSoon }}" hint-placeholder-val="{{ false }}">
+      <div class="{{ animClass }}" style="padding:22px; height:100%;">
+        <div style="position:relative; height:100%; min-height:460px; border-radius:18px; overflow:hidden; border:1px solid var(--line);">
+          <div style="position:absolute; inset:0; padding:26px; filter:blur(7px); opacity:.4; pointer-events:none;">
+            <div style="height:34px; width:33%; border-radius:10px; background:var(--s3); margin-bottom:18px;"></div>
+            <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:18px;"><div style="height:110px; border-radius:14px; background:var(--s2); border:1px solid var(--line);"></div><div style="height:110px; border-radius:14px; background:var(--s2); border:1px solid var(--line);"></div><div style="height:110px; border-radius:14px; background:var(--s2); border:1px solid var(--line);"></div></div>
+            <div style="height:180px; border-radius:14px; background:var(--s2); border:1px solid var(--line);"></div>
+          </div>
+          <div style="position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:color-mix(in oklab, var(--bg) 45%, transparent); backdrop-filter:blur(2px);">
+            <div style="text-align:center; max-width:400px; padding:38px 36px; border-radius:20px; background:var(--s2); border:1px solid var(--line); box-shadow:var(--pop-sh), var(--highlight);">
+              <div style="width:52px; height:52px; margin:0 auto 16px; border-radius:15px; background:var(--accent-soft); color:var(--accent-text); display:flex; align-items:center; justify-content:center;"><svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 14l-2 5 5-2M14 5l5 5M12 15l7-7a3 3 0 0 0-3-3l-7 7a6 6 0 0 0-2 4 6 6 0 0 0 4-2z"></path></svg></div>
+              <div style="display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:20px; background:var(--s3); border:1px solid var(--line); font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--t2); margin-bottom:14px; white-space:nowrap;"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>Coming soon</div>
+              <h2 style="margin:0; font-size:18px; font-weight:600; letter-spacing:-0.02em;">{{ csTitle }}</h2>
+              <p style="margin:10px 0 0; font-size:12.5px; color:var(--t2); line-height:1.6;">{{ csDesc }}</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+    </main>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:880},&quot;accentColor&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;default&quot;:&quot;#5b8cff&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[[&quot;#5b8cff&quot;,&quot;#7c3aed&quot;],[&quot;#0044a7&quot;,&quot;#3f63f0&quot;],[&quot;#2f9e6f&quot;,&quot;#34d399&quot;],[&quot;#e2483d&quot;,&quot;#f87171&quot;],[&quot;#c2620a&quot;,&quot;#fbbf24&quot;]],&quot;section&quot;:&quot;Theme&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;'dark'|'light'&quot;,&quot;section&quot;:&quot;Theme&quot;},&quot;reduceMotion&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Theme&quot;}}">
+class Component extends DCLogic {
+  state = { dark: true, tab: 'Dashboard', mailIdx: 0 };
+
+  componentDidMount() {
+    const m = this.props.theme;
+    if (m === 'light') this.setState({ dark: false });
+    if (m === 'dark')  this.setState({ dark: true });
+  }
+
+  renderVals() {
+    const dark = this.state.dark;
+    const tab = this.state.tab;
+    const accent = this.props.accentColor ?? '#5b8cff';
+    const reduce = this.props.reduceMotion ?? false;
+    const setTab = (t) => this.setState({ tab: t });
+
+    const svg = (inner, s = 17) =>
+      `<svg viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+    const iconEl = (str, extra) =>
+      React.createElement('span', { style: { display: 'flex', flex: 'none', ...(extra || {}) }, dangerouslySetInnerHTML: { __html: str } });
+
+    const I = {
+      dashboard: '<rect x="3" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="3" width="7" height="7" rx="1.5"></rect><rect x="14" y="14" width="7" height="7" rx="1.5"></rect><rect x="3" y="14" width="7" height="7" rx="1.5"></rect>',
+      sparkles: '<path d="M12 3l1.7 4.8 4.8 1.7-4.8 1.7L12 16l-1.7-4.8L5.5 9.5l4.8-1.7z"></path><path d="M18.5 14.5l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"></path>',
+      mail: '<rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3.5 6.5l8.5 6 8.5-6"></path>',
+      users: '<circle cx="9" cy="8" r="3.2"></circle><path d="M3.5 20c0-3.3 2.5-5.5 5.5-5.5s5.5 2.2 5.5 5.5"></path><path d="M16 5.2a3.2 3.2 0 0 1 0 6"></path><path d="M17 14.9c2.3.5 4 2.4 4 5.1"></path>',
+      megaphone: '<path d="M4 10v4h3l6 4V6l-6 4H4z"></path><path d="M16 9a4 4 0 0 1 0 6"></path>',
+      history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.8-6.3"></path><path d="M3 4v4h4"></path><path d="M12 8v4l3 2"></path>',
+      chart: '<line x1="6" y1="20" x2="6" y2="12"></line><line x1="12" y1="20" x2="12" y2="5"></line><line x1="18" y1="20" x2="18" y2="14"></line><line x1="3" y1="20" x2="21" y2="20"></line>',
+      clipboard: '<rect x="5" y="4" width="14" height="17" rx="2"></rect><rect x="8.5" y="2.5" width="7" height="4" rx="1.2"></rect>',
+      calculator: '<rect x="5" y="3" width="14" height="18" rx="2"></rect><rect x="8" y="6" width="8" height="3" rx="1"></rect><line x1="9" y1="13" x2="9" y2="13"></line><line x1="15" y1="13" x2="15" y2="13"></line><line x1="9" y1="17" x2="9" y2="17"></line><line x1="15" y1="17" x2="15" y2="17"></line>',
+      gauge: '<path d="M4.5 18a9 9 0 1 1 15 0"></path><path d="M12 14l3.5-3.5"></path>',
+      zap: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"></path>',
+      book: '<path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"></path><path d="M4 19a2 2 0 0 1 2-2h13"></path>',
+      check: '<path d="M5 12l4 4 10-10"></path>',
+      alert: '<circle cx="12" cy="12" r="9"></circle><line x1="12" y1="8" x2="12" y2="13"></line><line x1="12" y1="16.3" x2="12" y2="16.3"></line>',
+      archive: '<rect x="3" y="4" width="18" height="4" rx="1"></rect><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"></path><line x1="10" y1="12" x2="14" y2="12"></line>',
+      inbox: '<path d="M3 12l3-8h12l3 8"></path><path d="M3 12v6a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6"></path><path d="M3 12h5l1.5 2.5h5L16 12h5"></path>',
+      flag: '<path d="M5 21V4h13l-3 4 3 4H5"></path>',
+      paperclip: '<path d="M20 11l-8 8a4.5 4.5 0 0 1-6.4-6.4l8-8a3 3 0 0 1 4.3 4.3l-8 8a1.5 1.5 0 0 1-2.1-2.1l7.3-7.3"></path>',
+      search: '<circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>',
+      folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>',
+      help: '<circle cx="12" cy="12" r="9"></circle><path d="M9.5 9.5a2.5 2.5 0 0 1 4.5 1.5c0 1.6-2 2-2 3.5"></path><line x1="12" y1="17.5" x2="12" y2="17.5"></line>',
+      moon: '<path d="M20 14a8 8 0 1 1-10-10 6 6 0 0 0 10 10z"></path>',
+      sun: '<circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"></path>',
+    };
+
+    // ── Sidebar nav ──
+    const baseNav = 'width:100%; display:flex; align-items:center; gap:10px; padding:8px 10px; border:0; background:transparent; color:var(--t2); border-radius:9px; font-size:12.5px; font-weight:500; cursor:pointer; font-family:inherit; transition:background .13s ease, color .13s ease;';
+    const activeNav = 'width:100%; display:flex; align-items:center; gap:10px; padding:8px 10px; border:0; border-radius:9px; font-size:12.5px; font-weight:550; cursor:pointer; font-family:inherit; background:var(--s3); color:var(--t1); box-shadow:inset 3px 0 0 -1px var(--accent), var(--highlight);';
+    const hoverNav = 'background:var(--s3); color:var(--t1);';
+    const badgeStyle = 'min-width:19px; height:19px; padding:0 5px; border-radius:20px; background:var(--accent); color:var(--accent-ink); font-size:10px; font-weight:600; display:flex; align-items:center; justify-content:center; flex:none;';
+    const lockEl = iconEl('<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="opacity:.5"><rect x="5" y="11" width="14" height="9" rx="2"></rect><path d="M8 11V8a4 4 0 0 1 8 0v3"></path></svg>');
+
+    const navWorkflow = [
+      { id: 'Dashboard', label: 'Dashboard', icon: I.dashboard },
+      { id: 'Assistant', label: 'Ask Vector', icon: I.sparkles },
+      { id: 'Inbox', label: 'Inbox', icon: I.mail, badge: 3 },
+      { id: 'CRM', label: 'CRM', icon: I.users },
+      { id: 'ELInfo', label: 'EL Info', icon: I.megaphone, locked: true },
+      { id: 'History', label: 'History', icon: I.history },
+      { id: 'Analytics', label: 'Analytics', icon: I.chart },
+    ].map(it => ({
+      ...it,
+      style: it.id === tab ? activeNav : baseNav,
+      hoverStyle: it.id === tab ? activeNav : hoverNav,
+      badgeStyle,
+      lockEl,
+      iconEl: iconEl(it.icon),
+      onClick: () => setTab(it.id),
+    }));
+
+    const navTools = [
+      { id: 'PMO', label: 'PMO', icon: I.clipboard },
+      { id: 'CBU', label: 'CBU Sizer', icon: I.calculator },
+      { id: 'Commission', label: 'Commission', icon: I.gauge },
+      { id: 'Schematics', label: 'Schematics', icon: I.zap },
+      { id: 'Docs', label: 'Doc Packs', icon: I.book },
+    ].map(it => ({
+      ...it,
+      style: it.id === tab ? activeNav : baseNav,
+      hoverStyle: it.id === tab ? activeNav : hoverNav,
+      lockEl,
+      iconEl: iconEl(it.icon, { opacity: .7 }),
+      onClick: () => setTab(it.id),
+    }));
+
+    // ── Header titles ──
+    const titles = {
+      Dashboard: ['Dashboard', 'Drop quotes, tag, and push to SharePoint'],
+      Assistant: ['Ask Vector', 'Your in-app AI copilot for quotes, specs & projects'],
+      Inbox: ['Inbox', 'Triage quote emails and send them to the queue'],
+      CRM: ['CRM', 'Accounts, contacts and opportunities'],
+      ELInfo: ['EL Internal Info', 'Division updates, files and AI chat'],
+      History: ['History', 'Every Step 1 and Step 2 run'],
+      Analytics: ['Analytics', 'Operational health across your quote pipeline'],
+      PMO: ['PMO', 'PO → Word doc automation'],
+      CBU: ['CBU Sizer', 'Size CBU enclosures automatically'],
+      Commission: ['Commission', 'Commission splits and exports'],
+      Schematics: ['Schematics Reader', 'Automated schematic analysis'],
+      Docs: ['Doc Packs', 'Generate document packs'],
+      Settings: ['Settings', 'Paths, keys, connection and appearance'],
+    };
+    const csDescs = {
+      ELInfo: 'Your EL division internal-updates hub — digest, files and AI chat — is coming soon to your workspace.',
+      PMO: 'PMO automation is being readied for the team and will land here soon.',
+      CBU: 'The CBU sizing tool is coming soon to your workspace.',
+      Commission: 'Commission tooling is coming soon to your workspace.',
+      Schematics: 'Automated schematic analysis is coming soon to your workspace.',
+      Docs: 'Document pack generation is coming soon to your workspace.',
+    };
+    const locked = new Set(['ELInfo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Docs']);
+
+    // ── Dashboard data ──
+    const kpis = [
+      { label: 'In queue', value: '4', sub: 'awaiting Step 1', icon: I.inbox, color: 'var(--accent-text)', soft: 'var(--accent-soft)' },
+      { label: 'Processed today', value: '27', sub: '29 total runs', icon: I.check, color: 'var(--ok)', soft: 'var(--ok-soft)', trend: '+18%' },
+      { label: 'Failed today', value: '1', sub: 'see History', icon: I.alert, color: 'var(--err)', soft: 'var(--err-soft)' },
+      { label: 'Archived today', value: '12', sub: 'files moved', icon: I.archive, color: 'var(--violet)', soft: 'var(--violet-soft)' },
+    ].map(k => ({ ...k, iconEl: iconEl(k.icon) }));
+    const wfSteps = [
+      { label: 'Files', badge: '✓', done: true, showLine: false },
+      { label: 'Details', badge: '✓', done: true, showLine: true },
+      { label: 'Run', badge: '3', done: false, showLine: true },
+    ].map(s => ({ ...s, textColor: s.done ? 'var(--t1)' : 'var(--t3)', badgeBg: s.done ? 'var(--ok)' : 'var(--s3)', badgeInk: s.done ? '#fff' : 'var(--t3)' }));
+    const tag = (c) => `display:inline-flex; align-items:center; font-size:9.5px; font-weight:600; padding:2px 8px; border-radius:20px; flex:none; background:color-mix(in oklab, ${c} 15%, transparent); color:${c};`;
+    const files = [
+      { name: 'Q-4471_Siemens_MV-Switchgear.pdf', size: '842 KB', line: 'MV Switchgear', c: 'var(--accent)' },
+      { name: 'Q-4472_ABB_Fire-Panel.pdf', size: '1.2 MB', line: 'Fire', c: 'var(--err)' },
+      { name: 'Angebot-8841_Hager_EL.pdf', size: '610 KB', line: 'EL', c: 'var(--violet)' },
+      { name: 'Q-4474_Legrand_ICP.pdf', size: '395 KB', line: 'ICP', c: 'var(--ok)' },
+    ].map(f => ({ ...f, dot: f.c, tagStyle: tag(f.c) }));
+    const pill = (c) => `font-size:10px; font-weight:600; padding:2px 9px; border-radius:7px; flex:none; background:color-mix(in oklab, ${c} 15%, transparent); color:${c};`;
+    const lines = [
+      { file: 'Q-4471 · Siemens', label: 'MV Switchgear', c: 'var(--accent)' },
+      { file: 'Q-4472 · ABB', label: 'Fire', c: 'var(--err)' },
+      { file: 'Angebot-8841 · Hager', label: 'EL', c: 'var(--violet)' },
+      { file: 'Q-4474 · Legrand', label: 'ICP', c: 'var(--ok)' },
+    ].map(l => ({ ...l, dot: l.c, pillStyle: pill(l.c) }));
+    const chipBase = 'padding:5px 10px; border-radius:8px; font-size:11px; font-weight:500; border:1px solid var(--line-2); background:var(--s1); color:var(--t2); cursor:pointer; font-family:inherit;';
+    const chipActive = 'padding:5px 10px; border-radius:8px; font-size:11px; font-weight:600; border:1px solid transparent; background:var(--accent); color:var(--accent-ink); cursor:pointer; font-family:inherit;';
+    const dateChips = [
+      { tag: 'Today', date: '20/07', active: true }, { tag: '1d ago', date: '19/07' }, { tag: '2d ago', date: '18/07' }, { tag: '3d ago', date: '17/07' },
+    ].map(d => ({ ...d, style: d.active ? chipActive : chipBase }));
+    const cv = [3, 5, 2, 6, 4, 7, 5, 8, 5, 9, 4, 7, 6, 10];
+    const cmax = Math.max(...cv);
+    const clab = ['07','08','09','10','11','12','13','14','15','16','17','18','19','20'];
+    const chart = cv.map((v, i) => ({ value: v, label: clab[i], h: Math.max(6, Math.round((v / cmax) * 108)) + 'px', fill: i >= cv.length - 3 ? 'var(--accent)' : 'color-mix(in oklab, var(--accent) 42%, transparent)' }));
+    const mailsSrc = [
+      { subject: 'RE: MV Switchgear quote — Rev C', sender: 'm.fischer@siemens.com', time: '8m', unread: true, pdf: true },
+      { subject: 'Fire panel BoM + schematic', sender: 'orders@abb.com', time: '31m', unread: true, pdf: true },
+      { subject: 'Commission split Q3 confirmation', sender: 'sarah.lo@eaton.com', time: '1h', unread: false, pdf: false },
+      { subject: 'Angebot 2026-8841 · EL Verteilung', sender: 'einkauf@hager.de', time: '2h', unread: false, pdf: true },
+    ];
+    const mails = mailsSrc.map(m => ({ ...m, bg: m.unread ? 'var(--violet-soft)' : 'transparent', weight: m.unread ? 600 : 500, subjColor: m.unread ? 'var(--t1)' : 'var(--t2)', openInbox: () => setTab('Inbox') }));
+    const jc = { ok: 'var(--ok)', err: 'var(--err)', skip: 'var(--t3)' };
+    const jr = { ok: 'var(--ok-soft)', err: 'var(--err-soft)', skip: 'var(--line)' };
+    const jobs = [
+      { status: 'ok', title: 'Step 1 · Siemens AG · Q-4471', meta: 'SF-4471 · list updated', time: '2m' },
+      { status: 'ok', title: 'Step 2 · ABB Ltd · Q-4468', meta: 'SF-4468 · D&Q store built', time: '14m' },
+      { status: 'err', title: 'Step 1 · Legrand · Q-4470', meta: 'SF-4470 · extract failed', time: '26m' },
+      { status: 'ok', title: 'Step 1 · Schneider · Q-4465', meta: 'SF-4465 · list updated', time: '1h' },
+      { status: 'skip', title: 'Step 2 · Hager · Q-4463', meta: 'SF-4463 · duplicate skipped', time: '2h' },
+    ].map(j => ({ ...j, dot: jc[j.status], ring: jr[j.status] }));
+    const archive = [
+      { date: 'Today', total: 12, files: ['Q-4465_Schneider_PDC.pdf', 'Q-4463_Hager_EL.pdf'], more: 10 },
+      { date: 'Yesterday', total: 9, files: ['Q-4458_ABB_MV.pdf', 'Q-4455_Siemens_FIRE.pdf'], more: 7 },
+    ];
+
+    // ── Assistant ──
+    const promptCard = 'display:flex; align-items:flex-start; gap:11px; text-align:left; padding:13px; border-radius:13px; border:1px solid var(--line); background:var(--s2); cursor:pointer; font-family:inherit; color:var(--t1); box-shadow:var(--card-sh);';
+    const prompts = [
+      { label: 'Search for a Quote', sub: 'By customer, KVA or fitting', icon: I.search, brand: true },
+      { label: 'Paste an email', sub: "I'll figure out what to do", icon: I.mail },
+      { label: 'Walk me through PMO', sub: 'From PO to Word doc', icon: I.clipboard },
+      { label: "What's in my queue?", sub: 'Live summary of files', icon: I.zap },
+      { label: 'Fix FedAuth error', sub: 'Reconnect to SharePoint', icon: I.help },
+      { label: 'Last failed job', sub: 'What went wrong & how to fix', icon: I.alert },
+    ].map(p => ({
+      ...p,
+      cardStyle: promptCard,
+      hoverStyle: p.brand ? 'border-color:var(--accent-line); background:var(--accent-soft);' : 'border-color:color-mix(in oklab, var(--violet) 40%, transparent); background:var(--violet-soft);',
+      iconColor: p.brand ? 'var(--accent-text)' : 'var(--violet)',
+      iconBg: p.brand ? 'var(--accent-soft)' : 'var(--violet-soft)',
+      iconEl: iconEl(svg(p.icon, 15)),
+    }));
+    const spResults = [
+      { title: 'Q-4471 Siemens MV Switchgear', ext: 'PDF', meta: 'D&Q Store · modified 8m ago' },
+      { title: 'ABB Fire Panel BoM Rev C', ext: 'XLSX', meta: 'D&Q Store · modified 31m ago' },
+      { title: 'Hager EL Verteilung Angebot', ext: 'PDF', meta: 'D&Q Store · modified 2h ago' },
+      { title: 'Schneider Energy Storage PO', ext: 'MSG', meta: 'D&Q Store · modified 5h ago' },
+    ];
+
+    // ── Inbox ──
+    const folderBase = 'width:100%; display:flex; align-items:center; gap:10px; padding:8px 11px; border:0; background:transparent; color:var(--t2); border-radius:9px; font-size:12.5px; font-weight:500; cursor:pointer; font-family:inherit;';
+    const folderActive = 'width:100%; display:flex; align-items:center; gap:10px; padding:8px 11px; border:0; background:var(--s3); color:var(--t1); border-radius:9px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit; box-shadow:var(--highlight);';
+    const folders = [
+      { label: 'Inbox', icon: I.inbox, count: 12, active: true },
+      { label: 'Flagged', icon: I.flag, count: 3 },
+      { label: 'With attachments', icon: I.paperclip, count: 7 },
+      { label: 'Processed', icon: I.check, count: 41 },
+      { label: 'Archive', icon: I.archive, count: '' },
+    ].map(f => ({ ...f, style: f.active ? folderActive : folderBase, hover: f.active ? folderActive : 'background:var(--s3); color:var(--t1);', countColor: f.active ? 'var(--t2)' : 'var(--t4)', iconEl: iconEl(svg(f.icon, 16), { opacity: .85 }) }));
+
+    const avatarColors = ['#5b8cff', '#f87171', '#a78bfa', '#34d399', '#fbbf24', '#38bdf8'];
+    const inboxSrc = [
+      { from: 'Markus Fischer', initials: 'MF', subject: 'RE: MV Switchgear quote — Rev C', preview: 'Hi Laith, please find the revised quote attached with the updated ratings…', time: '08:42', unread: true, pdf: true, attach: 'PDF', fromEmail: 'm.fischer@siemens.com',
+        body: ['Hi Laith,', 'Please find the revised MV Switchgear quote attached (Rev C). We updated the busbar rating to 2500A and corrected the IP class on panels 3–5.', 'Could you push this into the D&Q Store under the Siemens account and confirm the SF reference? The customer wants to place the PO before end of week.', 'Best regards,\nMarkus Fischer · Siemens AG'],
+        attachments: [{ name: 'Q-4471_MV-Switchgear_RevC.pdf', size: '842 KB' }] },
+      { from: 'ABB Orders', initials: 'AB', subject: 'Fire panel BoM + schematic', preview: 'Attached is the bill of materials and the single-line schematic for…', time: '08:15', unread: true, pdf: true, attach: '2', fromEmail: 'orders@abb.com',
+        body: ['Hello,', 'Attached is the bill of materials and single-line schematic for the fire detection panel. Please size accordingly and quote back.', 'Regards,\nABB Orders Team'],
+        attachments: [{ name: 'ABB_Fire_BoM.xlsx', size: '318 KB' }, { name: 'Fire_Panel_SLD.pdf', size: '1.1 MB' }] },
+      { from: 'Sarah Lo', initials: 'SL', subject: 'Commission split Q3 confirmation', preview: 'Can you confirm the commission split for the Schneider deal before…', time: 'Yesterday', unread: false, pdf: false, fromEmail: 'sarah.lo@eaton.com',
+        body: ['Hi Laith,', 'Can you confirm the commission split for the Schneider Energy Storage deal before I close out Q3? I have you at 60/40 with inside sales.', 'Thanks,\nSarah'],
+        attachments: [] },
+      { from: 'Hager Einkauf', initials: 'HE', subject: 'Angebot 2026-8841 · EL Verteilung', preview: 'Sehr geehrter Herr Soub, anbei das Angebot für die EL Verteilung…', time: 'Yesterday', unread: false, pdf: true, attach: 'PDF', fromEmail: 'einkauf@hager.de',
+        body: ['Sehr geehrter Herr Soub,', 'anbei finden Sie das Angebot 2026-8841 für die EL Verteilung. Bitte prüfen und bestätigen Sie die Stückliste.', 'Mit freundlichen Grüßen,\nHager Einkauf'],
+        attachments: [{ name: 'Angebot-8841_EL.pdf', size: '610 KB' }] },
+      { from: 'Legrand Sales', initials: 'LG', subject: 'ICP enclosure sizing question', preview: 'Quick question on the ICP enclosure — will the 800mm depth fit the…', time: 'Mon', unread: false, pdf: false, fromEmail: 'sales@legrand.com',
+        body: ['Hi,', 'Quick question on the ICP enclosure — will the 800mm depth accommodate the additional metering CTs, or do we need to go to 1000mm?', 'Cheers,\nLegrand Sales'],
+        attachments: [] },
+      { from: 'Schneider PO', initials: 'SC', subject: 'PO 55021 — Energy Storage', preview: 'Please find attached PO 55021 for the energy storage package as quoted…', time: 'Mon', unread: false, pdf: true, attach: 'PDF', fromEmail: 'po@schneider.com',
+        body: ['Hello Laith,', 'Please find attached PO 55021 for the energy storage package as quoted in Q-4460. Delivery required within 8 weeks.', 'Regards,\nSchneider Procurement'],
+        attachments: [{ name: 'PO-55021_EnergyStorage.pdf', size: '256 KB' }] },
+    ];
+    const mailRowBase = 'width:100%; text-align:left; display:block; padding:12px 16px; border:0; border-bottom:1px solid var(--line); cursor:pointer; font-family:inherit;';
+    const inbox = inboxSrc.map((m, i) => ({
+      ...m,
+      onClick: () => this.setState({ mailIdx: i }),
+      rowStyle: mailRowBase + (i === this.state.mailIdx ? 'background:var(--s3); box-shadow:inset 3px 0 0 -1px var(--accent);' : (m.unread ? 'background:var(--violet-soft);' : 'background:transparent;')),
+      avatarBg: avatarColors[i % avatarColors.length],
+      weight: m.unread ? 600 : 500,
+      nameColor: m.unread ? 'var(--t1)' : 'var(--t2)',
+      subjColor: m.unread ? 'var(--t1)' : 'var(--t2)',
+    }));
+    const rd = inboxSrc[this.state.mailIdx] || inboxSrc[0];
+    const read = {
+      subject: rd.subject, fromName: rd.from, from: rd.fromEmail, initials: rd.initials,
+      avatarBg: avatarColors[this.state.mailIdx % avatarColors.length],
+      date: rd.time, body: rd.body, hasAttach: rd.attachments.length > 0,
+      attachLabel: rd.attachments.length + ' attachment' + (rd.attachments.length === 1 ? '' : 's'),
+      attachments: rd.attachments,
+    };
+
+    // ── CRM ──
+    const crmSections = [
+      { title: 'Open opportunities', count: 2, cards: [
+        { initials: 'SI', name: 'Siemens AG', last: 'Last quote 2d ago', country: 'DE', quotes: 24, contacts: 3, total: '€842k', salesmen: 'M. Fischer, A. Weber' },
+        { initials: 'AB', name: 'ABB Ltd', last: 'Last quote 4h ago', country: 'CH', quotes: 18, contacts: 2, total: '€610k', salesmen: 'J. Meier' },
+      ] },
+      { title: 'Biggest accounts', count: 3, cards: [
+        { initials: 'SC', name: 'Schneider Electric', last: 'Last quote 6d ago', country: 'FR', quotes: 31, contacts: 4, total: '€1.2M', salesmen: 'S. Lo, P. Dubois' },
+        { initials: 'LE', name: 'Legrand', last: 'Last quote 3d ago', country: 'FR', quotes: 15, contacts: 2, total: '€410k', salesmen: 'P. Dubois' },
+        { initials: 'HA', name: 'Hager', last: 'Last quote 1d ago', country: 'DE', quotes: 12, contacts: 1, total: '€305k', salesmen: 'A. Weber' },
+      ] },
+      { title: 'Recently quoted', count: 3, cards: [
+        { initials: 'RI', name: 'Rittal', last: 'Last quote 5h ago', country: 'DE', quotes: 9, contacts: 2, total: '€188k', salesmen: 'A. Weber' },
+        { initials: 'SR', name: 'Schrack Technik', last: 'Last quote 1d ago', country: 'AT', quotes: 6, contacts: 1, total: '€142k', salesmen: 'K. Huber' },
+        { initials: 'SO', name: 'Socomec', last: 'Last quote 2d ago', country: 'FR', quotes: 5, contacts: 1, total: '€96k', salesmen: 'P. Dubois' },
+      ] },
+    ];
+
+    // ── History ──
+    const thStyle = 'text-align:left; padding:9px 14px; font-size:9.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--t3); white-space:nowrap;';
+    const hb = [[5,0,0],[7,1,0],[4,0,0],[8,0,1],[6,1,0],[9,0,0],[7,0,0],[5,0,1],[8,1,0],[6,0,0],[10,0,0],[7,1,0],[9,0,0],[8,0,1]];
+    const hbMax = 11;
+    const histBars = hb.map((d, i) => ({ label: clab[i], okH: Math.round(d[0] / hbMax * 108) + 'px', warnH: Math.round(d[1] / hbMax * 108) + 'px', errH: Math.round(d[2] / hbMax * 108) + 'px' }));
+    const stepPill = (s) => s === 'Step 1' ? 'display:inline-block; font-size:9.5px; font-weight:600; padding:2px 8px; border-radius:20px; background:var(--accent-soft); color:var(--accent-text);' : 'display:inline-block; font-size:9.5px; font-weight:600; padding:2px 8px; border-radius:20px; background:var(--violet-soft); color:var(--violet);';
+    const statPill = (st) => {
+      const c = st === 'ok' ? 'var(--ok)' : st === 'err' ? 'var(--err)' : 'var(--warn)';
+      return { style: `display:inline-flex; align-items:center; gap:5px; font-size:9.5px; font-weight:600; padding:2px 8px; border-radius:20px; background:color-mix(in oklab, ${c} 15%, transparent); color:${c};`, dot: c };
+    };
+    const prodColors = { PDC: '#5b8cff', EL: '#a78bfa', Fire: '#f87171', 'MV Switchgear': '#38bdf8', ICP: '#34d399', DPQ: '#fbbf24' };
+    const runLogSrc = [
+      { time: '20/07 14:32', step: 'Step 1', product: 'MV Switchgear', customer: 'Siemens AG', sfid: 'SF-4471', status: 'ok', dur: '38s', items: 12, note: 'list updated' },
+      { time: '20/07 14:05', step: 'Step 2', product: 'Fire', customer: 'ABB Ltd', sfid: 'SF-4468', status: 'ok', dur: '1m 12s', items: 8, note: 'D&Q store built' },
+      { time: '20/07 13:48', step: 'Step 1', product: 'ICP', customer: 'Legrand', sfid: 'SF-4470', status: 'err', dur: '—', items: 0, note: 'extract failed: unreadable PDF' },
+      { time: '20/07 13:20', step: 'Step 1', product: 'PDC', customer: 'Schneider Electric', sfid: 'SF-4465', status: 'ok', dur: '42s', items: 15, note: 'list updated' },
+      { time: '20/07 12:55', step: 'Step 2', product: 'EL', customer: 'Hager', sfid: 'SF-4463', status: 'warn', dur: '58s', items: 6, note: 'duplicate skipped' },
+      { time: '20/07 11:30', step: 'Step 1', product: 'DPQ', customer: 'Rittal', sfid: 'SF-4461', status: 'ok', dur: '35s', items: 9, note: 'list updated' },
+      { time: '20/07 10:12', step: 'Step 1', product: 'EL', customer: 'Schrack Technik', sfid: 'SF-4459', status: 'ok', dur: '40s', items: 11, note: 'list updated' },
+      { time: '19/07 16:44', step: 'Step 2', product: 'MV Switchgear', customer: 'Socomec', sfid: 'SF-4456', status: 'ok', dur: '1m 04s', items: 7, note: 'D&Q store built' },
+    ].map(r => {
+      const sp = statPill(r.status);
+      return { ...r, stepStyle: stepPill(r.step), prodColor: prodColors[r.product] || 'var(--t3)', statusStyle: sp.style, statusDot: sp.dot, noteColor: r.status === 'err' ? 'var(--err)' : 'var(--t3)' };
+    });
+
+    // ── Analytics ──
+    const sparkArr = (seed) => Array.from({ length: 16 }, (_, i) => {
+      const v = (Math.sin(seed + i * 0.7) * 0.4 + 0.55);
+      return { h: Math.round(6 + v * 20) + 'px', op: (0.35 + v * 0.65).toFixed(2) };
+    });
+    const heroKpis = [
+      { label: 'Quotes processed', value: '1,284', trend: '↑ 12.4%', trendColor: 'var(--ok)', color: 'var(--accent)', spark: sparkArr(1) },
+      { label: 'Success rate', value: '96.8%', trend: '↑ 1.2%', trendColor: 'var(--ok)', color: 'var(--ok)', spark: sparkArr(3) },
+      { label: 'Avg run time', value: '42s', trend: '↓ 8.0%', trendColor: 'var(--ok)', color: 'var(--violet)', spark: sparkArr(5) },
+      { label: 'Quote value pushed', value: '£3.42M', trend: '↑ 9.1%', trendColor: 'var(--ok)', color: 'var(--accent)', spark: sparkArr(7) },
+    ];
+    const throughput = Array.from({ length: 24 }, (_, i) => {
+      const ok = 5 + Math.round(Math.abs(Math.sin(i * 0.6)) * 9);
+      const warn = (i % 5 === 0) ? 1 : 0;
+      const err = (i % 8 === 0) ? 1 : 0;
+      const tot = ok + warn + err;
+      const mx = 16;
+      return { okH: Math.round(ok / mx * 150) + 'px', warnH: Math.round(warn / mx * 150) + 'px', errH: Math.round(err / mx * 150) + 'px' };
+    });
+    const byProduct = [
+      { label: 'MV Switchgear', total: 312, w: '100%', color: '#38bdf8' },
+      { label: 'EL', total: 268, w: '86%', color: '#a78bfa' },
+      { label: 'Fire', total: 214, w: '69%', color: '#f87171' },
+      { label: 'PDC', total: 186, w: '60%', color: '#5b8cff' },
+      { label: 'ICP', total: 152, w: '49%', color: '#34d399' },
+      { label: 'DPQ', total: 98, w: '31%', color: '#fbbf24' },
+    ];
+    const topCustomers = [
+      { rank: 1, name: 'Schneider Electric', value: '£1.2M', w: '100%' },
+      { rank: 2, name: 'Siemens AG', value: '£842k', w: '70%' },
+      { rank: 3, name: 'ABB Ltd', value: '£610k', w: '51%' },
+      { rank: 4, name: 'Legrand', value: '£410k', w: '34%' },
+      { rank: 5, name: 'Hager', value: '£305k', w: '25%' },
+    ];
+    const heatmap = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'].map((day, di) => ({
+      day,
+      cells: Array.from({ length: 12 }, (_, hi) => {
+        if (di >= 5) return (0.08 + Math.abs(Math.sin(hi)) * 0.15).toFixed(2);
+        const peak = hi > 1 && hi < 9;
+        return (peak ? 0.4 + Math.abs(Math.sin(di + hi)) * 0.6 : 0.12 + Math.abs(Math.sin(hi)) * 0.2).toFixed(2);
+      }),
+    }));
+    const failReasons = [
+      { reason: 'Unreadable / scanned PDF', count: 6, w: '100%' },
+      { reason: 'FedAuth cookie expired', count: 4, w: '66%' },
+      { reason: 'Duplicate SF reference', count: 3, w: '50%' },
+      { reason: 'Missing product line', count: 2, w: '33%' },
+      { reason: 'SharePoint timeout', count: 2, w: '33%' },
+    ];
+
+    // ── Settings ──
+    const settingsFields = [
+      { label: 'Base folder', value: 'C:\\Vector\\PDF Quotes', hint: 'Root containing PDF Quotes, Archive, Email Drop' },
+      { label: 'Your initials', value: 'LS', hint: 'Used in folder names (e.g. "SUBMITTED BY - 12-03-2025 LS")' },
+      { label: 'ELTechsupport site', value: 'eaton.sharepoint.com/sites/ELTechsupport', hint: 'D&Q Store script site' },
+      { label: 'D&Q Store path', value: '/Shared Documents/D&Q Store', hint: 'Server-relative library path' },
+      { label: 'Gemini API key', value: '••••••••••••••••', hint: 'Key is configured — leave blank to keep it' },
+    ];
+    const logLines = [
+      { text: '[14:32:04] Step 1 started — 4 files queued', color: 'var(--t2)' },
+      { text: '[14:32:09] ✓ Extracted Q-4471_Siemens (12 items)', color: 'var(--ok)' },
+      { text: '[14:32:14] ✓ Pushed to QuotationFactoryEMEA', color: 'var(--ok)' },
+      { text: '[14:32:18] [WARN] Duplicate SF-4463 — skipped', color: 'var(--warn)' },
+      { text: '[14:32:22] ✓ Step 1 completed in 38s', color: 'var(--ok)' },
+      { text: '[13:48:02] Step 1 started — 1 file queued', color: 'var(--t2)' },
+      { text: '[13:48:05] [ERR] Extract failed: unreadable PDF', color: 'var(--err)' },
+      { text: '[13:48:05] [retry] scheduling attempt 2/3', color: 'var(--err)' },
+    ];
+
+    return {
+      accent,
+      themeClass: dark ? '' : 'light',
+      themeIconEl: iconEl(dark ? svg(I.sun, 15) : svg(I.moon, 15)),
+      animClass: reduce ? '' : 'vec-anim',
+      toggleTheme: () => this.setState(s => ({ dark: !s.dark })),
+      title: (titles[tab] || titles.Dashboard)[0],
+      subtitle: (titles[tab] || titles.Dashboard)[1],
+      navWorkflow, navTools,
+      goSettings: () => setTab('Settings'),
+      settingsStyle: tab === 'Settings' ? activeNav : baseNav,
+      settingsHover: tab === 'Settings' ? activeNav : hoverNav,
+      openInbox: () => setTab('Inbox'),
+      openHistory: () => setTab('History'),
+      openDashboard: () => setTab('Dashboard'),
+      isDashboard: tab === 'Dashboard',
+      isAssistant: tab === 'Assistant',
+      isInbox: tab === 'Inbox',
+      isCrm: tab === 'CRM',
+      isHistory: tab === 'History',
+      isAnalytics: tab === 'Analytics',
+      isSettings: tab === 'Settings',
+      isComingSoon: locked.has(tab),
+      csTitle: (titles[tab] || ['',''])[0],
+      csDesc: csDescs[tab] || '',
+      kpis, wfSteps, files, lines, dateChips, chart, mails, jobs, archive,
+      prompts, spResults,
+      folders, inbox, read,
+      crmSections,
+      thStyle, histBars, runLog: runLogSrc,
+      heroKpis, throughput, byProduct, topCustomers, heatmap, failReasons,
+      settingsFields, logLines,
+    };
+  }
+}
+</script>
+</body>
+</html>
