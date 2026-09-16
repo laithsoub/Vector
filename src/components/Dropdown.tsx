@@ -55,18 +55,18 @@ export function Dropdown({
     <DropdownClose.Provider value={close}>
       <div ref={ref} className="relative">
         {label && (
-          <label className="block text-[10px] font-bold text-zinc-400 uppercase tracking-wide mb-1">
-            {label}{required && <span className="text-red-400 ml-0.5">*</span>}
+          <label className="block text-[10px] font-bold text-[var(--t4)] uppercase tracking-wide mb-1">
+            {label}{required && <span className="text-[var(--err)] ml-0.5">*</span>}
           </label>
         )}
         <button ref={btnRef} onClick={handleOpen}
-          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-xl border bg-zinc-50 dark:bg-zinc-800 border-zinc-200 dark:border-zinc-700 hover:border-blue-400 transition-all text-left${open ? ' border-blue-400 ring-2 ring-blue-100 dark:ring-blue-900/30' : ''}`}>
-          <span className={value ? 'font-semibold text-zinc-900 dark:text-white' : 'text-zinc-400'}>{value || placeholder}</span>
-          <ChevronDown className={`w-3.5 h-3.5 text-zinc-400 transition-transform shrink-0 ml-1${open ? ' rotate-180' : ''}`}/>
+          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-xl border bg-[var(--s1)] border-[var(--line)] hover:border-[var(--accent-line)] transition-all text-left${open ? ' border-[var(--accent-line)] ring-2 ring-[var(--accent-soft)]' : ''}`}>
+          <span className={value ? 'font-semibold text-[var(--t1)]' : 'text-[var(--t4)]'}>{value || placeholder}</span>
+          <ChevronDown className={`w-3.5 h-3.5 text-[var(--t4)] transition-transform shrink-0 ml-1${open ? ' rotate-180' : ''}`}/>
         </button>
         {open && createPortal(
           <div ref={dropRef} style={{ position: 'absolute', top: pos.top, left: pos.left, width: pos.width, zIndex: 9999 }}
-            className="bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 rounded-xl shadow-2xl overflow-auto max-h-80">
+            className="bg-white border border-[var(--line)] rounded-xl shadow-2xl overflow-auto max-h-80">
             {children}
           </div>,
           document.body,
@@ -88,9 +88,9 @@ export function DItem({
   const close = React.useContext(DropdownClose);
   return (
     <button onClick={() => { onClick(); close(); }}
-      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-zinc-50 dark:hover:bg-zinc-700 transition-colors${
-        active ? ' bg-yellow-50 dark:bg-yellow-900/20 text-yellow-700 dark:text-yellow-300 font-semibold' : ''}${
-        dim && !active ? ' text-zinc-400 dark:text-zinc-500' : ''}`}>
+      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--s-hover)] transition-colors${
+        active ? ' bg-[var(--warn-soft)] text-[var(--warn)] font-semibold' : ''}${
+        dim && !active ? ' text-[var(--t4)]' : ''}`}>
       {children}
     </button>
   );

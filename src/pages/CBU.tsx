@@ -36,8 +36,8 @@ export function CbuPage() {
     <button key={id} onClick={() => setView(id)}
       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all${
         view === id
-          ? ' bg-white dark:bg-zinc-900 text-zinc-900 dark:text-white shadow-sm'
-          : ' text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200'}`}>
+          ? ' bg-[var(--s2)] text-[var(--t1)] shadow-sm'
+          : ' text-[var(--t3)] hover:text-[var(--t1)]'}`}>
       <Icon className="w-3.5 h-3.5"/>
       {label}
     </button>
