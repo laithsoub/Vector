@@ -85,7 +85,7 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
   }
 
   return (
-    <div className="max-w-4xl space-y-4">
+    <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-[12px] text-[var(--t3)]">Standard Eaton documents — open inline or download. Add your own with the button.</p>
         <input ref={fileRef} type="file" multiple accept=".pdf,.xlsx,.xls,.doc,.docx,image/*"

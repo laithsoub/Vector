@@ -864,11 +864,12 @@ export function AssistantPage({
     .join('\n\n---\n\n');
 
   return (
-    // Break out of the parent p-6 to fill the full content area. Single column:
+    // Full-bleed: PAGE_FRAME marks Assistant 0, so the shell adds no padding to
+    // break out of (this used to cancel a p-6 with -mx-6 -my-6). Single column:
     // the D&Q Store is reached from the chat itself (/api/quote-ask searches it and
     // answers with result cards), from the "Search for a Quote" chip, and from the
     // Search tab — a fixed 340px panel repeating all three only narrowed the chat.
-    <div className="-mx-6 -my-6 flex" style={{ height: 'calc(100vh - var(--header-h))', background: 'var(--bg)' }}>
+    <div className="flex" style={{ height: 'calc(100vh - var(--header-h))', background: 'var(--bg)' }}>
 
       {/* ── Chat column ─────────────────────────────────────────────────────── */}
       <div className="flex-1 min-w-0 flex flex-col">

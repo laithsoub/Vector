@@ -28,7 +28,7 @@ export function Pill({
   };
   return (
     <span className={cn(
-      'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10.5px] font-semibold border whitespace-nowrap',
+      'inline-flex items-center gap-1.5 px-[9px] py-[3px] rounded-[5px] text-[10.5px] font-semibold border whitespace-nowrap',
       tones[tone], className,
     )}>
       {dot && <span className="w-1.5 h-1.5 rounded-full" style={{ background: dotColor[tone] }} />}
@@ -47,8 +47,8 @@ export function Card({
 }) {
   return (
     <div className={cn(
-      'v3-card rounded-[16px]',
-      padded && 'p-5',
+      'v3-card rounded-[var(--r-xl)]',
+      padded && 'py-[18px] px-5',
       className,
     )}>{children}</div>
   );
@@ -63,10 +63,10 @@ export function CardTitle({
   className?: string;
 }) {
   return (
-    <div className={cn('flex items-start justify-between gap-4 mb-4', className)}>
+    <div className={cn('flex items-start justify-between gap-4 mb-[14px]', className)}>
       <div className="min-w-0">
-        <h3 className="text-[13px] font-semibold text-[var(--t1)] leading-none tracking-tight">{title}</h3>
-        {sub && <p className="text-[11.5px] text-[var(--t3)] mt-1.5 leading-tight">{sub}</p>}
+        <h3 className="text-[13.5px] font-semibold text-[var(--t1)] leading-none tracking-[-0.012em]">{title}</h3>
+        {sub && <p className="text-[11px] text-[var(--t3)] mt-1 leading-tight">{sub}</p>}
       </div>
       {right && <div className="shrink-0 flex items-center gap-2">{right}</div>}
     </div>
@@ -95,7 +95,7 @@ export function Segmented<V extends string | number>({
 }) {
   return (
     <div className={cn(
-      'inline-flex items-center p-0.5 rounded-[9px] bg-[var(--s3)]',
+      'inline-flex items-center p-0.5 rounded-[var(--r-sm)] bg-[var(--s3)]',
       size === 'sm' ? 'text-[11.5px]' : 'text-xs',
     )}>
       {options.map(opt => {
@@ -106,7 +106,7 @@ export function Segmented<V extends string | number>({
           <button key={String(v)} onClick={() => onChange(v)}
             style={active ? { boxShadow: 'var(--card-sh)' } : undefined}
             className={cn(
-              'px-2.5 py-1 rounded-[7px] font-medium transition-colors',
+              'px-2.5 py-1 rounded-[var(--r-xs)] font-medium transition-colors',
               active
                 ? 'bg-[var(--s1)] text-[var(--t1)]'
                 : 'text-[var(--t3)] hover:text-[var(--t1)]',
@@ -135,10 +135,11 @@ export function Button({
     success:   'bg-[var(--ok)] hover:opacity-90 text-white',
     danger:    'bg-[var(--err)] hover:opacity-90 text-white',
   };
+  // v2 control heights: 28 / 30 / 34, with the tighter 11px label the design uses.
   const sizes = {
-    sm: 'h-7 px-2.5 text-[11.5px]',
-    md: 'h-8 px-3 text-xs',
-    lg: 'h-10 px-4 text-sm',
+    sm: 'h-7 px-2.5 text-[11px]',
+    md: 'h-[30px] px-[11px] text-[11px]',
+    lg: 'h-[34px] px-[13px] text-[11.5px]',
   };
   return (
     <button
@@ -327,6 +328,6 @@ export function Field({
 export function TextInput({ className = '', ...props }: React.InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input {...props}
-      className={cn('w-full h-[34px] px-[11px] rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none transition-colors', className)} />
+      className={cn('w-full h-[34px] px-[11px] rounded-[var(--r-sm)] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none transition-colors', className)} />
   );
 }

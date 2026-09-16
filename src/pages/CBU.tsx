@@ -44,7 +44,7 @@ export function CbuPage() {
   );
 
   return (
-    <div className="space-y-3 max-w-5xl">
+    <div className="space-y-3">
       <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800">
         {tab('sizer',   'Sizer', Sliders)}
         {tab('refs',    'Past quotes', History)}

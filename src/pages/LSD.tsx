@@ -891,7 +891,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
     // on screen. It saves moving 130 lines of archive markup that is otherwise
     // unchanged, and the archive is the one block that never needs to be near
     // the top.
-    <div className="max-w-[1600px] mx-auto flex flex-col gap-3">
+    <div className="flex flex-col gap-3">
       {/* master model missing — nothing works without it, so say so first */}
       {status && !status.master && (
         <Card className="border-[var(--err)]">

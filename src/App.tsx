@@ -873,6 +873,19 @@ const VALID_TABS: TabId[] = [
   'Settings',
 ];
 
+// Content width per tab, straight from the v2 canvas: every screen there is
+// `padding:var(--pad-page)` around a centred column of this width. Framing the
+// pages from here rather than inside each one keeps the 16 page files free of
+// layout boilerplate — change a number here and that screen re-frames.
+// 0 = full-bleed: the page owns the whole area (Assistant's chat, Inbox's panes).
+const PAGE_FRAME: Record<TabId, number> = {
+  Dashboard: 1240, Assistant: 0,    Inbox: 0,     Todo: 1240,
+  CRM:       1240, ELInfo:    1100, Fenton: 1180, History: 1240,
+  Analytics: 1240, Report:    1100, LSD:    1240, PMO:     1100,
+  CBU:       1140, Commission: 1000, Schematics: 1240, Filing: 960,
+  Docs:       960, Settings:   680,
+};
+
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
     const saved = localStorage.getItem('vector_tab') as TabId;
@@ -1129,13 +1142,14 @@ export default function App() {
             {VALID_TABS.map(t => {
               const active  = t === tab;
               const isInbox = t === 'Inbox';
+              const frame   = PAGE_FRAME[t] ?? 1240;
               return (
                 <div key={t}
                   className={cn('flex-1 min-h-0', !isInbox && 'overflow-y-auto')}
                   style={active ? undefined : { display: 'none' }}>
                   {/* Locked features show a Coming Soon wall — their real page never mounts */}
                   {isLocked(t) ? (
-                    <div className="p-6 w-full h-full">
+                    <div className="w-full h-full" style={{ padding: 'var(--pad-page)' }}>
                       <ComingSoon
                         title={COMING_SOON[t]?.title || t}
                         desc={COMING_SOON[t]?.desc || 'This feature is coming soon to your workspace.'}
@@ -1148,7 +1162,12 @@ export default function App() {
                       </React.Suspense>
                     </TabErrorBoundary>
                   ) : (
-                    <div className="p-6 w-full">
+                    // maxWidth carries the gutters too: border-box counts the
+                    // padding inside it, so the column itself lands on `frame`.
+                    <div className="w-full mx-auto"
+                      style={frame
+                        ? { padding: 'var(--pad-page)', maxWidth: `calc(${frame}px + var(--pad-page) * 2)` }
+                        : undefined}>
                       <TabErrorBoundary label={t}>
                       <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
