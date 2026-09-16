@@ -1373,7 +1373,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       <div className="flex-1 min-h-0 flex">
         {/* Folder pane */}
         {folderPane && (
-          <nav aria-label="Folders" className="shrink-0 flex flex-col min-h-0 bg-[var(--s3)] border-r border-[var(--line-2)]" style={{ width: foldersWide ? 220 : 52 }}>
+          <nav aria-label="Folders" className="shrink-0 flex flex-col min-h-0 bg-[var(--s1)] border-r border-[var(--line)]" style={{ width: foldersWide ? 196 : 52 }}>
             <div className={cn('shrink-0 flex items-center gap-1 p-2', !foldersWide && 'flex-col')}>
               <IconBtn icon={PanelLeft} title="Hide folder pane" onClick={() => setFolderPane(false)} />
               {foldersWide ? (
@@ -1400,7 +1400,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
                 return (
                   <div key={b.storeId} className="mt-2">
                     <button onClick={() => { const n = { ...expanded, [b.storeId]: !open }; setExpanded(n); try { localStorage.setItem('ol_expanded', JSON.stringify(n)); } catch { /* private */ } }}
-                      className="w-full flex items-center gap-1.5 h-8 px-1.5 rounded-md text-[12.5px] font-semibold text-[var(--t1)] hover:bg-[var(--s-hover)]">
+                      className="w-full flex items-center gap-1.5 px-2 py-1 rounded-[var(--r-xs)] text-[10px] font-bold uppercase tracking-[0.07em] text-[var(--t4)] hover:text-[var(--t2)]">
                       {open ? <ChevronDown className="w-3.5 h-3.5 text-[var(--t3)]" /> : <ChevronRight className="w-3.5 h-3.5 text-[var(--t3)]" />}
                       <span className="truncate">{b.name}</span>
                     </button>
@@ -1415,13 +1415,12 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
                           onDragOver={v === 'flagged' && current ? (ev => { if (ev.dataTransfer.types.includes('vector/email-row')) { ev.preventDefault(); setDropView(dropKey); } }) : undefined}
                           onDragLeave={() => setDropView(cur => (cur === dropKey ? null : cur))}
                           onDrop={v === 'flagged' && current ? (ev => { ev.preventDefault(); setDropView(null); const id = ev.dataTransfer.getData('vector/email-row'); if (id && !flagged.has(id)) toggleFlag(id); }) : undefined}
-                          className={cn('relative w-full flex items-center gap-2.5 h-8 pl-7 pr-2 rounded-md text-[13px] transition-colors',
+                          className={cn('relative w-full flex items-center gap-[7px] pl-7 pr-2 py-[5px] rounded-[var(--r-xs)] text-[11.5px] transition-colors',
                             dropView === dropKey ? 'bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent-line)]'
-                              : active ? 'bg-[var(--s1)] font-semibold text-[var(--t1)] shadow-sm' : 'text-[var(--t1)] hover:bg-[var(--s-hover)]')}>
-                          {active && <span className="absolute left-2 top-2 bottom-2 w-[3px] rounded-full bg-[var(--accent)]" />}
-                          <I className={cn('w-4 h-4 shrink-0', active ? 'text-[var(--accent-text)]' : 'text-[var(--t2)]')} />
+                              : active ? 'bg-[var(--accent-soft)] font-semibold text-[var(--accent-text)]' : 'text-[var(--t2)] hover:bg-[var(--s3)]')}>
+                          <I className={cn('w-[13px] h-[13px] shrink-0', active ? 'text-[var(--accent-text)]' : 'text-[var(--t3)]')} />
                           <span className="flex-1 text-left truncate">{VIEW_LABEL[v]}</span>
-                          {n ? <span className={cn('text-[12px] tabular-nums', v === 'inbox' || v === 'unread' ? 'font-semibold text-[var(--accent-text)]' : 'text-[var(--t3)]')}>{n}</span> : null}
+                          {n ? <span className={cn('text-[10px] font-semibold tabular-nums', active ? 'text-[var(--accent-text)]' : 'text-[var(--t4)]')}>{n}</span> : null}
                         </button>
                       );
                     })}
