@@ -910,7 +910,9 @@ export default function App() {
     localStorage.setItem('vector_tab', t);
   }, []);
 
-  const [dark, setDark] = useState(() => localStorage.getItem('theme') === 'dark');
+  // Dark is the default the canvas is drawn in; only an explicit saved choice
+  // ("light") opts out, so a first run matches the design rather than inverting it.
+  const [dark, setDark] = useState(() => localStorage.getItem('theme') !== 'light');
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
     localStorage.setItem('theme', dark ? 'dark' : 'light');
