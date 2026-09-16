@@ -203,22 +203,19 @@ function Sidebar({
       onMouseEnter={() => { if (!pinned) setHovered(true); }}
       onMouseLeave={() => { if (!pinned) setHovered(false); }}
       className={cn(
-        'w-[250px] h-full flex flex-col border-r border-[var(--line)] bg-[var(--s1)] transition-transform duration-200 ease-out',
+        'w-[238px] h-full flex flex-col border-r border-[var(--line)] bg-[var(--s1)] transition-transform duration-200 ease-out',
         pinned ? 'shrink-0 relative' : 'absolute inset-y-0 left-0 z-50 shadow-2xl',
         !pinned && !hovered && '-translate-x-full',
       )}>
-      <div className="h-[60px] shrink-0 flex items-center gap-[11px] px-4 border-b border-[var(--line)]">
-        <div className="relative w-[30px] h-[30px] shrink-0">
-          <div className="w-[30px] h-[30px] rounded-[9px] flex items-center justify-center v3-glow"
-            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6))' }}>
-            <span className="text-[15px] font-bold leading-none tracking-[-0.06em] select-none" style={{ color: 'var(--accent-ink)' }}>V</span>
-          </div>
-          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[var(--s1)]" />
+      <div className="shrink-0 flex items-center gap-2.5 pt-[26px] px-[18px] pb-[18px]">
+        <div className="w-[26px] h-[26px] shrink-0 rounded-[var(--r-xs)] flex items-center justify-center"
+          style={{ background: 'var(--accent)' }}>
+          <span className="text-[14px] font-bold leading-none tracking-[-0.06em] select-none" style={{ color: 'var(--accent-ink)' }}>V</span>
         </div>
-        <div className="leading-tight min-w-0 flex-1">
+        <div className="leading-[1.15] min-w-0 flex-1">
           <p className="text-[13.5px] font-semibold tracking-[-0.02em] truncate">Vector</p>
-          <p className="text-[10px] text-[var(--t3)] mt-0.5 truncate">Quote Automation · v3.0</p>
         </div>
+        <span className="shrink-0 text-[10px] text-[var(--t4)] num">v3.0</span>
         <button aria-label={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
           onClick={() => { setPinned(!pinned); setHovered(false); }}
           title={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
@@ -232,10 +229,10 @@ function Sidebar({
         </button>
       </div>
 
-      <nav className="flex-1 overflow-y-auto py-3.5 px-2.5 flex flex-col gap-[18px] vec-scroll">
+      <nav className="flex-1 overflow-y-auto py-[18px] px-3 flex flex-col gap-[26px] vec-scroll">
         {Object.entries(NAV_STRUCTURE).map(([key, sec]) => (
-          <div key={key} className="flex flex-col gap-0.5">
-            <div className="px-2.5 pb-[7px] text-[10px] font-semibold tracking-[0.13em] uppercase text-[var(--t3)]">
+          <div key={key} className="flex flex-col gap-px">
+            <div className="px-2.5 pb-[9px] text-[9.5px] font-bold tracking-[0.15em] uppercase text-[var(--t4)]">
               {t[sec.labelKey]}
             </div>
             {sec.items.map(it => {
@@ -311,13 +308,13 @@ function Header({
     return () => document.removeEventListener('mousedown', h);
   }, []);
 
-  const iconBtn = 'w-8 h-8 shrink-0 rounded-[9px] flex items-center justify-center border border-[var(--line-2)] bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s-hover)] hover:text-[var(--t1)] transition-colors';
+  const iconBtn = 'w-7 h-7 shrink-0 rounded-[var(--r-xs)] flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] hover:text-[var(--t1)] transition-colors';
   return (
-    <header className="h-[60px] shrink-0 flex items-center gap-3.5 px-[22px] border-b border-[var(--line)] z-[5]"
-      style={{ background: 'color-mix(in oklab, var(--s1) 82%, transparent)', backdropFilter: 'blur(12px)' }}>
+    <header className="shrink-0 flex items-end gap-[18px] pt-[26px] px-[30px] pb-4 border-b border-[var(--line)] z-[5]"
+      style={{ minHeight: 'var(--header-h)' }}>
       <div className="min-w-0">
-        <h1 className="text-[15px] font-semibold leading-none tracking-[-0.02em]">{cur.t}</h1>
-        <p className="text-[11.5px] text-[var(--t3)] mt-[3px] leading-none truncate">{cur.s}</p>
+        <h1 className="text-[21px] font-semibold leading-[1.15] tracking-[-0.028em]">{cur.t}</h1>
+        <p className="text-[12.5px] text-[var(--t3)] mt-[5px] leading-[1.35] max-w-[62ch] truncate">{cur.s}</p>
       </div>
 
       <div className="flex-1" />

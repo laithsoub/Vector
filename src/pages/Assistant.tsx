@@ -868,7 +868,7 @@ export function AssistantPage({
     // the D&Q Store is reached from the chat itself (/api/quote-ask searches it and
     // answers with result cards), from the "Search for a Quote" chip, and from the
     // Search tab — a fixed 340px panel repeating all three only narrowed the chat.
-    <div className="-mx-6 -my-6 flex" style={{ height: 'calc(100vh - 60px)', background: 'var(--bg)' }}>
+    <div className="-mx-6 -my-6 flex" style={{ height: 'calc(100vh - var(--header-h))', background: 'var(--bg)' }}>
 
       {/* ── Chat column ─────────────────────────────────────────────────────── */}
       <div className="flex-1 min-w-0 flex flex-col">

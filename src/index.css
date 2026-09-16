@@ -31,41 +31,50 @@
    using the Tailwind ink/brand scales untouched.
    ═══════════════════════════════════════════════════════════════════════════ */
 :root {
+  /* geometry + page rhythm — every surface radius and page gutter comes from here */
+  --r-xs:6px; --r-sm:8px; --r-md:10px; --r-lg:12px; --r-xl:14px;
+  --pad-page:30px; --gap-page:22px;
+  /* Header height lives here because pages size themselves against it
+     (Assistant fills calc(100vh - var(--header-h))). */
+  --header-h:72px;
+
   --accent:#5b8cff; --accent-hover:#7aa2ff; --accent-ink:#ffffff;
-  --accent-soft:color-mix(in oklab, var(--accent) 11%, transparent);
-  --accent-line:color-mix(in oklab, var(--accent) 30%, transparent);
-  --accent-text:color-mix(in oklab, var(--accent) 82%, #000000);
-  --bg:#f4f4f7; --bg-grad:#ececf2;
-  --s1:#ffffff; --s2:#ffffff; --s3:#f5f5f8; --s-hover:#eeeef3;
-  --line:rgba(17,17,28,.09); --line-2:rgba(17,17,28,.13); --line-3:rgba(17,17,28,.2);
-  --t1:#15151d; --t2:#585866; --t3:#8a8a98; --t4:#b0b0bd;
-  --ok:#059669; --ok-soft:rgba(5,150,105,.1);
-  --warn:#b45309; --warn-soft:rgba(180,83,9,.1);
-  --err:#dc2626; --err-soft:rgba(220,38,38,.09);
-  --violet:#7c3aed; --violet-soft:rgba(124,58,237,.1);
-  --highlight:inset 0 1px 0 rgba(255,255,255,.9);
-  --card-sh:0 1px 2px rgba(17,17,28,.05), 0 8px 24px -12px rgba(17,17,28,.14);
-  --pop-sh:0 1px 2px rgba(17,17,28,.06), 0 24px 60px -18px rgba(17,17,28,.24);
-  --glow:0 0 0 1px var(--accent-line), 0 8px 22px -10px color-mix(in oklab, var(--accent) 40%, transparent);
+  --accent-soft:color-mix(in oklab, var(--accent) 9%, transparent);
+  --accent-line:color-mix(in oklab, var(--accent) 24%, transparent);
+  --accent-text:color-mix(in oklab, var(--accent) 84%, #000000);
+  --bg:#fbfbfc; --bg-grad:#f6f6f9;
+  --s1:#ffffff; --s2:#ffffff; --s3:#f6f6f9; --s-hover:#f0f0f4;
+  --line:rgba(17,17,28,.07); --line-2:rgba(17,17,28,.1); --line-3:rgba(17,17,28,.16);
+  --t1:#14141c; --t2:#565664; --t3:#8b8b99; --t4:#b4b4c0;
+  --ok:#059669; --ok-soft:rgba(5,150,105,.08);
+  --warn:#b45309; --warn-soft:rgba(180,83,9,.08);
+  --err:#dc2626; --err-soft:rgba(220,38,38,.07);
+  --violet:#7c3aed; --violet-soft:rgba(124,58,237,.08);
+  /* v2 is flat: no inner highlight, no accent glow. Kept as tokens so the
+     ~19 call sites of .v3-card/.v3-glow/.v3-pop need no edit. */
+  --highlight:0 0 transparent;
+  --card-sh:0 1px 1px rgba(17,17,28,.03);
+  --pop-sh:0 1px 2px rgba(17,17,28,.06), 0 26px 64px -20px rgba(17,17,28,.2);
+  --glow:0 0 transparent;
   --term:#0b0b12;
 }
 .dark {
-  --accent-soft:color-mix(in oklab, var(--accent) 16%, transparent);
-  --accent-line:color-mix(in oklab, var(--accent) 34%, transparent);
-  --accent-text:color-mix(in oklab, var(--accent) 72%, #ffffff);
-  --bg:#0a0a0f; --bg-grad:#0d0d16;
-  --s1:#101017; --s2:#14141d; --s3:#1b1b26; --s-hover:#20202c;
-  --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.11); --line-3:rgba(255,255,255,.16);
-  --t1:#f5f5f8; --t2:#a4a4b2; --t3:#6d6d7d; --t4:#4c4c5a;
-  --ok:#34d399; --ok-soft:rgba(52,211,153,.13);
-  --warn:#fbbf24; --warn-soft:rgba(251,191,36,.13);
-  --err:#f87171; --err-soft:rgba(248,113,113,.13);
-  --violet:#a78bfa; --violet-soft:rgba(167,139,250,.14);
-  --highlight:inset 0 1px 0 rgba(255,255,255,.045);
-  --card-sh:0 1px 2px rgba(0,0,0,.4), 0 10px 30px -14px rgba(0,0,0,.7);
-  --pop-sh:0 1px 2px rgba(0,0,0,.4), 0 24px 60px -18px rgba(0,0,0,.85);
-  --glow:0 0 0 1px var(--accent-line), 0 8px 26px -10px color-mix(in oklab, var(--accent) 55%, transparent);
-  --term:#07070b;
+  --accent-soft:color-mix(in oklab, var(--accent) 13%, transparent);
+  --accent-line:color-mix(in oklab, var(--accent) 26%, transparent);
+  --accent-text:color-mix(in oklab, var(--accent) 74%, #ffffff);
+  --bg:#0b0b10; --bg-grad:#0e0e15;
+  --s1:#0f0f15; --s2:#13131a; --s3:#191920; --s-hover:#1e1e27;
+  --line:rgba(255,255,255,.055); --line-2:rgba(255,255,255,.085); --line-3:rgba(255,255,255,.13);
+  --t1:#f4f4f7; --t2:#a8a8b6; --t3:#71717f; --t4:#50505d;
+  --ok:#34d399; --ok-soft:rgba(52,211,153,.11);
+  --warn:#fbbf24; --warn-soft:rgba(251,191,36,.11);
+  --err:#f87171; --err-soft:rgba(248,113,113,.11);
+  --violet:#a78bfa; --violet-soft:rgba(167,139,250,.12);
+  --highlight:0 0 transparent;
+  --card-sh:0 1px 1px rgba(0,0,0,.18);
+  --pop-sh:0 1px 2px rgba(0,0,0,.4), 0 26px 64px -20px rgba(0,0,0,.8);
+  --glow:0 0 transparent;
+  --term:#08080d;
 }
 
 /* Motion + surface helpers (used by the v3 shell + pages) */
