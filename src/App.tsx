@@ -1031,6 +1031,13 @@ export default function App() {
       setSessionStart(sess.startedAt);
       setQueueCount(pdfs.length);
     } catch { /* offline, retry on tick */ }
+    // Separate try/catch: the Todo sweep needs Outlook, and a failure there must
+    // not blank the header. The canvas shows this badge on load, so the count is
+    // fetched here rather than waiting for the Todo page to mount.
+    try {
+      const todo = await api.todoList('open');
+      setTodoOpen(todo.items?.length ?? 0);
+    } catch { /* leave the badge as it is */ }
   }, []);
 
   useEffect(() => {
