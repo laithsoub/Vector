@@ -1008,17 +1008,17 @@ export function AssistantPage({
         {isEmpty ? (
           /* ── Welcome state ── */
           <div className="flex flex-col items-center justify-center h-full px-6 py-10 text-center">
-            <div className="w-14 h-14 rounded-2xl bg-violet-100 dark:bg-violet-900/30 ring-1 ring-inset ring-violet-200 dark:ring-violet-800/40 flex items-center justify-center mb-5 shadow-sm">
-              <Sparkles className="w-6 h-6 text-violet-500" />
+            <div className="w-14 h-14 rounded-[var(--r-xl)] bg-[var(--violet-soft)] ring-1 ring-inset ring-[var(--violet-soft)] flex items-center justify-center mb-[18px]">
+              <Sparkles className="w-6 h-6 text-[var(--violet)]" />
             </div>
-            <h2 className="text-[16px] font-semibold text-[var(--t1)] mb-2">
+            <h2 className="text-[19px] font-semibold tracking-[-0.02em] text-[var(--t1)]">
               What can I help with?
             </h2>
-            <p className="text-[13px] text-[var(--t3)] max-w-[420px] leading-relaxed">
+            <p className="mt-[9px] text-[13px] text-[var(--t2)] max-w-[430px] leading-[1.55]">
               Ask anything about your workflow, or paste an email and I'll figure out exactly what needs to be done.
             </p>
 
-            <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 w-full max-w-2xl">
+            <div className="mt-7 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 w-full max-w-[640px]">
               {QUICK_PROMPTS.map(p => (
                 <button key={p.label}
                   onClick={() => {
@@ -1028,17 +1028,17 @@ export function AssistantPage({
                   }}
                   className={cn(
                     'flex items-start gap-3 px-3.5 py-3 rounded-xl ring-1 ring-inset text-left transition-all group shadow-sm',
-                    'bg-[var(--s1)] ring-[var(--line)] hover:ring-violet-300 dark:hover:ring-violet-600/60 hover:bg-violet-50/60 dark:hover:bg-violet-900/10',
+                    'bg-[var(--s1)] ring-[var(--line)] hover:ring-[var(--violet)] hover:bg-[var(--violet-soft)]',
                   )}>
                   <div className={cn(
-                    'w-7 h-7 rounded-lg flex items-center justify-center shrink-0 mt-0.5 transition-colors',
-                    'bg-violet-100 dark:bg-violet-900/50 group-hover:bg-violet-200 dark:group-hover:bg-violet-800/60',
+                    'w-7 h-7 rounded-[var(--r-sm)] flex items-center justify-center shrink-0 mt-0.5 transition-colors',
+                    'bg-[var(--violet-soft)] group-hover:brightness-110',
                   )}>
-                    <p.icon className="w-3.5 h-3.5 text-violet-500" />
+                    <p.icon className="w-3.5 h-3.5 text-[var(--violet)]" />
                   </div>
                   <div className="min-w-0">
                     <p className="text-[12.5px] font-semibold text-[var(--t1)] leading-snug">{p.label}</p>
-                    <p className="text-[11px] text-[var(--t3)] mt-0.5 leading-snug">{p.sub}</p>
+                    <p className="text-[10.5px] text-[var(--t3)] mt-0.5 leading-snug">{p.sub}</p>
                   </div>
                 </button>
               ))}
@@ -1147,7 +1147,7 @@ export function AssistantPage({
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
               }}
-              className="w-full resize-none rounded-xl px-4 py-2.5 pr-20 bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[13px] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-300 dark:focus:ring-violet-600 disabled:opacity-50 leading-relaxed overflow-y-auto"
+              className="w-full resize-none rounded-[var(--r-md)] px-[14px] py-[11px] pr-20 bg-[var(--s2)] ring-1 ring-inset ring-[var(--line-2)] text-[13px] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-[var(--violet)] disabled:opacity-50 leading-[1.5] overflow-y-auto"
               style={{ maxHeight: 200 }}
             />
             {/* Hint overlay */}
@@ -1160,7 +1160,8 @@ export function AssistantPage({
           <button
             onClick={() => send()}
             disabled={loading || !input.trim() || !aiAvailable}
-            className="h-10 w-10 rounded-xl bg-violet-500 hover:bg-violet-600 active:scale-95 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-all shrink-0 shadow-sm">
+            style={{ boxShadow: '0 8px 22px -10px color-mix(in oklab, var(--violet) 70%, transparent)' }}
+            className="h-10 w-10 rounded-[var(--r-md)] bg-[var(--violet)] hover:brightness-110 active:scale-95 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-all shrink-0">
             {loading
               ? <Loader2 className="w-4 h-4 animate-spin" />
               : <Send className="w-4 h-4" />}
