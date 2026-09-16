@@ -290,15 +290,26 @@ export function KpiTile({
     amber:  { c: 'var(--warn)',        b: 'var(--warn-soft)' },
   };
   const t = tones[accent] || tones.brand;
+  // A cell, not a card: KpiBand paints the border and the dividers.
   return (
-    <Card className="!rounded-[14px] !p-[17px]">
-      <div className="w-[30px] h-[30px] rounded-[9px] flex items-center justify-center" style={{ color: t.c, background: t.b }}>
-        <IconCmp className="w-4 h-4" strokeWidth={1.9} />
+    <div className="bg-[var(--s2)] px-[19px] py-[17px] min-w-0">
+      <div className="flex items-center gap-[7px] min-w-0">
+        <IconCmp className="w-[15px] h-[15px] shrink-0" strokeWidth={1.9} style={{ color: t.c }} />
+        <span className="flex-1 min-w-0 truncate text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--t3)]">{label}</span>
       </div>
-      <p className="mt-3.5 text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--t3)]">{label}</p>
-      <p className="text-[27px] font-semibold tracking-[-0.03em] tabular-nums mt-0.5 leading-none text-[var(--t1)]">{value}</p>
-      <p className="text-[11px] text-[var(--t3)] mt-1.5">{sub}</p>
-    </Card>
+      <p className="mt-[13px] text-[30px] font-semibold tracking-[-0.035em] tabular-nums leading-none text-[var(--t1)]">{value}</p>
+      <p className="mt-1.5 text-[11px] text-[var(--t3)] truncate">{sub}</p>
+    </div>
+  );
+}
+
+// KPI band. The canvas joins the tiles into one object: a 1px grid gap over a
+// --line background paints the dividers, so no cell carries its own border.
+export function KpiBand({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-2 md:grid-cols-4 gap-px overflow-hidden rounded-[var(--r-lg)] border border-[var(--line)] bg-[var(--line)]">
+      {children}
+    </div>
   );
 }
 

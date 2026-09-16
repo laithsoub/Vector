@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '../lib/cn';
-import { Card, CardTitle, Pill, KpiTile, relTime } from '../lib/ui';
+import { Card, CardTitle, Pill, KpiTile, KpiBand, relTime } from '../lib/ui';
 import { api } from '../lib/api';
 import { failed, plural } from '../lib/errors';
 import { exportJobReport, type ReportFormat } from '../lib/export';
@@ -295,12 +295,12 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
             </div>
           )}
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <KpiBand>
             <KpiTile icon={ClipboardList} label="Jobs done"    value={report.totals.threads}        sub={`${report.range.from} → ${report.range.to}`} accent="brand" />
             <KpiTile icon={Reply}         label="Replies sent" value={report.totals.replies}        sub="messages you wrote" accent="ok" />
             <KpiTile icon={Mail}          label="Mail handled" value={report.totals.messages}       sub={`${report.totals.scanned} scanned`} accent="violet" />
             <KpiTile icon={CheckCircle2}  label="Filed done"   value={report.totals.completedFiled} sub="in a completed folder" accent="amber" />
-          </div>
+          </KpiBand>
 
           {/* ── Category breakdown ────────────────────────────────────────────── */}
           <Card>

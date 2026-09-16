@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 import { cn } from '../lib/cn';
-import { Card, CardTitle, Pill, StatusDot, KpiTile, fmtMoney, relTime } from '../lib/ui';
+import { Card, CardTitle, Pill, StatusDot, KpiTile, KpiBand, fmtMoney, relTime } from '../lib/ui';
 import { MiniBars, PRODUCT_COLORS } from '../lib/charts';
 import { api, runStreamingScript } from '../lib/api';
 import { failed, plural } from '../lib/errors';
@@ -306,12 +306,12 @@ export function DashboardPage({
         />
       )}
       {/* KPI tiles */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <KpiBand>
         <KpiTile icon={FileUp}        label="In queue"        value={pdfs.length}      sub="awaiting Step 1"   accent="brand" />
         <KpiTile icon={Check}         label="Processed today" value={todayOk}          sub={`${todayJobs.length} total runs`} accent="ok" />
         <KpiTile icon={AlertCircle}   label="Failed today"    value={todayErr}         sub="see History"       accent="err" />
         <KpiTile icon={Archive}       label="Archived today"  value={archivedToday}    sub="files moved"       accent="violet" />
-      </div>
+      </KpiBand>
 
       <div className="grid grid-cols-12 gap-[22px]">
         {/* Left: workflow */}
