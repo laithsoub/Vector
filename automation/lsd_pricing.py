@@ -1784,14 +1784,13 @@ def _fill_working(wb, priced, meta, log):
     log(f"Wrote {n} lines: SAP/QTY/List/STD/Cost as values (kills the duplicate-material "
         f"trap), Requested + Add. Discount as the decision")
 
-    # Highlight every line an approver has to look at, in the ledger itself.
-    for idx, l in enumerate(priced):
-        if l["severity"] in ("action", "verify"):
-            colour = 0xB0B6F4 if l["severity"] == "action" else 0x8AE0FF   # BGR
-            led.Range(f"B{FIRST_ROW + idx}:R{FIRST_ROW + idx}").Interior.Color = colour
+    # The Working File goes out unmarked (Laith, 2026-09-16). The lines an
+    # approver has to look at are still carried by `severity` — the LSD tab
+    # flags them and the approval mail is still drafted from them — so only the
+    # fill is gone, not the decision itself.
     flagged = sum(1 for l in priced if l["severity"] in ("action", "verify"))
     if flagged:
-        log(f"Highlighted {flagged} line(s) that need a human decision")
+        log(f"{flagged} line(s) need a human decision (not highlighted in the file)")
 
 
 class Cancelled(Exception):
