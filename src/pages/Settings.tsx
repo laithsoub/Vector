@@ -481,7 +481,7 @@ export function SettingsPage({
             <textarea rows={4} spellCheck={false}
               value={(form!.lsd_keepalive_urls as string) ?? ''}
               onChange={e => setForm(f => f ? { ...f, lsd_keepalive_urls: e.target.value } : f)}
-              className="mono w-full px-[11px] py-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none transition-colors" />
+              className="mono w-full px-[11px] py-2 rounded-[var(--r-sm)] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none transition-colors" />
           </Field>
           {field('lsd_keepalive_min', 'Keep-alive every (min)',
                  'Minutes between background reloads. Blank = 10, minimum 2. Set the toggle below off to stop the sweeps entirely')}
@@ -508,7 +508,7 @@ export function SettingsPage({
                 style={lang === l
                   ? { background: 'var(--t1)', color: 'var(--bg)', border: '1px solid transparent' }
                   : { background: 'var(--s1)', color: 'var(--t3)', border: '1px solid var(--line-2)' }}
-                className="px-4 py-1.5 text-[11.5px] font-semibold rounded-[9px] transition-all">
+                className="px-4 py-1.5 text-[11.5px] font-semibold rounded-[var(--r-sm)] transition-all">
                 {LANG_LABELS[l]}
               </button>
             ))}

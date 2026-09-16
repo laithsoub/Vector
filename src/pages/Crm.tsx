@@ -302,7 +302,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
         );
 
         const renderGrid = (list: CrmCompanyCard[]) => (
-          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
+          <div className="grid gap-[17px]" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
             {list.map(c => (
               <AccountCard key={c.id} c={c} mergeMode={mergeMode} picked={picked.has(c.id)}
                 selected={selectedId === c.id}

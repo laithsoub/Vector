@@ -274,13 +274,16 @@ export function MiniBars({
 
 // KPI stat tile
 export function KpiTile({
-  icon: IconCmp, label, value, sub, accent = 'brand',
+  icon: IconCmp, label, value, sub, accent = 'brand', boxed = false,
 }: {
   icon: LucideIcon;
   label: string;
   value: React.ReactNode;
   sub: string;
   accent?: 'brand' | 'ok' | 'err' | 'violet' | 'amber';
+  /** Own card instead of a KpiBand cell. The canvas draws Dashboard's KPIs
+   *  joined into one band, but Report's as separate cards with a smaller value. */
+  boxed?: boolean;
 }) {
   const tones: Record<string, { c: string; b: string }> = {
     brand:  { c: 'var(--accent-text)', b: 'var(--accent-soft)' },
@@ -290,15 +293,23 @@ export function KpiTile({
     amber:  { c: 'var(--warn)',        b: 'var(--warn-soft)' },
   };
   const t = tones[accent] || tones.brand;
-  // A cell, not a card: KpiBand paints the border and the dividers.
+  // Unboxed it is a cell: KpiBand paints the border and the dividers.
   return (
-    <div className="bg-[var(--s2)] px-[19px] py-[17px] min-w-0">
+    <div className={cn(
+      'bg-[var(--s2)] min-w-0',
+      boxed
+        ? 'px-[18px] py-4 rounded-[var(--r-lg)] border border-[var(--line)] shadow-[var(--card-sh)]'
+        : 'px-[19px] py-[17px]',
+    )}>
       <div className="flex items-center gap-[7px] min-w-0">
         <IconCmp className="w-[15px] h-[15px] shrink-0" strokeWidth={1.9} style={{ color: t.c }} />
         <span className="flex-1 min-w-0 truncate text-[10px] font-semibold uppercase tracking-[0.09em] text-[var(--t3)]">{label}</span>
       </div>
-      <p className="mt-[13px] text-[30px] font-semibold tracking-[-0.035em] tabular-nums leading-none text-[var(--t1)]">{value}</p>
-      <p className="mt-1.5 text-[11px] text-[var(--t3)] truncate">{sub}</p>
+      <p className={cn(
+        'font-semibold tracking-[-0.03em] tabular-nums leading-none text-[var(--t1)]',
+        boxed ? 'mt-[9px] text-[23px]' : 'mt-[13px] text-[30px]',
+      )}>{value}</p>
+      <p className={cn('text-[var(--t3)] truncate', boxed ? 'mt-1.5 text-[10.5px]' : 'mt-1.5 text-[11px]')}>{sub}</p>
     </div>
   );
 }

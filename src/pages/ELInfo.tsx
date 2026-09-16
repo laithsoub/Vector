@@ -37,7 +37,7 @@ function Md({ text }: { text: string }) {
     if (!ul.length) return;
     out.push(<ul key={out.length} className="my-1.5 space-y-1">{ul.map((it, i) => (
       <li key={i} className="flex gap-2 text-[12.5px] text-[var(--t2)] leading-relaxed">
-        <span className="text-violet-400 shrink-0 mt-0.5">•</span><span>{inline(it)}</span>
+        <span className="text-[var(--violet)] shrink-0 mt-0.5">•</span><span>{inline(it)}</span>
       </li>))}</ul>);
     ul = [];
   };
@@ -137,11 +137,11 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
   if (loading) return <div className="flex items-center justify-center py-24 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-[22px]">
       {/* Header */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="w-9 h-9 rounded-xl bg-violet-100 dark:bg-violet-900/30 ring-1 ring-inset ring-violet-200 dark:ring-violet-700/40 flex items-center justify-center shrink-0">
-          <Megaphone className="w-4.5 h-4.5 text-violet-500" />
+        <div className="w-9 h-9 rounded-xl bg-[var(--violet-soft)] ring-1 ring-inset ring-[var(--violet-soft)] flex items-center justify-center shrink-0">
+          <Megaphone className="w-4.5 h-4.5 text-[var(--violet)]" />
         </div>
         <div className="flex-1 min-w-0">
           <h1 className="text-[16px] font-bold text-[var(--t1)] leading-tight">EL Internal Info</h1>
@@ -151,7 +151,7 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
           </p>
         </div>
         <button onClick={refresh} disabled={refreshing}
-          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50 transition-colors">
+          className="inline-flex items-center gap-1.5 h-8 px-3 rounded-[var(--r-sm)] text-[12px] font-semibold bg-[var(--violet)] hover:brightness-110 text-white disabled:opacity-50 transition-colors">
           <RefreshCw className={cn('w-3.5 h-3.5', refreshing && 'animate-spin')} /> {refreshing ? 'Fetching…' : 'Refresh'}
         </button>
       </div>
@@ -161,20 +161,20 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
           <MailX className="w-10 h-10 text-[var(--t4)]" />
           <p className="text-[13px] text-[var(--t3)]">No updates fetched yet.</p>
           <button onClick={refresh} disabled={refreshing}
-            className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12px] font-semibold bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50 transition-colors">
+            className="inline-flex items-center gap-1.5 h-8 px-3.5 rounded-[var(--r-sm)] text-[12px] font-semibold bg-[var(--violet)] hover:brightness-110 text-white disabled:opacity-50 transition-colors">
             <RefreshCw className={cn('w-3.5 h-3.5', refreshing && 'animate-spin')} /> Fetch this year's updates
           </button>
         </div>
       ) : (
         <>
           {/* AI digest */}
-          <div className="rounded-xl ring-1 ring-inset ring-violet-200/70 dark:ring-violet-700/30 bg-violet-50/40 dark:bg-violet-900/10 p-4">
+          <div className="rounded-xl ring-1 ring-inset ring-[var(--violet-soft)] bg-[var(--violet-soft)] p-4">
             <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="w-3.5 h-3.5 text-violet-500 shrink-0" />
+              <Sparkles className="w-3.5 h-3.5 text-[var(--violet)] shrink-0" />
               <p className="text-[12px] font-semibold text-[var(--t1)] flex-1">Current state — AI digest</p>
-              {digesting && <Loader2 className="w-3.5 h-3.5 animate-spin text-violet-400" />}
+              {digesting && <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--violet)]" />}
               <button onClick={makeDigest} disabled={digesting}
-                className="text-[11px] font-medium text-violet-600 dark:text-violet-300 hover:underline disabled:opacity-50">
+                className="text-[11px] font-medium text-[var(--violet)] hover:underline disabled:opacity-50">
                 {digest ? 'Regenerate' : 'Generate'}
               </button>
             </div>
@@ -183,7 +183,7 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
               : <p className="text-[12px] text-[var(--t3)]">Click Generate to build a consolidated brief of what's new, discontinued, and in stock across all {emails.length} updates.</p>}
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-start">
+          <div className="grid grid-cols-1 lg:grid-cols-5 gap-[22px] items-start">
             {/* Updates feed */}
             <div className="lg:col-span-3 space-y-2">
               <p className="text-[11px] font-semibold text-[var(--t3)] uppercase tracking-wide px-0.5">Updates</p>
@@ -217,7 +217,7 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
             <div className="lg:col-span-2 lg:sticky lg:top-2">
               <div className="rounded-xl ring-1 ring-inset ring-[var(--line)] bg-[var(--s1)] flex flex-col" style={{ maxHeight: '70vh' }}>
                 <div className="px-3.5 py-2.5 border-b border-[var(--line)] flex items-center gap-2">
-                  <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+                  <Sparkles className="w-3.5 h-3.5 text-[var(--violet)]" />
                   <p className="text-[12px] font-semibold text-[var(--t1)]">Ask about EL updates</p>
                 </div>
                 <div className="flex-1 overflow-y-auto px-3.5 py-3 space-y-2 min-h-[160px]">
@@ -229,7 +229,7 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
                   {chat.map((m, i) => (
                     <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
                       <div className={cn('max-w-[92%] px-3 py-1.5 rounded-xl text-[12px]',
-                        m.role === 'user' ? 'bg-violet-600 text-white rounded-br-sm' : 'bg-[var(--s3)] text-[var(--t1)] rounded-bl-sm')}>
+                        m.role === 'user' ? 'bg-[var(--violet)] text-white rounded-br-sm' : 'bg-[var(--s3)] text-[var(--t1)] rounded-bl-sm')}>
                         {m.role === 'ai' ? <Md text={m.text} /> : m.text}
                       </div>
                     </div>
@@ -241,9 +241,9 @@ export function ELInfoPage({ toast }: { toast: ToastFn }) {
                   <input value={chatInput} onChange={e => setChatInput(e.target.value)}
                     onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } }}
                     placeholder="Ask about EL updates…"
-                    className="flex-1 h-8 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 placeholder:text-[var(--t3)] text-[var(--t1)]" />
+                    className="flex-1 h-8 px-2.5 rounded-[var(--r-sm)] text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-[var(--violet)] placeholder:text-[var(--t3)] text-[var(--t1)]" />
                   <button aria-label="Send message" onClick={sendChat} disabled={!chatInput.trim() || chatLoading}
-                    className="w-8 h-8 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
+                    className="w-8 h-8 rounded-[var(--r-sm)] flex items-center justify-center bg-[var(--violet)] hover:brightness-110 text-white disabled:opacity-40 transition-colors shrink-0">
                     <Send className="w-3.5 h-3.5" />
                   </button>
                 </div>

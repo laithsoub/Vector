@@ -137,7 +137,7 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
   const previewIsFor   = preview && !preview.dryRun ? null : preview;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-[17px]">
       {/* ── Run the audit ── */}
       <Card>
         <div className="flex items-start justify-between gap-4 flex-wrap">
