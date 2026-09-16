@@ -89,31 +89,41 @@ const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
 
 // Static nav structure — labels resolved at render time via useLang()
 const NAV_STRUCTURE = {
-  workflow: {
-    labelKey: 'workflow' as const,
+  waiting: {
+    labelKey: 'navWaiting' as const,
     items: [
-      { id: 'Dashboard' as TabId, Icon: LayoutDashboard, labelKey: 'dashboard' as const },
-      { id: 'Assistant' as TabId, Icon: Sparkles,         labelKey: 'assistant' as const },
-      { id: 'Inbox'     as TabId, Icon: Mail,            labelKey: 'inbox'     as const },
       { id: 'Todo'      as TabId, Icon: ListTodo,        labelKey: 'todo'      as const },
-      { id: 'CRM'       as TabId, Icon: Users,           labelKey: 'crm'       as const },
-      { id: 'ELInfo'    as TabId, Icon: Megaphone,       labelKey: 'elInfo'    as const },
-      { id: 'Fenton'    as TabId, Icon: Lightbulb,      labelKey: 'fenton'    as const },
-      { id: 'History'   as TabId, Icon: HistoryIcon,     labelKey: 'history'   as const },
-      { id: 'Analytics' as TabId, Icon: BarChart3,       labelKey: 'analytics' as const },
-      { id: 'Report'    as TabId, Icon: ClipboardList,  labelKey: 'report'    as const },
+      { id: 'Inbox'     as TabId, Icon: Mail,            labelKey: 'inbox'     as const },
+      { id: 'Assistant' as TabId, Icon: Sparkles,        labelKey: 'assistant' as const },
     ],
   },
-  tools: {
-    labelKey: 'tools' as const,
+  quote: {
+    labelKey: 'navQuote' as const,
     items: [
-      { id: 'LSD'        as TabId, Icon: Tags,          labelKey: 'lsd'         as const },
-      { id: 'PMO'        as TabId, Icon: ClipboardList, labelKey: 'pmo'        as const },
-      { id: 'CBU'        as TabId, Icon: Calculator,    labelKey: 'cbuSizer'    as const },
-      { id: 'Commission' as TabId, Icon: Gauge,          labelKey: 'commission'  as const },
-      { id: 'Schematics' as TabId, Icon: Zap,           labelKey: 'schematics'  as const },
-      { id: 'Filing'     as TabId, Icon: FolderTree,    labelKey: 'filing'      as const },
-      { id: 'Docs'       as TabId, Icon: BookOpen,      labelKey: 'docPacks'   as const },
+      { id: 'Dashboard'  as TabId, Icon: LayoutDashboard, labelKey: 'dashboard'  as const },
+      { id: 'LSD'        as TabId, Icon: Tags,            labelKey: 'lsd'        as const },
+      { id: 'Schematics' as TabId, Icon: Zap,             labelKey: 'schematics' as const },
+      { id: 'CBU'        as TabId, Icon: Calculator,      labelKey: 'cbuSizer'   as const },
+      { id: 'Commission' as TabId, Icon: Gauge,           labelKey: 'commission' as const },
+      { id: 'PMO'        as TabId, Icon: ClipboardList,   labelKey: 'pmo'        as const },
+    ],
+  },
+  look: {
+    labelKey: 'navLook' as const,
+    items: [
+      { id: 'CRM'    as TabId, Icon: Users,     labelKey: 'crm'      as const },
+      { id: 'Fenton' as TabId, Icon: Lightbulb, labelKey: 'fenton'   as const },
+      { id: 'ELInfo' as TabId, Icon: Megaphone, labelKey: 'elInfo'   as const },
+      { id: 'Docs'   as TabId, Icon: BookOpen,  labelKey: 'docPacks' as const },
+    ],
+  },
+  check: {
+    labelKey: 'navCheck' as const,
+    items: [
+      { id: 'Filing'    as TabId, Icon: FolderTree,    labelKey: 'filing'    as const },
+      { id: 'Report'    as TabId, Icon: ClipboardList, labelKey: 'report'    as const },
+      { id: 'Analytics' as TabId, Icon: BarChart3,     labelKey: 'analytics' as const },
+      { id: 'History'   as TabId, Icon: HistoryIcon,   labelKey: 'history'   as const },
     ],
   },
 };
@@ -125,7 +135,7 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   Inbox:     { t: 'inbox',      s: 'sub_inbox'      },
   Todo:      { t: 'todo',       s: 'sub_todo'       },
   CRM:       { t: 'crm',        s: 'sub_crm'       },
-  ELInfo:    { t: 'elInfo',     s: 'sub_elInfo'    },
+  ELInfo:    { t: 'title_elInfo', s: 'sub_elInfo'  },
   Fenton:    { t: 'fenton',     s: 'sub_fenton'    },
   History:   { t: 'history',    s: 'sub_history'   },
   Analytics: { t: 'analytics',  s: 'sub_analytics' },
@@ -133,7 +143,7 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   PMO:       { t: 'pmo',        s: 'sub_pmo'       },
   CBU:        { t: 'cbuSizer',    s: 'sub_cbu'        },
   Commission: { t: 'commission',  s: 'sub_commission' },
-  Schematics:{ t: 'schematics', s: 'sub_schematics' },
+  Schematics:{ t: 'title_schematics', s: 'sub_schematics' },
   Filing:    { t: 'filing',     s: 'sub_filing'    },
   Docs:      { t: 'docPacks',   s: 'sub_docs'      },
   LSD:       { t: 'lsd',        s: 'sub_lsd'       },
@@ -173,12 +183,12 @@ function ToastList({ toasts, remove }: { toasts: Toast[]; remove: (id: number) =
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 function Sidebar({
-  tab, setTab, queueCount, inboxUnread, userInitials, userName, userEmail,
+  tab, setTab, todoOpen, inboxUnread, userInitials, userName, userEmail,
   pinned, setPinned, hovered, setHovered,
 }: {
   tab: TabId;
   setTab: (t: TabId) => void;
-  queueCount: number;
+  todoOpen: number;
   inboxUnread: number;
   userInitials: string;
   userName: string | null;
@@ -190,12 +200,12 @@ function Sidebar({
 }) {
   const { t } = useLang();
   // Active-nav item: layered surface + inset accent bar on the left edge.
-  const activeShadow = { boxShadow: 'inset 3px 0 0 -1px var(--accent), var(--highlight)' };
+  const activeShadow = { boxShadow: 'inset 2px 0 0 var(--accent)' };
   const navBtn = (active: boolean, locked: boolean) => cn(
-    'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[9px] text-[12.5px] cursor-pointer transition-colors',
+    'w-full flex items-center gap-[11px] px-2.5 py-[7px] rounded-[var(--r-xs)] text-[12.5px] cursor-pointer transition-colors',
     active
-      ? 'bg-[var(--s3)] text-[var(--t1)] font-[550]'
-      : cn('font-medium hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+      ? 'bg-[var(--s3)] text-[var(--t1)] font-semibold'
+      : cn('font-[450] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
            locked ? 'text-[var(--t3)]' : 'text-[var(--t2)]'),
   );
   return (
@@ -238,18 +248,18 @@ function Sidebar({
             {sec.items.map(it => {
               const active = it.id === tab;
               const locked = isLocked(it.id);
-              const badge = it.id === 'Dashboard' ? queueCount : it.id === 'Inbox' ? inboxUnread : 0;
+              const badge = it.id === 'Todo' ? todoOpen : it.id === 'Inbox' ? inboxUnread : 0;
               return (
                 <button aria-label={locked ? 'Coming soon' : undefined} key={it.id} onClick={() => setTab(it.id)}
                   title={locked ? 'Coming soon' : undefined}
                   style={active ? activeShadow : undefined}
                   className={navBtn(active, locked)}>
-                  <it.Icon className="w-[17px] h-[17px] shrink-0" style={key === 'tools' && !active ? { opacity: 0.7 } : undefined} strokeWidth={1.7} />
+                  <it.Icon className="w-4 h-4 shrink-0" style={active ? undefined : { opacity: 0.68 }} strokeWidth={1.7} />
                   <span className="flex-1 text-left truncate">{t[it.labelKey]}</span>
                   {locked && <Lock className="w-3 h-3 shrink-0 opacity-50" />}
                   {!locked && badge > 0 && (
-                    <span className="min-w-[19px] h-[19px] px-1.5 rounded-full text-[10px] font-semibold flex items-center justify-center shrink-0"
-                      style={{ background: 'var(--accent)', color: 'var(--accent-ink)' }}>{badge}</span>
+                    <span className="min-w-[18px] h-[18px] px-[5px] rounded-[5px] text-[10px] font-semibold num flex items-center justify-center shrink-0 border border-[var(--line-2)]"
+                      style={{ background: 'var(--s3)', color: 'var(--t2)' }}>{badge}</span>
                   )}
                 </button>
               );
@@ -868,8 +878,7 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
 // a blank screen, because the render loop below never emitted a panel for it.
 // Settings is appended because its button lives in the sidebar footer, not the nav.
 const VALID_TABS: TabId[] = [
-  ...NAV_STRUCTURE.workflow.items.map(i => i.id),
-  ...NAV_STRUCTURE.tools.items.map(i => i.id),
+  ...Object.values(NAV_STRUCTURE).flatMap(g => g.items.map(i => i.id)),
   'Settings',
 ];
 
@@ -989,6 +998,8 @@ export default function App() {
   const [connecting, setConnecting] = useState(false);
   const [splashDone, setSplashDone] = useState(false);
   const [inboxUnread, setInboxUnread] = useState(0);
+  // The v2 sidebar badges what is still owed, not what is queued.
+  const [todoOpen, setTodoOpen] = useState(0);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(() => !localStorage.getItem(WELCOME_KEY));
   const dismissWelcome = useCallback(() => {
@@ -1122,7 +1133,7 @@ export default function App() {
           <div className="absolute inset-y-0 left-0 w-2.5 z-40" onMouseEnter={() => setSidebarHover(true)} />
         )}
         <Sidebar
-          tab={tab} setTab={setTab} queueCount={queueCount} inboxUnread={inboxUnread}
+          tab={tab} setTab={setTab} todoOpen={todoOpen} inboxUnread={inboxUnread}
           userInitials={userInitials} userName={userName} userEmail={userEmail}
           pinned={sidebarPinned} setPinned={setSidebarPinned}
           hovered={sidebarHover} setHovered={setSidebarHover}
@@ -1173,7 +1184,7 @@ export default function App() {
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
                       {t === 'Analytics'  && <AnalyticsPage />}
                       {t === 'Report'     && <ReportPage      toast={toast} />}
-                      {t === 'Todo'       && <TodoPage        toast={toast} />}
+                      {t === 'Todo'       && <TodoPage        toast={toast} onOpenCount={setTodoOpen} />}
                       {t === 'History'    && <HistoryPage      toast={toast} />}
                       {t === 'CRM'        && <CrmPage          toast={toast} />}
                       {t === 'ELInfo'     && <ELInfoPage       toast={toast} />}

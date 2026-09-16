@@ -507,7 +507,7 @@ function TodoCard({
 }
 
 // ─── Page ────────────────────────────────────────────────────────────────────
-export function TodoPage({ toast }: { toast: ToastFn }) {
+export function TodoPage({ toast, onOpenCount }: { toast: ToastFn; onOpenCount?: (n: number) => void }) {
   const [items, setItems]     = useState<TodoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [status, setStatus]   = useState<TodoScanStatus | null>(null);
@@ -641,6 +641,9 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
     waiting: items.filter(t => t.status === 'waiting').length,
     done:    items.filter(t => t.status === 'done').length,
   };
+
+  // The sidebar badge shows what is still owed, so keep it in step with the board.
+  useEffect(() => { onOpenCount?.(counts.open); }, [counts.open, onOpenCount]);
 
   const running = !!status?.running;
   // Both endpoints carry it; whichever answered most recently wins.
