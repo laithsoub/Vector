@@ -141,7 +141,7 @@ function CGLineCalc() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-[22px]">
       {/* ── Inputs ── */}
       <div className="bg-[var(--s1)] rounded-xl ring-1 ring-[var(--line-2)] p-5 space-y-3.5">
         <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-widest">Inputs</p>
@@ -275,7 +275,7 @@ function EasicheckCalc() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-[22px]">
       {/* ── Inputs ── */}
       <div className="bg-[var(--s1)] rounded-xl ring-1 ring-[var(--line-2)] p-5 space-y-3.5">
         <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-widest">Inputs</p>
@@ -352,9 +352,9 @@ function EasicheckCalc() {
 export function CommissionPage() {
   const [tab, setTab] = useState<'cg' | 'easicheck'>('cg');
   return (
-    <div className="space-y-5">
+    <div className="space-y-[22px]">
       {/* Sub-tabs */}
-      <div className="flex items-center gap-1 bg-[var(--s3)] rounded-xl p-1 w-fit">
+      <div className="flex items-center gap-1 bg-[var(--s3)] rounded-[var(--r-md)] p-[3px] w-fit">
         {(['cg', 'easicheck'] as const).map(id => (
           <button key={id} onClick={() => setTab(id)}
             className={cn(

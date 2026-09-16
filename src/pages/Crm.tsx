@@ -172,7 +172,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
   const targetName = companies.find(c => c.id === targetId)?.name;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-[22px]">
       {/* ── Source switch ────────────────────────────────────────────────────── */}
       <div className="flex items-center gap-1 p-1 rounded-[11px] w-fit"
            style={{ background: 'var(--s3)', border: '1px solid var(--line)' }}>
@@ -291,8 +291,8 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
           }} />
       )}
 
-      <div className="grid grid-cols-12 gap-5 items-start">
-      <div className="col-span-12 lg:col-span-4 space-y-5">
+      <div className="grid grid-cols-12 gap-[22px] items-start">
+      <div className="col-span-12 lg:col-span-4 space-y-[22px]">
       {(() => {
         if (loading) return <div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
         if (companies.length === 0) return (
@@ -315,7 +315,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
         if (inSearch) {
           const accs = filtered.slice(0, 12);
           return (
-            <div className="space-y-5">
+            <div className="space-y-[22px]">
               <Section title="Accounts" count={filtered.length}>
                 {accs.length ? renderGrid(accs) : <Empty>No accounts match “{query}”.</Empty>}
                 {filtered.length > accs.length && (
@@ -369,7 +369,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
         {selectedId != null ? (
           <CompanyDetail id={selectedId} toast={toast} onBack={() => { setSelected(null); refresh(); }} />
         ) : (
-          <div className="rounded-[16px] v3-card py-24 px-6 flex flex-col items-center justify-center text-center">
+          <div className="rounded-[var(--r-xl)] v3-card py-24 px-6 flex flex-col items-center justify-center text-center">
             <Database className="w-8 h-8 text-[var(--t4)] mb-3" />
             <p className="text-[13px] font-medium text-[var(--t3)]">Select an account</p>
             <p className="text-[11.5px] text-[var(--t4)] mt-1">Pick a card on the left to see contacts, quotes, facts and documents.</p>
@@ -856,7 +856,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
   const totalIssued = quotes.reduce((s, q) => s + (q.price || 0), 0);
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-[22px]">
       <div className="flex items-center gap-3">
         <Button tone="ghost" size="sm" Icon={ArrowLeft} onClick={onBack}>All accounts</Button>
         <div className="flex-1" />
@@ -910,7 +910,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         </div>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-[22px] lg:grid-cols-2">
         {/* Contacts */}
         <Card>
           <div className="flex items-center justify-between mb-3">
@@ -977,7 +977,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         </Card>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-[22px] lg:grid-cols-2">
         <InsightsCard id={id} toast={toast} onPinned={load} />
         <DocsCard id={id} toast={toast} />
       </div>

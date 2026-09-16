@@ -52,9 +52,9 @@ export function HistoryPage({ toast }: { toast: ToastFn }) {
   const err7  = last7.filter(j => j.status === 'err').length;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-[22px]">
       {/* Summary band */}
-      <div className="grid grid-cols-12 gap-5">
+      <div className="grid grid-cols-12 gap-[22px]">
         <Card className="col-span-12 md:col-span-8" padded={false}>
           <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
             <div>

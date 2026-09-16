@@ -67,7 +67,7 @@ export function AnalyticsPage() {
   const rangeLabel = `${from.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${to.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-[22px]">
 
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -114,7 +114,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Main chart + status donut */}
-      <div className="grid grid-cols-12 gap-5">
+      <div className="grid grid-cols-12 gap-[22px]">
         <Card className="col-span-12 lg:col-span-8" padded={false}>
           <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
             <div>
@@ -143,7 +143,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Product breakdown + Step split */}
-      <div className="grid grid-cols-12 gap-5">
+      <div className="grid grid-cols-12 gap-[22px]">
         <Card className="col-span-12 lg:col-span-8">
           <CardTitle title="By product line"
                      sub="Volume and success rate per division" />
@@ -186,7 +186,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Customers + Salesman */}
-      <div className="grid grid-cols-12 gap-5">
+      <div className="grid grid-cols-12 gap-[22px]">
         <Card className="col-span-12 lg:col-span-7" padded={false}>
           <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
             <div>
@@ -216,7 +216,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Heatmap + errors */}
-      <div className="grid grid-cols-12 gap-5">
+      <div className="grid grid-cols-12 gap-[22px]">
         <Card className="col-span-12 lg:col-span-6">
           <CardTitle title="Activity heatmap"
                      sub="When the team uploads. Darker = busier." />

@@ -866,9 +866,9 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
   }
 
   return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-12 gap-5 items-start">
-      <div className="col-span-12 lg:col-span-5 space-y-5">
+    <div className="space-y-[22px]">
+      <div className="grid grid-cols-12 gap-[22px] items-start">
+      <div className="col-span-12 lg:col-span-5 space-y-[22px]">
 
       {/* Unified Input card */}
       <Card>
@@ -1056,7 +1056,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
       </Card>
       </div>
 
-      <div className="col-span-12 lg:col-span-7 space-y-5">
+      <div className="col-span-12 lg:col-span-7 space-y-[22px]">
 
       {/* Live read-out — items stream in as they're priced */}
       {streaming && (

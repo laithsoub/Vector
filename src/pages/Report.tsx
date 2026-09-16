@@ -200,7 +200,7 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
   const maxDaily = Math.max(1, ...(report?.daily ?? []).map(d => d.count));
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-[22px]">
       {/* ── Range + run ─────────────────────────────────────────────────────── */}
       <Card>
         <CardTitle

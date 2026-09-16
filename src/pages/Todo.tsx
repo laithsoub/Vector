@@ -801,7 +801,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
                   setDragOver(null); setDragId(null);
                   if (Number.isFinite(id)) moveBucket(id, b.id);
                 }}
-                className="rounded-[16px] transition-shadow"
+                className="rounded-[var(--r-xl)] transition-shadow"
                 style={isOver && canDrop ? { boxShadow: `0 0 0 2px ${b.color}` } : undefined}>
                 <Card padded={false} className="p-4">
                   <div className="flex items-start gap-2 mb-3">

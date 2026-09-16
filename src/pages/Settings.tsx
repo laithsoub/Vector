@@ -418,7 +418,7 @@ export function SettingsPage({
   }
 
   return (
-    <div className="max-w-2xl space-y-5">
+    <div className="space-y-[22px]">
       {/* Pending retries banner */}
       <RetryQueue />
 

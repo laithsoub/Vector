@@ -297,7 +297,7 @@ export function DashboardPage({
   }));
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-[22px]">
       {conflicts && (
         <ConflictModal
           conflicts={conflicts}
@@ -313,9 +313,9 @@ export function DashboardPage({
         <KpiTile icon={Archive}       label="Archived today"  value={archivedToday}    sub="files moved"       accent="violet" />
       </div>
 
-      <div className="grid grid-cols-12 gap-5">
+      <div className="grid grid-cols-12 gap-[22px]">
         {/* Left: workflow */}
-        <div className="col-span-12 lg:col-span-8 space-y-5">
+        <div className="col-span-12 lg:col-span-8 space-y-[22px]">
 
           <Card padded={false}>
             <div id="vec-upload-workflow" className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
@@ -525,7 +525,7 @@ export function DashboardPage({
         </div>
 
         {/* Right column */}
-        <div className="col-span-12 lg:col-span-4 space-y-5">
+        <div className="col-span-12 lg:col-span-4 space-y-[22px]">
 
           {/* ── New mail preview ──────────────────────────────────────────── */}
           <Card padded={false}>
@@ -904,7 +904,7 @@ function ConflictModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-      <div className="v3-pop rounded-[16px] w-full max-w-lg mx-4 bg-[var(--s2)] border border-[var(--line)]">
+      <div className="v3-pop rounded-[var(--r-xl)] w-full max-w-lg mx-4 bg-[var(--s2)] border border-[var(--line)]">
         <div className="px-5 py-4 border-b border-[var(--line)]">
           <div className="flex items-center gap-2.5">
             <AlertCircle className="w-4 h-4 shrink-0" style={{ color: 'var(--warn)' }} />

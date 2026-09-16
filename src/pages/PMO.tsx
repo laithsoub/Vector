@@ -174,9 +174,9 @@ If you have any questions, please let me know.
 Best,`;
 
   return (
-    <div className="grid grid-cols-12 gap-5 max-w-5xl">
+    <div className="grid grid-cols-12 gap-[22px]">
       {/* Left — inputs */}
-      <div className="col-span-12 lg:col-span-5 space-y-5">
+      <div className="col-span-12 lg:col-span-5 space-y-[22px]">
         <Card>
           <div className="mb-4">
             <h2 className="text-[13px] font-semibold tracking-tight">Raise PMO</h2>
@@ -292,7 +292,7 @@ Best,`;
       </div>
 
       {/* Right — output */}
-      <div className="col-span-12 lg:col-span-7 space-y-5">
+      <div className="col-span-12 lg:col-span-7 space-y-[22px]">
         {done && dlId && (
           <Card>
             <button onClick={downloadDocx}
