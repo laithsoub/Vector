@@ -115,7 +115,7 @@ export function FentonKBPage({ toast }: { toast: ToastFn }) {
   if (loading) return <div className="flex items-center justify-center py-24 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-[17px]">
       {/* Header */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-900/30 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/40 flex items-center justify-center shrink-0">
@@ -150,7 +150,7 @@ export function FentonKBPage({ toast }: { toast: ToastFn }) {
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-4 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-[17px] items-start">
           {/* Knowledge cards */}
           <div className="lg:col-span-3 space-y-2.5">
             <div className="flex items-center gap-1.5 h-8 px-2.5 rounded-lg bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] focus-within:ring-violet-400/60">

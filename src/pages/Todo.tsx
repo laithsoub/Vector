@@ -412,7 +412,7 @@ function TodoDetail({
             <div className="flex items-center gap-2">
               {draft.entryId && (
                 <button onClick={() => api.outlookOpenInOutlook(draft.entryId).catch(() => {})}
-                  className="h-[34px] px-3 rounded-[9px] text-[11.5px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors flex items-center gap-1.5">
+                  className="h-[34px] px-3 rounded-[var(--r-sm)] text-[11.5px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors flex items-center gap-1.5">
                   <Mail className="w-3.5 h-3.5" /> Open email
                 </button>
               )}
@@ -647,7 +647,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
   const scannedAt = status?.lastScanAt || lastScanAt;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-[17px]">
       {/* ── Scan bar ───────────────────────────────────────────────────────── */}
       <Card>
         <CardTitle
@@ -656,11 +656,11 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
           right={
             <>
               <button onClick={addManual}
-                className="h-[34px] px-3 rounded-[9px] text-[11.5px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors flex items-center gap-1.5">
+                className="h-[34px] px-3 rounded-[var(--r-sm)] text-[11.5px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors flex items-center gap-1.5">
                 <Plus className="w-3.5 h-3.5" /> New
               </button>
               <select value={days} onChange={e => setDays(Number(e.target.value))} disabled={running}
-                className="h-[34px] px-2 rounded-[9px] text-[11.5px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none disabled:opacity-50">
+                className="h-[34px] px-2 rounded-[var(--r-sm)] text-[11.5px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none disabled:opacity-50">
                 <option value={7}>Last 7 days</option>
                 <option value={14}>Last 14 days</option>
                 <option value={30}>Last 30 days</option>
@@ -668,7 +668,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
                 <option value={90}>Last 90 days</option>
               </select>
               <button onClick={runScan} disabled={running}
-                className="h-[34px] px-4 rounded-[9px] text-[11.5px] font-semibold bg-[var(--accent)] text-white hover:brightness-110 transition-all disabled:opacity-60 flex items-center gap-1.5">
+                className="h-[34px] px-4 rounded-[var(--r-sm)] text-[11.5px] font-semibold bg-[var(--accent)] text-white hover:brightness-110 transition-all disabled:opacity-60 flex items-center gap-1.5">
                 {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
                 {running ? 'Scanning…' : 'Full scan'}
               </button>
@@ -722,7 +722,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
             { label: 'Waiting on others', value: counts.waiting, icon: Send,  tint: 'var(--violet)' },
             { label: 'Done',       value: counts.done,    icon: CheckCircle2, tint: 'var(--ok)' },
           ].map(k => (
-            <div key={k.label} className="rounded-[11px] border border-[var(--line-2)] bg-[var(--s1)] px-3 py-2.5">
+            <div key={k.label} className="rounded-[var(--r-md)] border border-[var(--line-2)] bg-[var(--s1)] px-3 py-2.5">
               <div className="flex items-center gap-1.5 mb-1">
                 <k.icon className="w-3.5 h-3.5" style={{ color: k.tint }} />
                 <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--t4)]">{k.label}</span>
@@ -739,7 +739,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
 
       {/* ── Filters ────────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-[9px] border border-[var(--line-2)] overflow-hidden">
+        <div className="flex rounded-[var(--r-sm)] border border-[var(--line-2)] overflow-hidden">
           {(['open', 'done', 'all'] as const).map(v => (
             <button key={v} onClick={() => setView(v)}
               className={cn('px-3 h-[32px] text-[11.5px] font-semibold transition-colors',
@@ -775,7 +775,7 @@ export function TodoPage({ toast }: { toast: ToastFn }) {
           </div>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-[17px] items-start">
           {BUCKETS.map(b => {
             const col     = shown.filter(t => t.bucket === b.id);
             const isOver  = dragOver === b.id;

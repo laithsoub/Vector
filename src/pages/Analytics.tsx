@@ -90,7 +90,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Hero KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-[17px]">
         <HeroKpi label="Quotes processed"
                  value={totals.count.toLocaleString()}
                  trend={pctChange(totals.count, prevTotals.count)}
