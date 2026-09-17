@@ -1,7 +1,7 @@
 // ─── Schematics — Eaton EL Material Pricer (unified input) ───────────────────
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, FileText, Sparkles, Copy, AlertTriangle, X, Loader2, ChevronDown, ChevronUp, RotateCcw, ClipboardList, History, Trash2, Image as ImageIcon, FileSpreadsheet, MoreHorizontal, Check, RefreshCw, Paperclip, Plus } from 'lucide-react';
-import { Menu, TextInput } from '@mantine/core';
+import { Menu, Input as TextInput, Button as UiButton, IconButton as UiIconButton } from '../ui';
 import { Card, CardTitle, Button, fmtGBP } from '../lib/ui';
 import { cn } from '../lib/cn';
 import { failed, plural } from '../lib/errors';
@@ -143,18 +143,14 @@ function ItemMenu({
       position="bottom-end" width={215} shadow="md" withinPortal
     >
       <Menu.Target>
-        <button aria-label="Feedback on this match" title="Feedback on this match"
-          style={{ color: 'var(--warn)' }}
-          className="w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-[var(--warn-soft)]">
-          <MoreHorizontal className="w-3.5 h-3.5" />
-        </button>
+        <UiIconButton icon={MoreHorizontal} label="Feedback on this match" size="xs" style={{ color: 'var(--warn)' }} />
       </Menu.Target>
 
       <Menu.Dropdown>
         {item.original_input && item.original_input !== item.cat_no && (
           <Menu.Label>
-            Input: <span className="font-mono text-[var(--t2)]">{item.original_input}</span>
-            <br />Matched: <span className="font-mono text-[var(--accent-text)]">{item.cat_no}</span>
+            Input: <span className="mono text-fg-2">{item.original_input}</span>
+            <br />Matched: <span className="mono text-accent-text">{item.cat_no}</span>
           </Menu.Label>
         )}
         <Menu.Item leftSection={<Check className="w-3.5 h-3.5" />}
@@ -192,7 +188,7 @@ function ItemMenu({
               />
               <button onClick={saveCorrection}
                 style={{ background: 'var(--accent)' }}
-                className="h-7 px-2 rounded text-white text-[11px] transition-opacity hover:opacity-90">
+                className="h-7 px-2 rounded text-on-accent text-xs transition-opacity hover:opacity-90">
                 Save
               </button>
             </div>
@@ -226,19 +222,19 @@ function PriceListBar({ plv, toast }: {
 
   if (plv.changed) {
     return (
-      <div className="mt-2 flex items-start gap-2 rounded-lg px-2.5 py-2 bg-amber-50 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/50">
-        <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px text-amber-600 dark:text-amber-400" />
+      <div className="mt-2 flex items-start gap-2 rounded-lg px-2.5 py-2 bg-warn-soft ring-1 ring-inset ring-warn-line ">
+        <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px text-warn " />
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] font-semibold text-amber-800 dark:text-amber-200">
+          <p className="text-xs font-semibold text-warn ">
             Price list changed — now {plv.label || 'a different issue'}
           </p>
-          <p className="text-[10.5px] text-amber-700 dark:text-amber-300 mt-0.5">
+          <p className="text-2xs text-warn mt-0.5">
             The workbook on disk is not the issue you last confirmed. Anything quoted before now used the previous sheet.
           </p>
         </div>
         <button onClick={confirm} disabled={acking}
           style={{ background: 'var(--warn)' }}
-          className="shrink-0 text-[10.5px] font-semibold px-2 py-1 rounded-md text-white disabled:opacity-60 transition-colors hover:opacity-90">
+          className="shrink-0 text-2xs font-semibold px-2 py-1 rounded-md text-on-accent disabled:opacity-60 transition-colors hover:opacity-90">
           {acking ? 'Saving…' : 'Got it'}
         </button>
       </div>
@@ -246,7 +242,7 @@ function PriceListBar({ plv, toast }: {
   }
 
   return (
-    <p className="mt-2 text-[10.5px] text-[var(--t3)] flex flex-wrap items-center gap-x-2 gap-y-0.5">
+    <p className="mt-2 text-2xs text-fg-3 flex flex-wrap items-center gap-x-2 gap-y-0.5">
       <span>{pricelistName(plv)}</span>
       {plv.validFrom && <span className="opacity-70">valid from {plv.validFrom}</span>}
       {plv.rows > 0 && <span className="opacity-70">{plv.rows.toLocaleString()} parts</span>}
@@ -254,7 +250,7 @@ function PriceListBar({ plv, toast }: {
       {plv.exchangeRate != null && <span className="opacity-70">EUR→GBP {plv.exchangeRate}</span>}
       {!plv.acknowledged && (
         <button onClick={confirm} disabled={acking}
-          className="text-[10.5px] font-medium text-[var(--accent-text)] hover:underline disabled:opacity-60">
+          className="text-2xs font-medium text-accent-text hover:underline disabled:opacity-60">
           {acking ? 'Saving…' : 'Confirm this issue'}
         </button>
       )}
@@ -299,25 +295,25 @@ function ProgressRow({ idx, item, active }: { idx: number; item: PricedItem; act
     <div className={cn(
       'flex items-center gap-3 px-3 py-2 rounded-lg animate-fade-up',
       active
-        ? 'bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent-line)] animate-soft-pulse'
-        : 'bg-[var(--s1)]',
+        ? 'bg-accent-soft ring-1 ring-inset ring-accent-line animate-soft-pulse'
+        : 'bg-surface',
     )}>
-      <span className="w-6 shrink-0 text-right font-mono text-[11px] text-[var(--t3)] tabular-nums">{idx}</span>
+      <span className="w-6 shrink-0 text-right mono text-xs text-fg-3 mono">{idx}</span>
       <div className="min-w-0 flex-1">
-        <p className="font-mono text-[11.5px] font-semibold text-[var(--accent-text)] truncate">
+        <p className="mono text-xs font-semibold text-accent-text truncate">
           {item.cat_no || '—'}
         </p>
-        <p className="text-[11px] text-[var(--t3)] truncate">
+        <p className="text-xs text-fg-3 truncate">
           {item.description || (item.matched ? '' : 'not found in price list')}
         </p>
       </div>
       {item.qty > 1 && (
-        <span className="shrink-0 text-[10.5px] text-[var(--t3)] tabular-nums">×{item.qty}</span>
+        <span className="shrink-0 text-2xs text-fg-3 tabular-nums">×{item.qty}</span>
       )}
       <div className="shrink-0 text-right animate-fade-in" style={{ animationDelay: '120ms' }}>
         {item.matched
-          ? <span className="font-mono text-[12px] font-semibold text-[var(--t1)] tabular-nums">{fmtGBP(item.ntp)}</span>
-          : <span className="text-[10.5px] text-amber-500">no price</span>}
+          ? <span className="mono text-sm font-semibold text-fg tabular-nums">{fmtGBP(item.ntp)}</span>
+          : <span className="text-2xs text-warn">no price</span>}
       </div>
     </div>
   );
@@ -384,22 +380,22 @@ function ReadFromDrawings({ result }: { result: PriceResult }) {
 
       {eaton.length > 0 && (
         <div className="mb-3">
-          <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1.5">
+          <p className="text-2xs font-semibold text-fg-3 uppercase tracking-wide mb-1.5">
             Legend — {plural(eaton.length, 'Eaton symbol')}
           </p>
           <div className="space-y-1.5">
             {eaton.map((l, i) => (
-              <div key={i} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-[var(--s2)] ring-1 ring-inset ring-[var(--line-2)]">
-                <span className="shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
+              <div key={i} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-raised ring-1 ring-inset ring-line-2">
+                <span className="shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-2xs font-medium bg-accent-soft text-accent-text ring-1 ring-inset ring-accent-line">
                   {l.symbol || 'symbol'}
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[12px] text-[var(--t1)]">{l.description || '(no text)'}</span>
+                  <span className="block text-sm text-fg">{l.description || '(no text)'}</span>
                   {(l.why || l.family) && (
-                    <span className="block text-[10.5px] text-[var(--t3)]">{l.why || l.family}</span>
+                    <span className="block text-2xs text-fg-3">{l.why || l.family}</span>
                   )}
                 </span>
-                <span className="shrink-0 text-[10.5px] text-[var(--t3)]">
+                <span className="shrink-0 text-2xs text-fg-3">
                   {[l.file, l.page != null ? `p${l.page}` : ''].filter(Boolean).join(' \u00b7 ')}
                 </span>
               </div>
@@ -410,9 +406,9 @@ function ReadFromDrawings({ result }: { result: PriceResult }) {
 
       {counted.length > 0 && (
         <div className="overflow-x-auto vec-scroll">
-          <table className="w-full text-[12px]">
+          <table className="w-full text-sm">
             <thead>
-              <tr className="text-[10.5px] uppercase tracking-wide text-[var(--t3)] text-left">
+              <tr className="text-2xs uppercase tracking-wide text-fg-3 text-left">
                 <th className="font-medium pb-1.5 pr-3">Material</th>
                 <th className="font-medium pb-1.5 pr-3">Read from</th>
                 <th className="font-medium pb-1.5 pr-3">Where</th>
@@ -422,20 +418,20 @@ function ReadFromDrawings({ result }: { result: PriceResult }) {
             <tbody>
               {counted.map((item, idx) =>
                 (item.sources || []).map((src, j) => (
-                  <tr key={`${idx}_${j}`} className="border-t border-[var(--line)] align-top">
+                  <tr key={`${idx}_${j}`} className="border-t border-line align-top">
                     <td className="py-1.5 pr-3">
                       {j === 0 ? (
                         <>
-                          <span className="font-mono text-[11.5px] text-[var(--t1)]">{item.cat_no || '—'}</span>
-                          <span className="block text-[10.5px] text-[var(--t3)] truncate max-w-[280px]">{item.description}</span>
+                          <span className="mono text-xs text-fg">{item.cat_no || '—'}</span>
+                          <span className="block text-2xs text-fg-3 truncate max-w-72">{item.description}</span>
                         </>
                       ) : (
-                        <span className="text-[10.5px] text-[var(--t4)]">↳</span>
+                        <span className="text-2xs text-fg-4">↳</span>
                       )}
                     </td>
-                    <td className="py-1.5 pr-3 text-[11px] text-[var(--t2)]">{src.symbol || '—'}</td>
-                    <td className="py-1.5 pr-3 text-[11px] text-[var(--t3)]">{place(src)}</td>
-                    <td className="py-1.5 text-right tabular-nums text-[var(--t1)]">
+                    <td className="py-1.5 pr-3 text-xs text-fg-2">{src.symbol || '—'}</td>
+                    <td className="py-1.5 pr-3 text-xs text-fg-3">{place(src)}</td>
+                    <td className="py-1.5 text-right mono text-fg">
                       {src.count != null ? src.count : (item.sources || []).length === 1 ? item.qty : '—'}
                     </td>
                   </tr>
@@ -447,7 +443,7 @@ function ReadFromDrawings({ result }: { result: PriceResult }) {
       )}
 
       {other.length > 0 && (
-        <p className="mt-3 text-[10.5px] text-[var(--t3)] leading-relaxed">
+        <p className="mt-3 text-2xs text-fg-3 leading-relaxed">
           {plural(other.length, 'other legend symbol')} read and left out as not Eaton:{' '}
           {other.map(l => l.symbol || l.description).filter(Boolean).slice(0, 6).join(', ')}
           {other.length > 6 ? '…' : ''}
@@ -881,9 +877,9 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
   }
 
   return (
-    <div className="space-y-[22px]">
-      <div className="grid grid-cols-12 gap-[22px] items-start">
-      <div className="col-span-12 lg:col-span-5 space-y-[22px]">
+    <div className="space-y-5">
+      <div className="grid grid-cols-12 gap-5 items-start">
+      <div className="col-span-12 lg:col-span-5 space-y-5">
 
       {/* Unified Input card */}
       <Card>
@@ -895,7 +891,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           {(text || attachments.length > 0 || result) && (
             <button
               onClick={() => { setHandoffFrom(null); clearAll(); }}
-              className="text-[11.5px] text-[var(--t3)] hover:text-red-500 inline-flex items-center gap-1 shrink-0">
+              className="text-xs text-fg-3 hover:text-err inline-flex items-center gap-1 shrink-0">
               <X className="w-3.5 h-3.5" /> Clear
             </button>
           )}
@@ -904,7 +900,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
         {/* Says whose email this is, so a page that filled itself in is not
             mistaken for one somebody left open. */}
         {handoffFrom && (
-          <div className="mb-2.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent-line)] text-[11px] text-[var(--accent-text)]">
+          <div className="mb-2.5 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-accent-soft ring-1 ring-inset ring-accent-line text-xs text-accent-text">
             <Paperclip className="w-3 h-3 shrink-0" />
             <span className="truncate">From the Inbox — {handoffFrom}</span>
           </div>
@@ -916,28 +912,28 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
             attachments straight into the workspace above, so the whole thing is
             priced as ONE schedule with one total. */}
         {origin && (relatedMail.length > 0 || otherMail.length > 0 || mailBusy) && (
-          <div className="mb-2.5 rounded-xl ring-1 ring-inset ring-[var(--line-2)] bg-[var(--s2)]">
+          <div className="mb-2.5 rounded-xl ring-1 ring-inset ring-line-2 bg-raised">
             <div className="flex items-center gap-2 px-3 py-2">
-              <p className="text-[11.5px] font-semibold text-[var(--t2)] flex-1 min-w-0 truncate">
+              <p className="text-xs font-semibold text-fg-2 flex-1 min-w-0 truncate">
                 {mailBusy
                   ? 'Looking for the rest of this enquiry…'
                   : relatedMail.length > 0
                     ? `${plural(relatedMail.length, 'more email')} in this enquiry`
                     : 'Add files from another email'}
               </p>
-              {mailBusy && <Loader2 className="w-3 h-3 animate-spin text-[var(--t3)] shrink-0" />}
+              {mailBusy && <Loader2 className="w-3 h-3 animate-spin text-fg-3 shrink-0" />}
               {!mailBusy && otherMail.length > 0 && (
                 <button
                   onClick={() => setShowAllMail(v => !v)}
-                  className="shrink-0 text-[11px] font-medium text-[var(--t3)] hover:text-[var(--accent-text)] transition-colors">
+                  className="shrink-0 text-xs font-medium text-fg-3 hover:text-accent-text transition-colors">
                   {showAllMail ? 'Just this enquiry' : 'Every email'}
                 </button>
               )}
             </div>
             {!mailBusy && (
-              <div className="max-h-[180px] overflow-y-auto vec-scroll border-t border-[var(--line)]">
+              <div className="max-h-44 overflow-y-auto vec-scroll border-t border-line">
                 {shownMail.length === 0 && (
-                  <p className="px-3 py-2.5 text-[11px] text-[var(--t3)]">
+                  <p className="px-3 py-2.5 text-xs text-fg-3">
                     Nothing else matches this subject — “Every email” lists the rest.
                   </p>
                 )}
@@ -951,17 +947,17 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                       disabled={on || loading}
                       title={`${e.subject} — ${e.sender}`}
                       className={cn(
-                        'w-full flex items-center gap-2.5 px-3 py-2 text-left border-b border-[var(--line)] last:border-0 transition-colors',
-                        on ? 'bg-emerald-50/60 dark:bg-emerald-900/15' : 'hover:bg-[var(--s3)]',
+                        'w-full flex items-center gap-2.5 px-3 py-2 text-left border-b border-line last:border-0 transition-colors',
+                        on ? 'bg-ok-soft ' : 'hover:bg-subtle',
                       )}>
                       {on
-                        ? <Check className="w-3.5 h-3.5 shrink-0 text-emerald-500" />
-                        : <Plus className="w-3.5 h-3.5 shrink-0 text-[var(--t4)]" />}
+                        ? <Check className="w-3.5 h-3.5 shrink-0 text-ok" />
+                        : <Plus className="w-3.5 h-3.5 shrink-0 text-fg-4" />}
                       <span className="min-w-0 flex-1">
-                        <span className="block text-[11.5px] text-[var(--t1)] truncate">{e.subject || '(no subject)'}</span>
-                        <span className="block text-[10.5px] text-[var(--t3)] truncate">{e.sender} · {plural(n, 'file')}</span>
+                        <span className="block text-xs text-fg truncate">{e.subject || '(no subject)'}</span>
+                        <span className="block text-2xs text-fg-3 truncate">{e.sender} · {plural(n, 'file')}</span>
                       </span>
-                      <span className="shrink-0 text-[10.5px] text-[var(--t3)]">{on ? 'added' : 'add'}</span>
+                      <span className="shrink-0 text-2xs text-fg-3">{on ? 'added' : 'add'}</span>
                     </button>
                   );
                 })}
@@ -976,40 +972,40 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           onDragOver={e => e.preventDefault()}
           className={cn(
             'rounded-xl ring-1 ring-inset transition-colors',
-            'bg-[var(--s1)] ring-[var(--line-2)]',
-            'focus-within:ring-[var(--accent-line)] focus-within:bg-[var(--s1)]',
+            'bg-surface ring-line-2',
+            'focus-within:ring-accent-line focus-within:bg-surface',
           )}>
           <textarea
             ref={textareaRef}
             value={text}
             onChange={e => setText(e.target.value)}
             placeholder={`Describe the items or paste a material list — e.g.\n\n5 no. Eaton wire suspended exit signs for a mall.\nThe drop is quite long, 2 or 3 m. Self-contained exit/emergency.\n\n— or —\n\nMP2ES230CGS, 6\nNXL100, 12\nLUM22216, 3`}
-            className="w-full bg-transparent px-4 pt-3.5 pb-2 text-[12.5px] leading-relaxed focus:outline-none resize-none placeholder:text-[var(--t3)] min-h-[140px]"
+            className="w-full bg-transparent px-4 pt-3.5 pb-2 text-sm leading-relaxed focus:outline-none resize-none placeholder:text-fg-3 min-h-36"
           />
 
           {/* Attachment chips */}
           {attachments.length > 0 && (
-            <div className="px-3 pb-2 flex flex-wrap gap-2 border-t border-[var(--line)] pt-2.5">
+            <div className="px-3 pb-2 flex flex-wrap gap-2 border-t border-line pt-2.5">
               {attachments.map(a => (
                 <div
                   key={a.id}
-                  className="group flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--s2)] ring-1 ring-inset ring-[var(--line-2)] text-[11.5px]">
+                  className="group flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-raised ring-1 ring-inset ring-line-2 text-xs">
                   {a.kind === 'image' && a.previewUrl ? (
-                    <img src={a.previewUrl} alt={a.name} className="w-8 h-8 rounded object-cover ring-1 ring-[var(--line-2)]" />
+                    <img src={a.previewUrl} alt={a.name} className="w-8 h-8 rounded object-cover ring-1 ring-line-2" />
                   ) : a.kind === 'image' ? (
-                    <ImageIcon className="w-4 h-4 text-[var(--accent-text)]" />
+                    <ImageIcon className="w-4 h-4 text-accent-text" />
                   ) : a.kind === 'excel' ? (
                     <FileSpreadsheet className="w-4 h-4" style={{ color: 'var(--ok)' }} />
                   ) : (
                     <FileText className="w-4 h-4" style={{ color: 'var(--err)' }} />
                   )}
                   <div className="min-w-0">
-                    <p className="text-[var(--t1)] font-medium truncate max-w-[180px]">{a.name}</p>
-                    <p className="text-[10px] text-[var(--t3)]">{(a.size / 1024).toFixed(0)} KB · {a.kind === 'pdf' ? 'PDF' : a.kind === 'excel' ? 'Excel' : 'Image'}</p>
+                    <p className="text-fg font-medium truncate max-w-44">{a.name}</p>
+                    <p className="text-2xs text-fg-3">{(a.size / 1024).toFixed(0)} KB · {a.kind === 'pdf' ? 'PDF' : a.kind === 'excel' ? 'Excel' : 'Image'}</p>
                   </div>
                   <button aria-label="Remove attachment"
                     onClick={() => removeAttachment(a.id)}
-                    className="ml-1 text-[var(--t4)] transition-colors hover:text-[var(--err)]">
+                    className="ml-1 text-fg-4 transition-colors hover:text-err">
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -1018,17 +1014,13 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           )}
 
           {/* Toolbar */}
-          <div className="flex items-center justify-between px-3 py-2 border-t border-[var(--line)]">
+          <div className="flex items-center justify-between px-3 py-2 border-t border-line">
             <div className="flex items-center gap-1.5">
-              <button aria-label="Attach PDF or image"
-                type="button"
-                onClick={() => fileRef.current?.click()}
-                title="Attach PDF or image"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11.5px] text-[var(--t2)] hover:bg-[var(--s3)] transition-colors">
+              <UiButton tone="ghost" aria-label="Attach PDF or image" type="button" onClick={() => fileRef.current?.click()} hint="Attach PDF or image">
                 <Paperclip className="w-3.5 h-3.5" /> Attach
-              </button>
-              <span className="text-[10.5px] text-[var(--t3)] ml-1">
-                or drop files · paste image with <kbd className="px-1 py-0.5 rounded bg-[var(--s3)] text-[10px] font-mono">Ctrl+V</kbd>
+              </UiButton>
+              <span className="text-2xs text-fg-3 ml-1">
+                or drop files · paste image with <kbd className="px-1 py-0.5 rounded bg-subtle text-2xs mono">Ctrl+V</kbd>
               </span>
               <input
                 ref={fileRef}
@@ -1047,14 +1039,14 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
 
         {/* Status line */}
         {result && !result.error && (
-          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-[var(--t3)]">
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-fg-3">
             <span>{matched.length} matched</span>
             {unmatched.length > 0 && <span>{unmatched.length} unmatched</span>}
             {result.candidates && result.candidates.length > 0 && (
               <span>{result.candidates.length} candidate{result.candidates.length === 1 ? '' : 's'}</span>
             )}
             {result.inputs && (
-              <span className="text-[var(--t3)]">
+              <span className="text-fg-3">
                 {result.inputs.has_text ? 'text · ' : ''}
                 {result.inputs.pdf_count ? `${result.inputs.pdf_count} PDF · ` : ''}
                 {result.inputs.image_count ? `${result.inputs.image_count} image${result.inputs.image_count === 1 ? '' : 's'} · ` : ''}
@@ -1063,7 +1055,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
             )}
           </div>
         )}
-        <p className="mt-2 text-[10.5px] text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+        <p className="mt-2 text-2xs text-warn flex items-center gap-1.5">
           <Sparkles className="w-3 h-3" />
           Uses your Gemini API key configured in Settings. Web search runs automatically for descriptions and uncertain matches.
         </p>
@@ -1071,7 +1063,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
       </Card>
       </div>
 
-      <div className="col-span-12 lg:col-span-7 space-y-[22px]">
+      <div className="col-span-12 lg:col-span-7 space-y-5">
 
       {/* Live read-out — items stream in as they're priced */}
       {streaming && (
@@ -1083,21 +1075,21 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                 ? `${progress.filter(Boolean).length} of ${progressTotal} priced`
                 : 'Working through your list…'}
             />
-            <Loader2 className="w-4 h-4 animate-spin text-[var(--accent-text)] shrink-0" />
+            <Loader2 className="w-4 h-4 animate-spin text-accent-text shrink-0" />
           </div>
           {progress.filter(Boolean).length > 0 ? (
-            <div className="space-y-1 max-h-[420px] overflow-y-auto pr-0.5">
+            <div className="space-y-1 max-h-104 overflow-y-auto pr-0.5">
               {progress.map((it, i) => it && (
                 <ProgressRow key={i} idx={i + 1} item={it} active={i === progress.length - 1} />
               ))}
             </div>
           ) : (
-            <div className="flex items-center gap-2 py-6 text-[12px] text-[var(--t3)] animate-soft-pulse">
-              <Sparkles className="w-4 h-4 text-[var(--accent-text)]" /> {phase || 'Reading list…'}
+            <div className="flex items-center gap-2 py-6 text-sm text-fg-3 animate-soft-pulse">
+              <Sparkles className="w-4 h-4 text-accent-text" /> {phase || 'Reading list…'}
             </div>
           )}
           {phase && progress.filter(Boolean).length > 0 && (
-            <p className="mt-3 text-[11px] text-[var(--t3)] flex items-center gap-1.5 animate-soft-pulse">
+            <p className="mt-3 text-xs text-fg-3 flex items-center gap-1.5 animate-soft-pulse">
               <Loader2 className="w-3 h-3 animate-spin" /> {phase}
             </p>
           )}
@@ -1114,44 +1106,44 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
             {result.candidates.map((c, idx) => {
               const tone = c.confidence === 'high'
-                ? 'bg-emerald-50 dark:bg-emerald-900/20 ring-emerald-200 dark:ring-emerald-800/40'
+                ? 'bg-ok-soft ring-ok-line '
                 : c.confidence === 'low'
-                  ? 'bg-amber-50 dark:bg-amber-900/20 ring-amber-200 dark:ring-amber-800/40'
-                  : 'bg-[var(--s3)] ring-[var(--line-2)]';
+                  ? 'bg-warn-soft ring-warn-line '
+                  : 'bg-subtle ring-line-2';
               return (
                 <div key={`${c.cat_no}-${idx}`} className={cn('rounded-lg ring-1 ring-inset p-3', tone)}>
                   <div className="flex items-start gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1 flex-wrap">
-                        <span className="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--t3)]">
+                        <span className="text-2xs font-semibold uppercase tracking-wide text-fg-3">
                           {c.confidence || 'medium'}
                         </span>
                         {c.matched
-                          ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 font-medium">in price list</span>
-                          : <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--s3)] text-[var(--t2)] font-medium">not priced</span>}
+                          ? <span className="text-2xs px-1.5 py-0.5 rounded bg-ok-soft text-ok font-medium">in price list</span>
+                          : <span className="text-2xs px-1.5 py-0.5 rounded bg-subtle text-fg-2 font-medium">not priced</span>}
                         {c.suggested_qty && c.suggested_qty > 1 && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent-text)] font-medium">qty {c.suggested_qty}</span>
+                          <span className="text-2xs px-1.5 py-0.5 rounded bg-accent-soft text-accent-text font-medium">qty {c.suggested_qty}</span>
                         )}
                       </div>
-                      <p className="font-mono text-[12.5px] font-semibold text-[var(--t1)] truncate">{c.cat_no}</p>
-                      {c.family && <p className="text-[11px] text-[var(--accent-text)] truncate">{c.family}</p>}
-                      {c.description && <p className="text-[11px] text-[var(--t2)] line-clamp-2 mt-0.5">{c.description}</p>}
-                      {c.reasoning && <p className="text-[10.5px] text-[var(--t3)] italic mt-1 line-clamp-3">"{c.reasoning}"</p>}
+                      <p className="mono text-sm font-semibold text-fg truncate">{c.cat_no}</p>
+                      {c.family && <p className="text-xs text-accent-text truncate">{c.family}</p>}
+                      {c.description && <p className="text-xs text-fg-2 line-clamp-2 mt-0.5">{c.description}</p>}
+                      {c.reasoning && <p className="text-2xs text-fg-3 italic mt-1 line-clamp-3">"{c.reasoning}"</p>}
                       {c.source_url && (
                         <a href={c.source_url} target="_blank" rel="noreferrer"
-                           className="text-[10.5px] text-[var(--accent-text)] hover:underline mt-1 inline-block truncate max-w-full">
+                           className="text-2xs text-accent-text hover:underline mt-1 inline-block truncate max-w-full">
                           source ↗
                         </a>
                       )}
                     </div>
                     {c.matched && c.ntp != null && (
                       <div className="text-right shrink-0">
-                        <p className="text-[10px] uppercase tracking-wide text-[var(--t3)]">NTP</p>
-                        <p className="text-[14px] font-semibold tabular-nums">{fmtGBP(c.ntp)}</p>
+                        <p className="text-2xs uppercase tracking-wide text-fg-3">NTP</p>
+                        <p className="text-lg font-semibold tabular-nums">{fmtGBP(c.ntp)}</p>
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2 mt-2.5 pt-2.5 border-t border-[var(--line)]">
+                  <div className="flex gap-2 mt-2.5 pt-2.5 border-t border-line">
                     <Button tone="primary" size="sm" Icon={Plus} onClick={() => pickCandidate(c, false)}>
                       Add to schedule
                     </Button>
@@ -1187,17 +1179,17 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
             </div>
           </div>
 
-          <div className="overflow-x-auto rounded-lg ring-1 ring-inset ring-[var(--line)]">
-            <table className="w-full text-[12px]">
+          <div className="overflow-x-auto rounded-lg ring-1 ring-inset ring-line">
+            <table className="w-full text-sm">
               <thead>
-                <tr className="bg-[var(--s1)]">
-                  <th className="px-3 py-2 text-left font-semibold text-[var(--t3)] text-[10.5px] uppercase tracking-wide">Ref</th>
-                  <th className="px-3 py-2 text-left font-semibold text-[var(--t3)] text-[10.5px] uppercase tracking-wide">Catalogue No</th>
-                  <th className="px-3 py-2 text-left font-semibold text-[var(--t3)] text-[10.5px] uppercase tracking-wide">Description</th>
-                  <th className="px-3 py-2 text-left font-semibold text-[var(--t3)] text-[10.5px] uppercase tracking-wide">Family</th>
-                  <th className="px-3 py-2 text-right font-semibold text-[var(--t3)] text-[10.5px] uppercase tracking-wide">Qty</th>
-                  <th className="px-3 py-2 text-right font-semibold text-[var(--t3)] text-[10.5px] uppercase tracking-wide">NTP/Unit</th>
-                  <th className="px-3 py-2 text-right font-semibold text-[var(--t3)] text-[10.5px] uppercase tracking-wide">Line NTP</th>
+                <tr className="bg-surface">
+                  <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Ref</th>
+                  <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Catalogue No</th>
+                  <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Description</th>
+                  <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Family</th>
+                  <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide">Qty</th>
+                  <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide">NTP/Unit</th>
+                  <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide">Line NTP</th>
                   <th className="w-8 px-2 py-2" />
                 </tr>
               </thead>
@@ -1205,31 +1197,31 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                 {matched.map((item, i) => {
                   const uncertain = item.match_type === 'description' || item.match_type === 'fuzzy';
                   return (
-                  <tr key={i} className={cn('border-t border-[var(--line)]',
-                    i % 2 === 0 ? '' : 'bg-[var(--s1)]')}>
-                    <td className="px-3 py-2 font-mono text-[11px] text-[var(--t3)]">{item.ref || '—'}</td>
+                  <tr key={i} className={cn('border-t border-line',
+                    i % 2 === 0 ? '' : 'bg-surface')}>
+                    <td className="px-3 py-2 mono text-xs text-fg-3">{item.ref || '—'}</td>
                     <td className="px-3 py-2">
                       <div className="flex items-center gap-1">
-                        <span className="font-mono font-semibold text-[var(--accent-text)]">{item.cat_no}</span>
+                        <span className="mono font-medium text-accent-text">{item.cat_no}</span>
                         {uncertain && item.original_input && item.original_input !== item.cat_no && (
-                          <span className="text-[9.5px] text-amber-500 font-mono truncate max-w-[80px]" title={`From: ${item.original_input}`}>
+                          <span className="text-2xs text-warn mono truncate max-w-20" title={`From: ${item.original_input}`}>
                             ← {item.original_input}
                           </span>
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-[var(--t2)] max-w-xs">
+                    <td className="px-3 py-2 text-fg-2 max-w-xs">
                       <span className="line-clamp-2">{item.description}</span>
                       {item.search_note && (
-                        <span className="mt-0.5 block text-[9.5px] text-amber-500 leading-snug" title={item.search_note}>
+                        <span className="mt-0.5 block text-2xs text-warn leading-snug" title={item.search_note}>
                           {item.search_note}
                         </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-[var(--t3)] text-[11px]">{item.family}</td>
-                    <td className="px-3 py-2 text-right text-[var(--t2)]">{item.qty}</td>
-                    <td className="px-3 py-2 text-right font-mono text-[var(--t2)]">{fmtGBP(item.ntp)}</td>
-                    <td className="px-3 py-2 text-right font-mono font-semibold text-[var(--t1)]">{fmtGBP(item.line_ntp)}</td>
+                    <td className="px-3 py-2 text-fg-3 text-xs">{item.family}</td>
+                    <td className="px-3 py-2 text-right mono text-fg-2">{item.qty}</td>
+                    <td className="px-3 py-2 text-right mono text-fg-2">{fmtGBP(item.ntp)}</td>
+                    <td className="px-3 py-2 text-right mono font-medium text-fg">{fmtGBP(item.line_ntp)}</td>
                     <td className="px-2 py-2 text-center">
                       {uncertain && (
                         <ItemMenu
@@ -1243,11 +1235,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                 })}
               </tbody>
               <tfoot>
-                <tr className="border-t-2 border-[var(--line-2)] bg-[var(--s1)]">
-                  <td colSpan={6} className="px-3 py-2.5 text-right font-semibold text-[var(--t2)] text-[12px]">
+                <tr className="border-t-2 border-line-2 bg-surface">
+                  <td colSpan={6} className="px-3 py-2.5 text-right font-semibold text-fg-2 text-sm">
                     Total NTP (ex VAT)
                   </td>
-                  <td className="px-3 py-2.5 text-right font-mono font-bold text-[13px] text-[var(--t1)]">
+                  <td className="px-3 py-2.5 text-right mono font-medium text-base text-fg">
                     {fmtGBP(result.total_ntp)}
                   </td>
                 </tr>
@@ -1255,28 +1247,28 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
             </table>
           </div>
 
-          <p className="mt-3 text-[10.5px] text-[var(--t3)]">
+          <p className="mt-3 text-2xs text-fg-3">
             {pricelistFooter(plv)} All prices ex VAT. Subject to confirmation.
           </p>
 
           {unmatched.length > 0 && (
             <div className="mt-4">
               <button onClick={() => setShowUnmatched(s => !s)}
-                className="flex items-center gap-1.5 text-[11.5px] text-amber-600 dark:text-amber-400 hover:text-amber-700">
+                className="flex items-center gap-1.5 text-xs text-warn hover:text-warn">
                 <AlertTriangle className="w-3.5 h-3.5" />
                 {unmatched.length} item{unmatched.length > 1 ? 's' : ''} not found in price list
                 {showUnmatched ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
               </button>
               {showUnmatched && (
-                <div className="mt-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/10 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/30">
+                <div className="mt-2 p-3 rounded-lg bg-warn-soft ring-1 ring-inset ring-warn-line ">
                   <div className="flex flex-wrap gap-1.5">
                     {unmatched.map((item, i) => (
-                      <span key={i} className="px-2 py-0.5 rounded bg-amber-100 dark:bg-amber-900/30 text-[11px] font-mono text-amber-700 dark:text-amber-300">
+                      <span key={i} className="px-2 py-0.5 rounded bg-warn-soft text-xs mono text-warn ">
                         {item.cat_no}
                       </span>
                     ))}
                   </div>
-                  <p className="mt-2 text-[10.5px] text-amber-600 dark:text-amber-400">
+                  <p className="mt-2 text-2xs text-warn ">
                     Check catalogue numbers against the Eaton EL price list. Items may be discontinued, not in the EL range, or have a different part number format.
                   </p>
                 </div>
@@ -1289,11 +1281,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
       {/* Empty-results hint */}
       {result && !result.error && matched.length === 0 && (!result.candidates || result.candidates.length === 0) && (
         <Card>
-          <div className="flex items-start gap-2 text-amber-600 dark:text-amber-400">
+          <div className="flex items-start gap-2 text-warn ">
             <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-            <div className="text-[12.5px]">
+            <div className="text-sm">
               <p className="font-medium">No matches or candidates found.</p>
-              <p className="mt-1 text-[11.5px] text-[var(--t3)]">
+              <p className="mt-1 text-xs text-fg-3">
                 Try giving more detail — product family ("exit sign", "anti-panic"), mounting ("wall", "wire-suspended", "recessed"),
                 power source (self-contained / central battery), or attach a photo.
               </p>
@@ -1310,28 +1302,28 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
 
       {result?.error && (
         <Card>
-          <div className="flex items-center gap-2 text-red-600 dark:text-red-400">
+          <div className="flex items-center gap-2 text-err ">
             <AlertTriangle className="w-4 h-4 shrink-0" />
-            <p className="text-[12px]">{result.error}</p>
+            <p className="text-sm">{result.error}</p>
           </div>
         </Card>
       )}
 
       {/* Empty / loading placeholder for the results column */}
       {!result && !streaming && (
-        <Card className="min-h-[320px] flex flex-col items-center justify-center text-center py-20">
+        <Card className="min-h-80 flex flex-col items-center justify-center text-center py-20">
           {loading ? (
             <>
-              <Loader2 className="w-6 h-6 animate-spin text-[var(--accent-text)] mb-3" />
-              <p className="text-[12px] text-[var(--t3)]">Matching catalogue numbers…</p>
+              <Loader2 className="w-6 h-6 animate-spin text-accent-text mb-3" />
+              <p className="text-sm text-fg-3">Matching catalogue numbers…</p>
             </>
           ) : (
             <>
-              <div className="w-12 h-12 rounded-2xl bg-[var(--s3)] flex items-center justify-center mb-3">
-                <Sparkles className="w-5 h-5 text-[var(--t3)]" />
+              <div className="w-12 h-12 flex items-center justify-center mb-3">
+                <Sparkles className="w-5 h-5 text-fg-3" />
               </div>
-              <p className="text-[12.5px] font-medium text-[var(--t2)]">Priced items appear here</p>
-              <p className="text-[11px] text-[var(--t3)] mt-1 max-w-[240px]">Paste a list, drop a PDF or image, then hit Get NTP Prices.</p>
+              <p className="text-sm font-medium text-fg-2">Priced items appear here</p>
+              <p className="text-xs text-fg-3 mt-1 max-w-60">Paste a list, drop a PDF or image, then hit Get NTP Prices.</p>
             </>
           )}
         </Card>
@@ -1344,12 +1336,12 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
         <Card>
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <History className="w-4 h-4 text-[var(--t3)]" />
-              <span className="text-[13px] font-semibold text-[var(--t1)]">Recent Runs</span>
+              <History className="w-4 h-4 text-fg-3" />
+              <span className="text-base font-semibold text-fg">Recent Runs</span>
             </div>
             <button
               onClick={() => { setSavedRuns([]); localStorage.removeItem('mu_el_runs'); }}
-              className="inline-flex items-center gap-1 text-[11px] font-medium text-red-500 hover:text-red-700 dark:hover:text-red-400 transition-colors">
+              className="inline-flex items-center gap-1 text-xs font-medium text-err hover:text-err transition-colors">
               <Trash2 className="w-3 h-3" /> Clear all
             </button>
           </div>
@@ -1359,29 +1351,29 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                 className={cn(
                   'flex items-center gap-3 px-3 py-2 rounded-lg ring-1 ring-inset transition-colors cursor-pointer',
                   activeRunId === run.id
-                    ? 'bg-[var(--accent-soft)] ring-[var(--accent-line)]'
-                    : 'bg-[var(--s1)] ring-[var(--line)]',
+                    ? 'bg-accent-soft ring-accent-line'
+                    : 'bg-surface ring-line',
                 )}
                 onClick={() => setActiveRunId(id => id === run.id ? null : run.id)}>
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   {run.source === 'pdf'
-                    ? <FileText className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
+                    ? <FileText className="w-3.5 h-3.5 text-fg-3 shrink-0" />
                     : run.source === 'image'
-                    ? <ImageIcon className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
-                    : <ClipboardList className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />}
-                  <span className="text-[12px] text-[var(--t2)] truncate font-medium">{run.filename}</span>
-                  <span className="text-[10.5px] text-[var(--t3)] shrink-0">
+                    ? <ImageIcon className="w-3.5 h-3.5 text-fg-3 shrink-0" />
+                    : <ClipboardList className="w-3.5 h-3.5 text-fg-3 shrink-0" />}
+                  <span className="text-sm text-fg-2 truncate font-medium">{run.filename}</span>
+                  <span className="text-2xs text-fg-3 shrink-0">
                     {new Date(run.ts).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })},{' '}
                     {new Date(run.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">{run.matchedCount}✓</span>
+                  <span className="text-xs font-medium text-ok ">{run.matchedCount}✓</span>
                   {run.unmatchedCount > 0 && (
-                    <span className="text-[11px] font-medium text-amber-600 dark:text-amber-400">{run.unmatchedCount}✗</span>
+                    <span className="text-xs font-medium text-warn ">{run.unmatchedCount}✗</span>
                   )}
                 </div>
-                <span className="text-[12px] font-bold text-[var(--t1)] shrink-0 font-mono">
+                <span className="text-sm font-semibold text-fg shrink-0 mono">
                   £{run.totalNtp.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
                 </span>
                 <div className="flex items-center gap-1 shrink-0">
@@ -1394,22 +1386,17 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                       setShowUnmatched(false);
                       window.scrollTo({ top: 0, behavior: 'smooth' });
                     }}
-                    className="p-1 rounded text-[var(--t3)] hover:text-[var(--accent-text)] transition-colors">
+                    className="p-1 rounded text-fg-3 hover:text-accent-text transition-colors">
                     <RotateCcw style={{ width: 11, height: 11 }} />
                   </button>
-                  <button aria-label="Remove"
-                    title="Remove"
-                    onClick={e => {
+                  <UiIconButton icon={X} label="Remove" tone="danger" onClick={e => {
                       e.stopPropagation();
                       setSavedRuns(prev => {
                         const next = prev.filter(r => r.id !== run.id);
                         localStorage.setItem('mu_el_runs', JSON.stringify(next));
                         return next;
                       });
-                    }}
-                    className="p-1 rounded text-[var(--t4)] hover:text-red-500 dark:hover:text-red-400 transition-colors">
-                    <X className="w-3 h-3" />
-                  </button>
+                    }} />
                 </div>
               </div>
             ))}

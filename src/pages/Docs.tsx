@@ -1,8 +1,7 @@
 // ─── Doc Packs ───────────────────────────────────────────────────────────────
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { BookOpen, FileText, Download, Plus, X, Loader2, Trash2 } from 'lucide-react';
-import { cn } from '../lib/cn';
-import { Card, Pill, Button } from '../lib/ui';
+import { FileText, Download, Plus, X, Trash2, Eye } from 'lucide-react';
+import { Badge, Button, IconButton, IconLink, type StatusTone } from '../ui';
 import { api, type UserDoc } from '../lib/api';
 import { confirmAsync } from '../lib/notify';
 import { failed } from '../lib/errors';
@@ -14,25 +13,25 @@ const DOCS = [
     id: 'bidman_urls', type: 'pdf' as const,
     title: 'BidMan URLs — DualGuard Configurator',
     desc:  'Production, QA and anonymous configurator URLs for BidManager DualGuard-S. Internal use — registered user and public access links.',
-    pages: '6 pages', date: 'Feb 2025', color: 'bg-[var(--accent)]',
+    pages: '6 pages', date: 'Feb 2025',
   },
   {
     id: 'commissioning', type: 'pdf' as const,
     title: 'Service & Commissioning Information',
     desc:  'Delivery, commissioning procedure, pre-commission checklist, service terms and important installation notes.',
-    pages: '2 pages', date: 'Current', color: 'bg-[var(--accent)]',
+    pages: '2 pages', date: 'Current',
   },
   {
     id: 'terms_and_conditions', type: 'pdf' as const,
     title: 'UK Terms & Conditions',
     desc:  'Standard Terms and Conditions of Sale for Eaton Electrical Sector UK. SP090392EN.',
-    pages: '5 pages', date: 'Mar 2022', color: 'bg-[var(--t3)]',
+    pages: '5 pages', date: 'Mar 2022',
   },
   {
     id: 'commission_calculators', type: 'xlsx' as const,
     title: 'Commission Calculators',
     desc:  'Sales commission calculation workbook — rate tables, targets and payout schedules. Open in Excel to use formulas.',
-    pages: 'Excel workbook', date: 'Jan 2025', color: 'bg-emerald-700',
+    pages: 'Excel workbook', date: 'Jan 2025',
   },
 ];
 
@@ -42,10 +41,8 @@ function fmtSize(b: number) {
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
   return `${(b / 1024 / 1024).toFixed(1)} MB`;
 }
-const EXT_COLOR: Record<string, string> = {
-  pdf: 'bg-[var(--accent)]', xlsx: 'bg-emerald-700', xls: 'bg-emerald-700',
-  docx: 'bg-sky-700', doc: 'bg-sky-700',
-  png: 'bg-violet-700', jpg: 'bg-violet-700', jpeg: 'bg-violet-700', gif: 'bg-violet-700', webp: 'bg-violet-700',
+const EXT_TONE: Record<string, StatusTone> = {
+  pdf: 'accent', xlsx: 'ok', xls: 'ok', docx: 'accent', doc: 'accent',
 };
 
 export function DocsPage({ toast }: { toast: ToastFn }) {
@@ -89,113 +86,81 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
     catch (e: any) { toast('err', failed(`remove "${d.title}"`, e)); }
   }
 
+  type Row = {
+    key: string; title: string; detail: string; ext: string; meta: string; date: string;
+    href: string; download: string | true; view?: string; image?: boolean; onDelete?: () => void;
+  };
+  const rows: Row[] = [
+    ...DOCS.map(d => ({
+      key: d.id, title: d.title, detail: d.desc, ext: d.type, meta: d.pages, date: d.date,
+      href: d.type === 'xlsx' ? `/api/docs-xlsx/${d.id}` : `/api/docs/${d.id}`,
+      download: true as const,
+      view: d.type === 'pdf' ? `/api/docs/${d.id}` : undefined,
+    })),
+    ...userDocs.map(d => ({
+      key: `user:${d.id}`, title: d.title, detail: `${d.category} · ${d.origName}`, ext: d.ext,
+      meta: fmtSize(d.size),
+      date: new Date(d.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+      href: `/api/docs/user/${d.id}`, download: d.origName,
+      view: VIEW_EXTS.has(d.ext) ? `/api/docs/user/${d.id}` : undefined,
+      image: d.ext !== 'pdf',
+      onDelete: () => del(d),
+    })),
+  ];
+
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3">
-        <p className="text-[12px] text-[var(--t3)]">Standard Eaton documents — open inline or download. Add your own with the button.</p>
+        <p className="text-sm text-fg-3">Standard Eaton documents — open inline or download. Add your own with the button.</p>
         <input ref={fileRef} type="file" multiple accept=".pdf,.xlsx,.xls,.doc,.docx,image/*"
           className="hidden" onChange={e => { onPick(e.target.files); e.target.value = ''; }} />
-        <Button tone="primary" size="sm" Icon={uploading ? Loader2 : Plus}
-          onClick={() => fileRef.current?.click()} disabled={uploading}>
-          {uploading ? 'Uploading…' : 'Add Document'}
+        <Button tone="primary" icon={Plus} loading={uploading} onClick={() => fileRef.current?.click()}>
+          Add document
         </Button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {/* Built-in packs */}
-        {DOCS.map(d => {
-          const key = d.id;
-          const open = viewing === key;
+      <div className="border-t border-line">
+        {rows.map(r => {
+          const open = viewing === r.key;
           return (
-            <Card key={key} padded={false} className="overflow-hidden flex flex-col">
-              <div className={cn(d.color, 'px-4 py-3 flex items-center gap-2')}>
-                <BookOpen className="w-4 h-4 text-white shrink-0" />
-                <span className="text-white text-[12px] font-semibold flex-1 leading-tight">{d.title}</span>
-                <Pill tone="neutral" className="!bg-white/15 !text-white !ring-white/20">{d.type.toUpperCase()}</Pill>
-              </div>
-              <div className="p-4 flex-1 flex flex-col gap-3">
-                <p className="text-[11.5px] text-[var(--t3)] leading-relaxed">{d.desc}</p>
-                <div className="flex items-center gap-2 text-[10px] text-[var(--t3)] mt-auto">
-                  <Pill tone="neutral">{d.pages}</Pill>
-                  <Pill tone="neutral">{d.date}</Pill>
+            <div key={r.key} className="border-b border-line">
+              <div className="grid grid-cols-[var(--sp-6)_1fr_var(--sp-12)_auto_calc(var(--sp-4)*9)] items-center gap-x-4 py-3">
+                <FileText className="w-4 h-4 text-fg-3" strokeWidth={1.75} />
+                <div className="min-w-0">
+                  <p className="text-md font-medium text-fg truncate">{r.title}</p>
+                  <p className="text-xs text-fg-3 truncate" title={r.detail}>{r.detail}</p>
                 </div>
-                <div className="flex gap-2 pt-2">
-                  {d.type === 'pdf' && (
-                    <button onClick={() => setViewing(v => v === key ? null : key)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--s3)] hover:bg-[var(--s-hover)] text-[var(--t2)] transition-colors">
-                      <FileText className="w-3.5 h-3.5" />
+                <Badge mono tone={EXT_TONE[r.ext] ?? 'neutral'}>{r.ext.toUpperCase()}</Badge>
+                <div className="hidden md:block text-right w-32">
+                  <p className="mono text-xs text-fg-2">{r.meta}</p>
+                  <p className="mono text-2xs text-fg-4">{r.date}</p>
+                </div>
+                <div className="flex items-center justify-end gap-1">
+                  {r.view && (
+                    <Button tone={open ? 'secondary' : 'ghost'} icon={open ? X : Eye}
+                      onClick={() => setViewing(v => v === r.key ? null : r.key)}>
                       {open ? 'Close' : 'View'}
-                    </button>
+                    </Button>
                   )}
-                  <a href={d.type === 'xlsx' ? `/api/docs-xlsx/${d.id}` : `/api/docs/${d.id}`} download
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors">
-                    <Download className="w-3.5 h-3.5" />
-                    Download
-                  </a>
+                  <IconLink icon={Download} label={`Download ${r.title}`} href={r.href} download={r.download} />
+                  {r.onDelete && <IconButton icon={Trash2} label="Remove" tone="danger" onClick={r.onDelete} />}
                 </div>
               </div>
-              {open && (
-                <div className="border-t border-[var(--line)]">
-                  <iframe src={`/api/docs/${d.id}`} className="w-full" style={{ height: '70vh' }} title={d.title} />
+              {open && r.view && (
+                <div className="pb-4">
+                  {r.image
+                    ? <img src={r.view} alt={r.title} className="w-full max-h-[70vh] object-contain rounded-panel border border-line" />
+                    : <iframe src={r.view} className="w-full h-[70vh] rounded-panel border border-line" title={r.title} />}
                 </div>
               )}
-            </Card>
-          );
-        })}
-
-        {/* User-added packs — same card style */}
-        {userDocs.map(d => {
-          const key = `user:${d.id}`;
-          const open = viewing === key;
-          const canView = VIEW_EXTS.has(d.ext);
-          return (
-            <Card key={key} padded={false} className="overflow-hidden flex flex-col">
-              <div className={cn(EXT_COLOR[d.ext] || 'bg-[var(--t3)]', 'px-4 py-3 flex items-center gap-2')}>
-                <BookOpen className="w-4 h-4 text-white shrink-0" />
-                <span className="text-white text-[12px] font-semibold flex-1 leading-tight truncate" title={d.title}>{d.title}</span>
-                <Pill tone="neutral" className="!bg-white/15 !text-white !ring-white/20">{d.ext.toUpperCase()}</Pill>
-                <button aria-label="Remove" onClick={() => del(d)} title="Remove"
-                  className="text-white/70 hover:text-white transition-colors shrink-0">
-                  <Trash2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              <div className="p-4 flex-1 flex flex-col gap-3">
-                <p className="text-[11.5px] text-[var(--t3)] leading-relaxed truncate" title={d.origName}>{d.origName}</p>
-                <div className="flex items-center gap-2 text-[10px] text-[var(--t3)] mt-auto">
-                  <Pill tone="neutral">{d.category}</Pill>
-                  <Pill tone="neutral">{fmtSize(d.size)}</Pill>
-                  <Pill tone="neutral">{new Date(d.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })}</Pill>
-                </div>
-                <div className="flex gap-2 pt-2">
-                  {canView && (
-                    <button onClick={() => setViewing(v => v === key ? null : key)}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--s3)] hover:bg-[var(--s-hover)] text-[var(--t2)] transition-colors">
-                      <FileText className="w-3.5 h-3.5" />
-                      {open ? 'Close' : 'View'}
-                    </button>
-                  )}
-                  <a href={`/api/docs/user/${d.id}`} download={d.origName}
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-[11.5px] font-semibold rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors">
-                    <Download className="w-3.5 h-3.5" />
-                    Download
-                  </a>
-                </div>
-              </div>
-              {open && canView && (
-                <div className="border-t border-[var(--line)]">
-                  {d.ext === 'pdf'
-                    ? <iframe src={`/api/docs/user/${d.id}`} className="w-full" style={{ height: '70vh' }} title={d.title} />
-                    : <img src={`/api/docs/user/${d.id}`} alt={d.title} className="w-full max-h-[70vh] object-contain bg-[var(--s1)]" />}
-                </div>
-              )}
-            </Card>
+            </div>
           );
         })}
       </div>
 
       {userDocs.length === 0 && (
-        <p className="text-[11px] text-[var(--t3)] text-center pt-2">
-          No custom documents yet — click <span className="font-medium">Add Document</span> to upload PDFs, images, Word or Excel files.
+        <p className="text-xs text-fg-3">
+          No custom documents yet — use <span className="font-medium text-fg-2">Add document</span> to upload PDFs, images, Word or Excel files.
         </p>
       )}
     </div>

@@ -1,5 +1,5 @@
 // ─── Inbox — Outlook email reader + AI triage ────────────────────────────────
-import React, { useState, useEffect, useCallback, useRef, KeyboardEvent } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Mail, RefreshCw, Paperclip, FileText, Sparkles, Loader2,
   Filter, Users, ChevronRight, ChevronDown, Download,
@@ -77,6 +77,10 @@ import { sendToPricer } from '../lib/pricerHandoff';
 import { fmtGBP } from '../lib/ui';
 import type { TodoBucket } from '../types';
 import type { ToastFn } from '../App';
+import {
+  tokenValue, Button as UiButton, IconButton as UiIconButton,
+  AiMessage, UserMessage, AiThinking, AiComposer, AiPanelHeader, AiFileChip, CopyAction,
+} from '../ui';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Mailbox {
@@ -153,8 +157,8 @@ function Md({ text }: { text: string }) {
     out.push(
       <ul key={out.length} className="my-1 space-y-1 pl-0.5">
         {ulBuf.map((item, i) => (
-          <li key={i} className="flex gap-2 text-[12px] text-[var(--t2)] leading-relaxed">
-            <span className="text-violet-400 shrink-0 mt-0.5">•</span>
+          <li key={i} className="flex gap-2 text-sm text-fg-2 leading-relaxed">
+            <span className="text-ai shrink-0 mt-0.5">•</span>
             <span>{inline(item)}</span>
           </li>
         ))}
@@ -167,8 +171,8 @@ function Md({ text }: { text: string }) {
     out.push(
       <ol key={out.length} className="my-1 space-y-1 pl-0.5">
         {olBuf.map((item, i) => (
-          <li key={i} className="flex gap-2 text-[12px] text-[var(--t2)] leading-relaxed">
-            <span className="text-violet-500 font-semibold shrink-0 w-4 text-right mt-0.5">{i + 1}.</span>
+          <li key={i} className="flex gap-2 text-sm text-fg-2 leading-relaxed">
+            <span className="text-ai font-semibold shrink-0 w-4 text-right mt-0.5">{i + 1}.</span>
             <span>{inline(item)}</span>
           </li>
         ))}
@@ -180,14 +184,14 @@ function Md({ text }: { text: string }) {
   for (const line of lines) {
     const raw = line.trim();
     if (!raw) { flushUl(); flushOl(); out.push(<div key={out.length} className="h-1" />); continue; }
-    if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[11.5px] font-bold mt-2 mb-0.5 text-[var(--t1)]">{inline(raw.slice(4))}</p>); continue; }
-    if (raw.startsWith('## '))  { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[12.5px] font-bold mt-2.5 mb-0.5 text-[var(--t1)]">{inline(raw.slice(3))}</p>); continue; }
-    if (raw.startsWith('# '))   { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[13px] font-bold mt-2.5 mb-1 text-[var(--t1)]">{inline(raw.slice(2))}</p>); continue; }
+    if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-xs font-semibold mt-2 mb-0.5 text-fg">{inline(raw.slice(4))}</p>); continue; }
+    if (raw.startsWith('## '))  { flushUl(); flushOl(); out.push(<p key={out.length} className="text-sm font-semibold mt-2.5 mb-0.5 text-fg">{inline(raw.slice(3))}</p>); continue; }
+    if (raw.startsWith('# '))   { flushUl(); flushOl(); out.push(<p key={out.length} className="text-base font-semibold mt-2.5 mb-1 text-fg">{inline(raw.slice(2))}</p>); continue; }
     if (/^[-*•]\s/.test(raw))  { flushOl(); ulBuf.push(raw.replace(/^[-*•]\s+/, '')); continue; }
     if (/^\d+\.\s/.test(raw))  { flushUl(); olBuf.push(raw.replace(/^\d+\.\s+/, '')); continue; }
-    if (/^---+$/.test(raw))    { flushUl(); flushOl(); out.push(<hr key={out.length} className="my-2 border-violet-200/60 dark:border-violet-800/40" />); continue; }
+    if (/^---+$/.test(raw))    { flushUl(); flushOl(); out.push(<hr key={out.length} className="my-2 border-ai-line " />); continue; }
     flushUl(); flushOl();
-    out.push(<p key={out.length} className="text-[12px] text-[var(--t2)] leading-relaxed">{inline(raw)}</p>);
+    out.push(<p key={out.length} className="text-sm text-fg-2 leading-relaxed">{inline(raw)}</p>);
   }
   flushUl(); flushOl();
   return <div className="space-y-0.5">{out}</div>;
@@ -200,11 +204,11 @@ function inline(text: string): React.ReactNode {
   let last = 0, m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index));
-    if (m[1])      parts.push(<strong key={m.index} className="font-semibold text-[var(--t1)]">{m[2]}</strong>);
-    else if (m[3]) parts.push(<code key={m.index} className="px-1 py-0.5 rounded bg-[var(--s3)] text-[11px] font-mono text-[var(--accent-text)]">{m[4]}</code>);
+    if (m[1])      parts.push(<strong key={m.index} className="font-semibold text-fg">{m[2]}</strong>);
+    else if (m[3]) parts.push(<code key={m.index} className="px-1 py-0.5 rounded bg-subtle text-xs mono text-accent-text">{m[4]}</code>);
     else if (m[5]) parts.push(
       <a key={m.index} href={m[7]} target="_blank" rel="noopener noreferrer"
-         className="text-violet-400 underline decoration-violet-400/40 hover:decoration-violet-400 break-all">{m[6]}</a>,
+         className="text-ai underline decoration-ai-line hover:decoration-ai-line break-all">{m[6]}</a>,
     );
     last = m.index + m[0].length;
   }
@@ -277,7 +281,7 @@ function AttThumb({ entryId, index }: { entryId: string; index: number }) {
       loading="lazy"
       decoding="async"
       onError={() => setFailed(true)}
-      className="w-5 h-5 shrink-0 rounded object-cover bg-[var(--s3)] ring-1 ring-black/10 dark:ring-white/10"
+      className="w-5 h-5 shrink-0 rounded object-cover bg-subtle ring-1 ring-line-3 "
     />
   );
 }
@@ -319,7 +323,7 @@ function CustomerHistoryPanel({ senderEmail, senderName, toast }: {
   }, [senderEmail, senderName, picked]);
 
   if (loading) {
-    return <p className="text-[11.5px] text-[var(--t3)] flex items-center gap-1.5 px-1 py-3">
+    return <p className="text-xs text-fg-3 flex items-center gap-1.5 px-1 py-3">
       <Loader2 className="w-3 h-3 animate-spin" />Looking this sender up…
     </p>;
   }
@@ -331,17 +335,16 @@ function CustomerHistoryPanel({ senderEmail, senderName, toast }: {
   if (!data.matched) {
     return (
       <div className="px-1 py-2">
-        <p className="text-[11.5px] text-[var(--t2)] font-medium">Couldn’t tell which customer this is</p>
-        <p className="text-[10.5px] text-[var(--t3)] mt-1 leading-relaxed">
+        <p className="text-xs text-fg-2 font-medium">Couldn’t tell which customer this is</p>
+        <p className="text-2xs text-fg-3 mt-1 leading-relaxed">
           Nothing in {senderName || senderEmail || 'this sender'} matched a customer on your Quotations List.
           Pick one to see their history:
         </p>
         <div className="flex flex-wrap gap-1 mt-2">
           {data.suggestions.map(s => (
-            <button key={s.customer} onClick={() => setPicked(s.customer)}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium bg-[var(--s3)] text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent-text)] transition-colors">
+            <UiButton tone="secondary" key={s.customer} onClick={() => setPicked(s.customer)}>
               {s.customer}<span className="opacity-50">{s.count}</span>
-            </button>
+            </UiButton>
           ))}
         </div>
       </div>
@@ -357,25 +360,25 @@ function CustomerHistoryPanel({ senderEmail, senderName, toast }: {
       {/* Who this is, and on what evidence */}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-[12.5px] font-semibold text-[var(--t1)] truncate">{data.customer}</p>
-          <p className="text-[10px] text-[var(--t3)] mt-0.5">
+          <p className="text-sm font-semibold text-fg truncate">{data.customer}</p>
+          <p className="text-2xs text-fg-3 mt-0.5">
             {data.matchedOn === 'picked'      ? 'you picked this customer'
              : data.matchedOn === 'domain'     ? 'matched on the email domain'
              : 'matched on the sender name'}
             {data.spellings.length > 1 && ` · ${data.spellings.length} spellings merged`}
             {data.matchedOn !== 'picked' && ' · '}
             {data.matchedOn !== 'picked' && (
-              <button onClick={() => setPicked('')} className="underline hover:text-[var(--t2)]"
+              <button onClick={() => setPicked('')} className="underline hover:text-fg-2"
                 title="Clear and pick a different customer">not them?</button>
             )}
           </p>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--s3)] text-[var(--t2)] font-medium">
+          <span className="text-2xs px-1.5 py-0.5 rounded bg-subtle text-fg-2 font-medium">
             {totals.count} quote{totals.count === 1 ? '' : 's'}
           </span>
           {winRate != null && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-900/25 text-emerald-700 dark:text-emerald-300 font-medium">
+            <span className="text-2xs px-1.5 py-0.5 rounded bg-ok-soft text-ok font-medium">
               {winRate}% won
             </span>
           )}
@@ -385,20 +388,20 @@ function CustomerHistoryPanel({ senderEmail, senderName, toast }: {
       {/* The relationship in four numbers */}
       <div className="grid grid-cols-4 gap-1.5">
         {([
-          ['Won',  totals.won,  'text-emerald-600 dark:text-emerald-400'],
-          ['Lost', totals.lost, 'text-red-500 dark:text-red-400'],
-          ['Open', totals.open, 'text-[var(--t2)]'],
+          ['Won',  totals.won,  'text-ok '],
+          ['Lost', totals.lost, 'text-err '],
+          ['Open', totals.open, 'text-fg-2'],
         ] as const).map(([label, n, tone]) => (
-          <div key={label} className="rounded-lg bg-[var(--s3)] px-2 py-1.5">
-            <p className={cn('text-[14px] font-semibold leading-none', tone)}>{n}</p>
-            <p className="text-[9.5px] text-[var(--t3)] mt-1">{label}</p>
+          <div key={label} className="rounded-lg bg-subtle px-2 py-1.5">
+            <p className={cn('text-lg font-semibold leading-none', tone)}>{n}</p>
+            <p className="text-2xs text-fg-3 mt-1">{label}</p>
           </div>
         ))}
-        <div className="rounded-lg bg-[var(--s3)] px-2 py-1.5">
+        <div className="rounded-lg bg-subtle px-2 py-1.5">
           {/* Total quoted, not won: won/lost is only tracked once someone marks
               it in the CRM, so a zero here means unmarked, not lost. */}
-          <p className="text-[14px] font-semibold leading-none text-[var(--t1)]">{fmtMoney(totals.value)}</p>
-          <p className="text-[9.5px] text-[var(--t3)] mt-1">Quoted</p>
+          <p className="text-lg font-semibold leading-none text-fg">{fmtMoney(totals.value)}</p>
+          <p className="text-2xs text-fg-3 mt-1">Quoted</p>
         </div>
       </div>
 
@@ -407,7 +410,7 @@ function CustomerHistoryPanel({ senderEmail, senderName, toast }: {
         <div className="flex flex-wrap gap-1">
           {data.projects.map(p => (
             <span key={p.name}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-[var(--s3)] text-[var(--t3)] max-w-[200px]">
+              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-2xs bg-subtle text-fg-3 max-w-48">
               <span className="truncate">{p.name}</span><span className="opacity-60 shrink-0">{p.count}</span>
             </span>
           ))}
@@ -418,33 +421,33 @@ function CustomerHistoryPanel({ senderEmail, senderName, toast }: {
       {data.quotes.length > 0 ? (
         <div className="space-y-0.5">
           {data.quotes.map((q, i) => (
-            <div key={i} className="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-[var(--s3)] transition-colors">
-              {q.state === 'won'  ? <Trophy className="w-3 h-3 shrink-0 text-emerald-500" />
-               : q.state === 'lost' ? <CircleSlash className="w-3 h-3 shrink-0 text-red-400" />
-               : <span className="w-3 h-3 shrink-0 rounded-full ring-1 ring-inset ring-[var(--line-2)]" />}
+            <div key={i} className="flex items-center gap-2 px-1.5 py-1 rounded-md hover:bg-subtle transition-colors">
+              {q.state === 'won'  ? <Trophy className="w-3 h-3 shrink-0 text-ok" />
+               : q.state === 'lost' ? <CircleSlash className="w-3 h-3 shrink-0 text-err" />
+               : <span className="w-3 h-3 shrink-0 rounded-full ring-1 ring-inset ring-line-2" />}
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] text-[var(--t1)] truncate">
+                <p className="text-xs text-fg truncate">
                   {q.account || q.quoteName || q.title || q.sfId || 'Untitled quote'}
                 </p>
-                <p className="text-[9.5px] text-[var(--t3)] truncate">
+                <p className="text-2xs text-fg-3 truncate">
                   {q.arrivedOn ? fmtDate(q.arrivedOn) : '—'}
                   {q.salesman ? ` · ${q.salesman}` : ''}
                   {q.status ? ` · ${q.status}` : ''}
                 </p>
               </div>
-              <span className="text-[10.5px] font-medium text-[var(--t2)] shrink-0 num">
+              <span className="text-2xs font-medium text-fg-2 shrink-0 num">
                 {q.price ? fmtMoney(q.price) : '—'}
               </span>
             </div>
           ))}
           {totals.count > data.quotes.length && (
-            <p className="text-[10px] text-[var(--t3)] px-1.5 pt-1">
+            <p className="text-2xs text-fg-3 px-1.5 pt-1">
               Showing the {data.quotes.length} most recent of {totals.count}.
             </p>
           )}
         </div>
       ) : (
-        <p className="text-[11px] text-[var(--t3)] px-1 py-2">No quotes synced against this customer yet.</p>
+        <p className="text-xs text-fg-3 px-1 py-2">No quotes synced against this customer yet.</p>
       )}
     </div>
   );
@@ -520,28 +523,27 @@ function SnippetPicker({ onInsert, toast }: {
   return (
     <div className="relative" ref={boxRef}>
       <button onClick={() => setOpen(o => !o)}
-        className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+        className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-medium ring-1 ring-inset transition-colors',
           open
-            ? 'bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-300 ring-sky-300 dark:ring-sky-600'
-            : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]')}>
+            ? 'bg-accent-soft text-accent-text ring-accent-line '
+            : 'text-fg-3 ring-line-2 hover:bg-subtle')}>
         <BookMarked className="w-3 h-3" />Snippets
       </button>
 
       {open && (
-        <div className="absolute z-30 bottom-full mb-1.5 left-0 w-[380px] max-w-[86vw] rounded-xl bg-[var(--s1)] ring-1 ring-[var(--line-2)] shadow-xl p-2">
+        <div className="absolute z-30 bottom-full mb-1.5 left-0 w-96 max-w-[86vw] rounded-xl bg-surface ring-1 ring-line-2 shadow-float p-2">
           {editing ? (
             <div className="space-y-1.5">
               <input autoFocus value={editing.title} onChange={e => setEditing({ ...editing, title: e.target.value })}
                 placeholder="Title — e.g. Standard lead time"
-                className="w-full text-[12px] bg-[var(--s3)] rounded-md px-2.5 py-1.5 ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-sky-400 text-[var(--t1)] placeholder:text-[var(--t3)]" />
+                className="w-full text-sm bg-subtle rounded-md px-2.5 py-1.5 ring-1 ring-inset ring-line-2 focus:outline-none focus:ring-accent-line text-fg placeholder:text-fg-3" />
               <textarea value={editing.body} onChange={e => setEditing({ ...editing, body: e.target.value })}
                 rows={5} placeholder="The exact wording to insert…"
-                className="w-full text-[12px] bg-[var(--s3)] rounded-md px-2.5 py-1.5 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-sky-400 text-[var(--t1)] placeholder:text-[var(--t3)] leading-relaxed" />
+                className="w-full text-sm bg-subtle rounded-md px-2.5 py-1.5 ring-1 ring-inset ring-line-2 resize-none focus:outline-none focus:ring-accent-line text-fg placeholder:text-fg-3 leading-relaxed" />
               <div className="flex items-center gap-1.5">
                 <button onClick={save}
-                  className="h-6 px-2.5 rounded-md text-[11px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90">Save</button>
-                <button onClick={() => setEditing(null)}
-                  className="h-6 px-2.5 rounded-md text-[11px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)]">Cancel</button>
+                  className="h-6 px-2.5 rounded-md text-xs font-semibold bg-fg text-page hover:opacity-90">Save</button>
+                <UiButton tone="secondary" size="xs" onClick={() => setEditing(null)}>Cancel</UiButton>
               </div>
             </div>
           ) : (
@@ -549,36 +551,33 @@ function SnippetPicker({ onInsert, toast }: {
               <div className="flex items-center gap-1.5 mb-1.5">
                 <input value={filter} onChange={e => setFilter(e.target.value)}
                   placeholder="Filter snippets…"
-                  className="flex-1 text-[11.5px] bg-[var(--s3)] rounded-md px-2 py-1 ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-sky-400 text-[var(--t1)] placeholder:text-[var(--t3)]" />
-                <button onClick={() => setEditing({ title: '', body: '' })} title="New snippet"
-                  className="shrink-0 h-6 w-6 rounded-md ring-1 ring-inset ring-[var(--line-2)] text-[var(--t3)] hover:bg-[var(--s3)] flex items-center justify-center">
-                  <Plus className="w-3 h-3" />
-                </button>
+                  className="flex-1 text-xs bg-subtle rounded-md px-2 py-1 ring-1 ring-inset ring-line-2 focus:outline-none focus:ring-accent-line text-fg placeholder:text-fg-3" />
+                <UiIconButton icon={Plus} label="New snippet" tone="secondary" size="xs" className="shrink-0" onClick={() => setEditing({ title: '', body: '' })} />
               </div>
 
-              <div className="max-h-[260px] overflow-y-auto -mx-0.5 px-0.5">
-                {loading && <p className="text-[11px] text-[var(--t3)] px-1 py-2">Loading…</p>}
+              <div className="max-h-64 overflow-y-auto -mx-0.5 px-0.5">
+                {loading && <p className="text-xs text-fg-3 px-1 py-2">Loading…</p>}
                 {!loading && shown.length === 0 && (
-                  <p className="text-[11px] text-[var(--t3)] px-1 py-3 leading-relaxed">
+                  <p className="text-xs text-fg-3 px-1 py-3 leading-relaxed">
                     {items.length === 0
                       ? 'No snippets yet. Save the sentences you retype — lead times, commissioning terms, the questions you always ask back.'
                       : 'Nothing matches that filter.'}
                   </p>
                 )}
                 {shown.map(s => (
-                  <div key={s.id} className="group rounded-lg hover:bg-[var(--s3)] transition-colors">
+                  <div key={s.id} className="group rounded-lg hover:bg-subtle transition-colors">
                     <button onClick={() => insert(s)} className="w-full text-left px-2 py-1.5">
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[11.5px] font-semibold text-[var(--t1)] truncate flex-1">{s.title}</span>
-                        {s.useCount > 0 && <span className="text-[9.5px] text-[var(--t3)] shrink-0">{s.useCount}×</span>}
+                        <span className="text-xs font-semibold text-fg truncate flex-1">{s.title}</span>
+                        {s.useCount > 0 && <span className="text-2xs text-fg-3 shrink-0">{s.useCount}×</span>}
                       </div>
-                      <p className="text-[10.5px] text-[var(--t3)] line-clamp-2 leading-snug mt-0.5">{s.body}</p>
+                      <p className="text-2xs text-fg-3 line-clamp-2 leading-snug mt-0.5">{s.body}</p>
                     </button>
                     <div className="flex items-center gap-1 px-2 pb-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button onClick={() => setEditing({ id: s.id, title: s.title, body: s.body })}
-                        className="text-[10px] text-[var(--t3)] hover:text-[var(--t1)]">Edit</button>
+                        className="text-2xs text-fg-3 hover:text-fg">Edit</button>
                       <button onClick={() => remove(s)}
-                        className="text-[10px] text-red-500 hover:text-red-600">Delete</button>
+                        className="text-2xs text-err hover:text-err">Delete</button>
                     </div>
                   </div>
                 ))}
@@ -599,7 +598,7 @@ function ImageLightbox({ src, name, onClose }: { src: string; name: string; onCl
   }, [onClose]);
   return (
     <div
-      className="fixed inset-0 z-[9999] bg-black/85 flex items-center justify-center p-6 cursor-zoom-out"
+      className="fixed inset-0 z-modal bg-overlay flex items-center justify-center p-6 cursor-zoom-out"
       onClick={onClose}>
       <div
         className="relative max-w-[90vw] max-h-[90vh] cursor-default"
@@ -607,15 +606,11 @@ function ImageLightbox({ src, name, onClose }: { src: string; name: string; onCl
         <img
           src={src}
           alt={name}
-          className="block max-w-[88vw] max-h-[85vh] rounded-xl shadow-2xl object-contain"
+          className="block max-w-[88vw] max-h-[85vh] rounded-xl object-contain"
         />
         <div className="absolute top-2 right-2 flex items-center gap-2">
-          <span className="text-white/80 text-[11px] bg-black/50 px-2 py-0.5 rounded-md truncate max-w-[260px]">{name}</span>
-          <button aria-label="Close image"
-            onClick={onClose}
-            className="w-7 h-7 rounded-full bg-black/50 hover:bg-black/80 text-white flex items-center justify-center transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+          <span className="text-on-accent text-xs bg-overlay px-2 py-0.5 rounded-md truncate max-w-64">{name}</span>
+          <UiIconButton icon={X} label="Close image" size="sm" onClick={onClose} />
         </div>
       </div>
     </div>
@@ -626,9 +621,11 @@ function ImageLightbox({ src, name, onClose }: { src: string; name: string; onCl
 function wrapEmailHtml(html: string): string {
   const t = html.trim();
   const dark = typeof document !== 'undefined' && document.documentElement.classList.contains('dark');
-  const bg   = dark ? '#1a1a1f' : '#fff';
-  const fg   = dark ? '#e6e6ee' : '#1f1f1f';
-  const link = dark ? '#8ab4ff' : '#0563C1';
+  // The frame is a separate document: CSS variables don't cross into it, so the
+  // live token values are resolved here and written in as literals.
+  const bg   = tokenValue('--s1');
+  const fg   = tokenValue('--t1');
+  const link = tokenValue('--accent-text');
   const injectStyle = [
     `<style>`,
     `* { max-width: 100%; box-sizing: border-box; }`,
@@ -891,10 +888,10 @@ function FilterChips<V extends string>({ value, onChange, options, title }: {
       {options.map(o => (
         <button key={o.id} onClick={() => onChange(o.id)} title={o.hint}
           className={cn(
-            'h-[22px] px-2 rounded-[7px] text-[10.5px] font-medium transition-colors',
+            'h-5 px-2 rounded-panel text-2xs font-medium transition-colors',
             value === o.id
-              ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]'
-              : 'text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+              ? 'bg-accent-soft text-accent-text ring-1 ring-inset ring-accent-line'
+              : 'text-fg-3 ring-1 ring-inset ring-line-2 hover:bg-subtle hover:text-fg',
           )}>{o.label}</button>
       ))}
     </div>
@@ -904,7 +901,7 @@ function FilterChips<V extends string>({ value, onChange, options, title }: {
 function FilterRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-2">
-      <span className="w-[42px] shrink-0 pt-[4px] text-[9px] font-semibold uppercase tracking-[0.06em] text-[var(--t4)]">{label}</span>
+      <span className="w-10 shrink-0 pt-1 text-2xs font-semibold uppercase tracking-[0.06em] text-fg-4">{label}</span>
       <div className="flex-1 min-w-0">{children}</div>
     </div>
   );
@@ -920,7 +917,7 @@ function SearchFilterPanel({ filters, setFilters, matchMode, setMatchMode, facet
   pillCount: number;
 }) {
   return (
-    <div className="shrink-0 border-b border-[var(--line)] bg-[var(--s2)] px-2.5 py-2.5 flex flex-col gap-2">
+    <div className="shrink-0 border-b border-line bg-raised px-2.5 py-2.5 flex flex-col gap-2">
 
       <FilterRow label="Match">
         {/* Short labels: at this width "part of a word" wraps the row on its
@@ -941,11 +938,11 @@ function SearchFilterPanel({ filters, setFilters, matchMode, setMatchMode, facet
             onChange={e => setFilters({ from: e.target.value })}
             placeholder={facets?.senders?.length ? `Any of ${facets.senders.length}+ senders` : 'Any sender'}
             title="Part of a sender's name or address. The list offers who the index has actually seen."
-            className="flex-1 min-w-0 h-[24px] px-2 rounded-[7px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[11px] text-[var(--t2)] placeholder:text-[var(--t4)] outline-none focus:ring-violet-400/60"
+            className="flex-1 min-w-0 h-6 px-2 rounded-panel bg-surface ring-1 ring-inset ring-line-2 text-xs text-fg-2 placeholder:text-fg-4 outline-none focus:ring-ai-line"
           />
           {filters.from && (
             <button aria-label="Clear the sender filter" onClick={() => setFilters({ from: '' })}
-              className="shrink-0 text-[var(--t3)] hover:text-[var(--t1)]"><X className="w-3 h-3" /></button>
+              className="shrink-0 text-fg-3 hover:text-fg"><X className="w-3 h-3" /></button>
           )}
           <datalist id="inbox-sender-facets">
             {(facets?.senders || []).map(s => (
@@ -963,12 +960,12 @@ function SearchFilterPanel({ filters, setFilters, matchMode, setMatchMode, facet
               <input type="date" value={filters.since} max={filters.until || undefined}
                 onChange={e => setFilters({ since: e.target.value })}
                 title={facets?.oldest ? `The index reaches back to ${facets.oldest}` : 'Start of the range'}
-                className="flex-1 min-w-0 h-[24px] px-1.5 rounded-[7px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[10.5px] text-[var(--t2)] outline-none focus:ring-violet-400/60" />
-              <span className="text-[10px] text-[var(--t4)]">→</span>
+                className="flex-1 min-w-0 h-6 px-1.5 rounded-panel bg-surface ring-1 ring-inset ring-line-2 text-2xs text-fg-2 outline-none focus:ring-ai-line" />
+              <span className="text-2xs text-fg-4">→</span>
               <input type="date" value={filters.until} min={filters.since || undefined}
                 onChange={e => setFilters({ until: e.target.value })}
                 title={facets?.newest ? `The newest indexed email is from ${facets.newest}` : 'End of the range'}
-                className="flex-1 min-w-0 h-[24px] px-1.5 rounded-[7px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[10.5px] text-[var(--t2)] outline-none focus:ring-violet-400/60" />
+                className="flex-1 min-w-0 h-6 px-1.5 rounded-panel bg-surface ring-1 ring-inset ring-line-2 text-2xs text-fg-2 outline-none focus:ring-ai-line" />
             </div>
           )}
         </div>
@@ -993,13 +990,13 @@ function SearchFilterPanel({ filters, setFilters, matchMode, setMatchMode, facet
         <FilterChips value={filters.read} onChange={v => setFilters({ read: v })} options={READ_OPTIONS} />
       </FilterRow>
 
-      <div className="flex items-center gap-2 pt-1.5 border-t border-[var(--line-2)]">
-        <span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-[var(--t4)]">Sort</span>
+      <div className="flex items-center gap-2 pt-1.5 border-t border-line-2">
+        <span className="text-2xs font-semibold uppercase tracking-[0.06em] text-fg-4">Sort</span>
         <FilterChips value={filters.sort} onChange={v => setFilters({ sort: v })}
           options={[{ id: 'new' as const, label: 'Newest' }, { id: 'old' as const, label: 'Oldest' }]} />
         <div className="flex-1" />
         <button onClick={onReset} disabled={!pillCount}
-          className="text-[10.5px] font-medium text-[var(--t3)] hover:text-[var(--t1)] disabled:opacity-35 disabled:hover:text-[var(--t3)]">
+          className="text-2xs font-medium text-fg-3 hover:text-fg disabled:opacity-35 disabled:hover:text-fg-3">
           Reset {pillCount ? `(${pillCount})` : ''}
         </button>
       </div>
@@ -1026,7 +1023,7 @@ function Highlight({ text, terms, mode = 'part' }: { text: string; terms: string
   return (
     <>
       {parts.map((p, i) => (i % 2 === 1
-        ? <mark key={i} className="bg-amber-200/70 dark:bg-amber-400/30 text-inherit rounded-[2px] px-[1px]">{p}</mark>
+        ? <mark key={i} className="bg-warn-soft text-inherit rounded-control px-px">{p}</mark>
         : <React.Fragment key={i}>{p}</React.Fragment>))}
     </>
   );
@@ -1040,9 +1037,9 @@ function MatchTrail({ matches, terms, mode }: { matches?: SearchMatch[]; terms: 
   return (
     <div className="flex flex-col gap-0.5 mt-0.5">
       {matches.map((m, i) => (
-        <div key={i} className="flex items-start gap-1 text-[9.5px] leading-[1.35] min-w-0">
-          <span className="shrink-0 px-1 rounded-[3px] bg-[var(--s3)] text-[var(--t4)] font-medium uppercase tracking-wide">{m.field}</span>
-          <span className="flex-1 min-w-0 truncate text-[var(--t3)]" title={m.text}>
+        <div key={i} className="flex items-start gap-1 text-2xs leading-[1.35] min-w-0">
+          <span className="shrink-0 px-1 rounded-control bg-subtle text-fg-4 font-medium uppercase tracking-wide">{m.field}</span>
+          <span className="flex-1 min-w-0 truncate text-fg-3" title={m.text}>
             <Highlight text={m.text} terms={terms} mode={mode} />
           </span>
         </div>
@@ -1056,7 +1053,7 @@ function MatchTrail({ matches, terms, mode }: { matches?: SearchMatch[]; terms: 
 function PlainBody({ text, zoom = 1 }: { text: string; zoom?: number }) {
   const parts = (text || '(no body)').split(/(https?:\/\/[^\s<>()]+|www\.[^\s<>()]+|[\w.+-]+@[\w-]+\.[\w.]+)/g);
   return (
-    <pre className="px-7 py-5 text-[var(--t1)] leading-relaxed whitespace-pre-wrap font-sans" style={{ fontSize: 14.5 * zoom }}>
+    <pre className="px-7 py-5 text-fg leading-relaxed whitespace-pre-wrap font-sans" style={{ fontSize: 14.5 * zoom }}>
       {parts.map((p, i) => {
         if (i % 2 === 0) return p;
         const url = p.includes('@') && !/^https?:/i.test(p) ? 'mailto:' + p : bodyLinkUrl(p);
@@ -1064,7 +1061,7 @@ function PlainBody({ text, zoom = 1 }: { text: string; zoom?: number }) {
         return (
           <a key={i} href={url}
             onClick={e => { e.preventDefault(); void openExternal(url); }}
-            className="text-[var(--accent-text)] hover:underline break-all">{p}</a>
+            className="text-accent-text hover:underline break-all">{p}</a>
         );
       })}
     </pre>
@@ -1354,7 +1351,7 @@ function pickCBUSystem(kva: number | null, phase: '1PH' | '3PH' | null): string 
 function CBUSystemSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <select value={value} onChange={e => onChange(e.target.value)}
-      className="flex-1 h-7 px-2 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] focus:outline-none focus:ring-[var(--accent-line)]">
+      className="flex-1 h-7 px-2 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg focus:outline-none focus:ring-accent-line">
       <optgroup label="Single Phase">
         {CBU_SYSTEMS.filter(s => s.startsWith('1PH')).map(s => <option key={s} value={s}>{s}</option>)}
       </optgroup>
@@ -1421,13 +1418,13 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2">
-        <Battery className="w-3.5 h-3.5 text-blue-500 shrink-0" />
-        <p className="text-[11.5px] font-semibold text-[var(--t1)] flex-1">CBU Tech Sheet Generator</p>
+        <Battery className="w-3.5 h-3.5 text-accent-text shrink-0" />
+        <p className="text-xs font-semibold text-fg flex-1">CBU Tech Sheet Generator</p>
         {hints.detectedSystems.length > 0 && (
           // Show what was READ, not just what was picked — a wrong snap is only
           // obvious next to the text it came from.
           <span title={hints.detectedSystems.map(h => `"${h.raw}" → ${h.system}`).join('\n')}
-            className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 ring-1 ring-inset ring-blue-200 dark:ring-blue-700">
+            className="px-2 py-0.5 rounded-full text-2xs font-semibold bg-accent-soft text-accent-text ring-1 ring-inset ring-accent-line ">
             read {hints.detectedSystems.map(h => h.raw).join(' + ')}
           </span>
         )}
@@ -1436,21 +1433,17 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
       {/* Systems list */}
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
-          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide flex-1">Systems</label>
-          <button onClick={addSystem}
-            className="inline-flex items-center gap-1 h-5 px-2 rounded text-[10px] font-medium text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
+          <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide flex-1">Systems</label>
+          <UiButton tone="ghost" size="xs" onClick={addSystem}>
             <Plus className="w-2.5 h-2.5" />Add
-          </button>
+          </UiButton>
         </div>
         {systems.map((sys, i) => (
           <div key={i} className="flex items-center gap-1.5">
-            <span className="text-[10px] text-[var(--t3)] w-4 text-right shrink-0">{i + 1}</span>
+            <span className="text-2xs text-fg-3 w-4 text-right shrink-0">{i + 1}</span>
             <CBUSystemSelect value={sys} onChange={v => updateSystem(i, v)} />
             {systems.length > 1 && (
-              <button aria-label="Remove this system" onClick={() => removeSystem(i)}
-                className="w-5 h-5 rounded flex items-center justify-center text-[var(--t4)] hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors shrink-0">
-                <X className="w-3 h-3" />
-              </button>
+              <UiIconButton icon={X} label="Remove this system" tone="danger" size="xs" className="shrink-0" onClick={() => removeSystem(i)} />
             )}
           </div>
         ))}
@@ -1458,19 +1451,19 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
 
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Project Name</label>
+          <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Project Name</label>
           <input value={project} onChange={e => setProject(e.target.value)} placeholder="Project name…"
-            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-[var(--accent-line)]" />
+            className="mt-1 w-full h-7 px-2.5 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-accent-line" />
         </div>
         <div>
-          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Quote Ref</label>
+          <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Quote Ref</label>
           <input value={quote} onChange={e => setQuote(e.target.value)} placeholder="Q-XXXX…"
-            className="mt-1 w-full h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-[var(--accent-line)]" />
+            className="mt-1 w-full h-7 px-2.5 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-accent-line" />
         </div>
         <div className="col-span-2">
-          <label className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Sales Engineer</label>
+          <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Sales Engineer</label>
           <select value={smIdx ?? ''} onChange={e => setSmIdx(e.target.value === '' ? null : Number(e.target.value))}
-            className="mt-1 w-full h-7 px-2 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] focus:outline-none focus:ring-[var(--accent-line)]">
+            className="mt-1 w-full h-7 px-2 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg focus:outline-none focus:ring-accent-line">
             <option value="">Select salesman…</option>
             {CBU_SALESMEN.length === 0 && <option value="" disabled>No salesmen configured (config.json)</option>}
             {CBU_SALESMEN.map((s, i) => <option key={i} value={i}>{s.name}</option>)}
@@ -1479,16 +1472,14 @@ function InlineCBUGenerator({ emailSubject, emailBody, toast }: { emailSubject: 
       </div>
 
       <div className="flex items-center gap-2">
-        <button onClick={generate} disabled={!ok || loading}
-          className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-blue-600 hover:bg-blue-700 text-white disabled:opacity-50 transition-colors">
+        <UiButton tone="primary" onClick={generate} disabled={!ok || loading}>
           {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Battery className="w-3 h-3" />}
           Generate {systems.length > 1 ? `${systems.length} Sheets` : 'Tech Sheet'}
-        </button>
+        </UiButton>
         {dlId && (
-          <button onClick={download}
-            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-emerald-600 hover:bg-emerald-700 text-white transition-colors">
+          <UiButton tone="ghost" onClick={download}>
             <Download className="w-3 h-3" />Download PDF
-          </button>
+          </UiButton>
         )}
       </div>
     </div>
@@ -1895,8 +1886,8 @@ function InlineELPricer({
       className={cn(
         'rounded-xl ring-1 ring-inset p-4 space-y-3 transition-colors',
         dragOver
-          ? 'bg-amber-50/70 dark:bg-amber-900/20 ring-amber-400 dark:ring-amber-500'
-          : 'bg-[var(--s1)] ring-amber-200/70 dark:ring-amber-700/30',
+          ? 'bg-warn-soft ring-warn-line '
+          : 'bg-surface ring-warn-line ',
       )}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -1905,30 +1896,26 @@ function InlineELPricer({
       {/* Header — one line, and the two controls that were missing from it:
           pick every attachment at once, and take the lot to the full tab. */}
       <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center shrink-0">
-          <Zap className="w-3 h-3 text-amber-500" />
+        <div className="w-6 h-6 flex items-center justify-center shrink-0 text-warn">
+          <Zap className="w-3 h-3 text-warn" />
         </div>
-        <p className="text-[12px] font-semibold text-[var(--t1)] shrink-0">EL Material Pricer</p>
+        <p className="text-sm font-semibold text-fg shrink-0">EL Material Pricer</p>
         {pdfSource && (
-          <span className="text-[10px] text-[var(--accent-text)] bg-[var(--accent-soft)] px-2 py-0.5 rounded-full ring-1 ring-inset ring-[var(--accent-line)] truncate min-w-0">{pdfSource}</span>
+          <span className="text-2xs text-accent-text bg-accent-soft px-2 py-0.5 rounded-full ring-1 ring-inset ring-accent-line truncate min-w-0">{pdfSource}</span>
         )}
         <div className="flex-1" />
         {sources.length > 1 && (
           <button
             onClick={() => setPicked(p => p.size === sources.length ? new Set() : new Set(sources.map(s => s.key)))}
             title={picked.size === sources.length ? 'Clear the selection' : 'Select every attachment'}
-            className="shrink-0 text-[10.5px] font-medium text-[var(--t3)] hover:text-[var(--accent-text)] transition-colors">
+            className="shrink-0 text-2xs font-medium text-fg-3 hover:text-accent-text transition-colors">
             {picked.size === sources.length ? 'Select none' : 'Select all'}
           </button>
         )}
-        <button
-          onClick={openInPricerTab}
-          disabled={handingOff}
-          title="Open the full EL Pricer tab with this email's list and attachments"
-          className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+        <UiButton tone="secondary" size="xs" className="shrink-0" onClick={openInPricerTab} disabled={handingOff} hint="Open the full EL Pricer tab with this email's list and attachments">
           {handingOff ? <Loader2 className="w-3 h-3 animate-spin" /> : <ExternalLink className="w-3 h-3" />}
           Open in EL Pricer
-        </button>
+        </UiButton>
       </div>
 
       {/* Attachment chips — PDF, images and Excel, from THIS email and from any
@@ -1963,21 +1950,21 @@ function InlineELPricer({
                   ? `${a.name} — click to select, double-click to price on its own`
                   : `${a.name} — from the email by ${src.sender}`}
                 className={cn(
-                  'inline-flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset shrink-0 disabled:opacity-50 transition-colors cursor-pointer',
+                  'inline-flex items-center gap-1.5 h-6 pl-2 pr-2.5 rounded-md text-2xs font-medium ring-1 ring-inset shrink-0 disabled:opacity-50 transition-colors cursor-pointer',
                   on
-                    ? 'bg-amber-500 text-white ring-amber-500'
+                    ? 'bg-warn text-on-status ring-warn-line'
                     : xls
-                      ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-700/30 hover:bg-green-100 dark:hover:bg-green-900/40'
+                      ? 'bg-ok-soft text-ok ring-ok-line hover:bg-ok-soft '
                       : img
-                        ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-700/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
-                        : 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)]',
+                        ? 'bg-ok-soft text-ok ring-ok-line hover:bg-ok-soft '
+                        : 'bg-accent-soft text-accent-text ring-accent-line hover:bg-accent-soft',
                 )}>
                 {on
                   ? <CheckCircle2 className="w-3 h-3 shrink-0" />
                   : xls ? <FileSpreadsheet className="w-3 h-3 shrink-0" />
                     : img ? <ImageIcon className="w-3 h-3 shrink-0" />
                       : <FileText className="w-3 h-3 shrink-0" />}
-                <span className="truncate max-w-[150px]">{a.name}</span>
+                <span className="truncate max-w-36">{a.name}</span>
                 {/* Whose email this came out of — without it a pooled run is a
                     row of filenames with no way to tell them apart. */}
                 {!src.own && <span className="opacity-60 shrink-0">· {src.sender}</span>}
@@ -1995,12 +1982,12 @@ function InlineELPricer({
         <button
           onClick={openInPricerTab}
           disabled={handingOff || loading}
-          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left ring-1 ring-inset ring-[var(--line-2)] bg-[var(--s2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
-          <Mail className="w-3 h-3 shrink-0 text-[var(--t3)]" />
-          <span className="flex-1 min-w-0 text-[10.5px] text-[var(--t2)] truncate">
+          className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left ring-1 ring-inset ring-line-2 bg-raised hover:bg-subtle disabled:opacity-50 transition-colors">
+          <Mail className="w-3 h-3 shrink-0 text-fg-3" />
+          <span className="flex-1 min-w-0 text-2xs text-fg-2 truncate">
             {plural(related.length, 'more email')} in this enquiry — price them together
           </span>
-          <ExternalLink className="w-3 h-3 shrink-0 text-[var(--t3)]" />
+          <ExternalLink className="w-3 h-3 shrink-0 text-fg-3" />
         </button>
       )}
 
@@ -2009,51 +1996,44 @@ function InlineELPricer({
           run threw the last result away. */}
       {picked.size > 0 && (
         <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={priceSelected}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-50 transition-colors">
+          <UiButton tone="ghost" onClick={priceSelected} disabled={loading}>
             {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
             {loading ? 'Pricing…' : (() => {
               const emails = new Set(sources.filter(x => picked.has(x.key)).map(x => x.entryId)).size;
               return `Price ${plural(picked.size, 'file')} together`
                    + (emails > 1 ? ` · ${emails} emails` : '');
             })()}
-          </button>
+          </UiButton>
           {loading ? (
-            <button
-              onClick={cancelRun}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-medium text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+            <UiButton tone="secondary" onClick={cancelRun}>
               <X className="w-3 h-3" /> Cancel
-            </button>
+            </UiButton>
           ) : (
             <button
               onClick={() => setPicked(new Set())}
-              className="text-[10.5px] text-[var(--t3)] hover:text-[var(--t1)] transition-colors">
+              className="text-2xs text-fg-3 hover:text-fg transition-colors">
               Clear
             </button>
           )}
-          <span className="text-[10px] text-[var(--t3)]">one list, one total</span>
+          <span className="text-2xs text-fg-3">one list, one total</span>
         </div>
       )}
 
       {/* Drop zone highlight */}
       {dragOver && (
-        <div className="flex items-center justify-center h-10 rounded-lg border-2 border-dashed border-amber-400 dark:border-amber-500 text-[11.5px] font-medium text-amber-600 dark:text-amber-400">
+        <div className="flex items-center justify-center h-10 rounded-lg border-2 border-dashed border-warn-line text-xs font-medium text-warn ">
           Drop PDFs, images or Excel — as many as you like
         </div>
       )}
 
       {/* Loading state for PDF pricing */}
       {loading && pdfSource && (
-        <div className="flex items-center gap-2 text-[12px] text-amber-600 dark:text-amber-400 py-1">
+        <div className="flex items-center gap-2 text-sm text-warn py-1">
           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
           <span className="flex-1 min-w-0 truncate">Extracting items from {pdfSource} via AI…</span>
-          <button
-            onClick={cancelRun}
-            className="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+          <UiButton tone="secondary" size="xs" className="shrink-0" onClick={cancelRun}>
             <X className="w-3 h-3" /> Cancel
-          </button>
+          </UiButton>
         </div>
       )}
 
@@ -2068,12 +2048,12 @@ function InlineELPricer({
             onChange={e => setListText(e.target.value)}
             placeholder={`Paste material list here…\nMP2ES230CGS, 6\nNXL100, 12`}
             rows={3}
-            className="w-full rounded-lg bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] p-2.5 text-[11.5px] font-mono focus:outline-none focus:ring-[var(--accent-line)] resize-none placeholder:text-[var(--t4)]"
+            className="w-full rounded-lg bg-surface ring-1 ring-inset ring-line-2 p-2.5 text-xs mono focus:outline-none focus:ring-accent-line resize-none placeholder:text-fg-4"
           />
         ) : (
           <button
             onClick={() => setShowList(true)}
-            className="w-full text-left px-2.5 py-1.5 rounded-lg text-[10.5px] text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+            className="w-full text-left px-2.5 py-1.5 rounded-lg text-2xs text-fg-3 ring-1 ring-inset ring-line-2 hover:bg-subtle transition-colors">
             {listText.trim()
               ? `${plural(listText.trim().split('\n').length, 'line')} detected in the email — click to edit or price as text`
               : 'Paste a material list instead'}
@@ -2084,38 +2064,30 @@ function InlineELPricer({
       {/* Action row */}
       <div className="flex items-center gap-2 flex-wrap">
         {!pdfSource && (showList || sources.length === 0) && (
-          <button
-            onClick={run} disabled={loading || !listText.trim()}
-            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-amber-500 hover:bg-amber-600 text-white disabled:opacity-50 transition-colors">
+          <UiButton tone="ghost" onClick={run} disabled={loading || !listText.trim()}>
             {loading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
             {loading ? 'Pricing…' : 'Get NTP Prices'}
-          </button>
+          </UiButton>
         )}
         {pdfSource && !loading && (
-          <button
-            onClick={() => { setResult(null); setPdfSource(null); }}
-            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+          <UiButton tone="secondary" onClick={() => { setResult(null); setPdfSource(null); }}>
             ← Manual input
-          </button>
+          </UiButton>
         )}
         {result && matched.length > 0 && (
           <>
-            <button
-              onClick={addToSchedule}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors">
+            <UiButton tone="ghost" onClick={addToSchedule}>
               <Plus className="w-3 h-3" />
               Add to Schedule
-            </button>
-            <button
-              onClick={copySchedule}
-              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-medium ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
-              {copied ? <CheckCircle2 className="w-3 h-3 text-emerald-500" /> : <FileText className="w-3 h-3" />}
+            </UiButton>
+            <UiButton tone="secondary" onClick={copySchedule}>
+              {copied ? <CheckCircle2 className="w-3 h-3 text-ok" /> : <FileText className="w-3 h-3" />}
               {copied ? 'Copied!' : 'Copy result'}
-            </button>
+            </UiButton>
           </>
         )}
         {result && (
-          <span className="text-[10.5px] text-[var(--t3)]">
+          <span className="text-2xs text-fg-3">
             {matched.length} matched{unmatched.length > 0 ? ` · ${unmatched.length} not found` : ''}
           </span>
         )}
@@ -2124,53 +2096,50 @@ function InlineELPricer({
       {/* Candidate suggestions (descriptive search) */}
       {result && result.candidates && result.candidates.length > 0 && (
         <div className="space-y-1.5">
-          <p className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">
+          <p className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">
             Suggested matches · pick to add
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {result.candidates.map((c, idx) => {
               const tone = c.confidence === 'high'
-                ? 'bg-emerald-50 dark:bg-emerald-900/20 ring-emerald-200 dark:ring-emerald-800/40'
+                ? 'bg-ok-soft ring-ok-line '
                 : c.confidence === 'low'
-                  ? 'bg-amber-50 dark:bg-amber-900/20 ring-amber-200 dark:ring-amber-800/40'
-                  : 'bg-[var(--s3)]/40 ring-[var(--line-2)]';
+                  ? 'bg-warn-soft ring-warn-line '
+                  : 'bg-subtle ring-line-2';
               return (
-                <div key={`${c.cat_no}-${idx}`} className={cn('rounded-lg ring-1 ring-inset p-2.5 text-[11px]', tone)}>
+                <div key={`${c.cat_no}-${idx}`} className={cn('rounded-lg ring-1 ring-inset p-2.5 text-xs', tone)}>
                   <div className="flex items-start gap-2">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-                        <span className="text-[9.5px] font-semibold uppercase tracking-wide text-[var(--t3)]">
+                        <span className="text-2xs font-semibold uppercase tracking-wide text-fg-3">
                           {c.confidence || 'med'}
                         </span>
                         {c.matched
-                          ? <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">in list</span>
-                          : <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--s3)] text-[var(--t2)]">not priced</span>}
+                          ? <span className="text-2xs px-1 py-0.5 rounded bg-ok-soft text-ok ">in list</span>
+                          : <span className="text-2xs px-1 py-0.5 rounded bg-subtle text-fg-2">not priced</span>}
                         {c.suggested_qty && c.suggested_qty > 1 && (
-                          <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent-text)]">qty {c.suggested_qty}</span>
+                          <span className="text-2xs px-1 py-0.5 rounded bg-accent-soft text-accent-text">qty {c.suggested_qty}</span>
                         )}
                       </div>
-                      <p className="font-mono text-[11.5px] font-semibold text-[var(--t1)] truncate">{c.cat_no}</p>
-                      {c.family && <p className="text-[10.5px] text-[var(--accent-text)] truncate">{c.family}</p>}
-                      {c.description && <p className="text-[10.5px] text-[var(--t2)] line-clamp-2">{c.description}</p>}
-                      {c.reasoning && <p className="text-[10px] text-[var(--t3)] italic mt-0.5 line-clamp-2">"{c.reasoning}"</p>}
+                      <p className="mono text-xs font-semibold text-fg truncate">{c.cat_no}</p>
+                      {c.family && <p className="text-2xs text-accent-text truncate">{c.family}</p>}
+                      {c.description && <p className="text-2xs text-fg-2 line-clamp-2">{c.description}</p>}
+                      {c.reasoning && <p className="text-2xs text-fg-3 italic mt-0.5 line-clamp-2">"{c.reasoning}"</p>}
                     </div>
                     {c.matched && c.ntp != null && (
                       <div className="text-right shrink-0">
-                        <p className="text-[9px] uppercase text-[var(--t3)]">NTP</p>
-                        <p className="text-[12.5px] font-semibold tabular-nums">{fmtGBP(c.ntp)}</p>
+                        <p className="text-2xs uppercase text-fg-3">NTP</p>
+                        <p className="text-sm font-semibold tabular-nums">{fmtGBP(c.ntp)}</p>
                       </div>
                     )}
                   </div>
                   <div className="flex gap-1.5 mt-1.5">
-                    <button
-                      onClick={() => pickCandidate(c)}
-                      disabled={!c.matched}
-                      className="inline-flex items-center gap-1 h-6 px-2 rounded text-[10.5px] font-semibold bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white transition-colors">
+                    <UiButton tone="ghost" size="xs" onClick={() => pickCandidate(c)} disabled={!c.matched}>
                       <Plus className="w-2.5 h-2.5" /> Add
-                    </button>
+                    </UiButton>
                     {c.source_url && (
                       <a href={c.source_url} target="_blank" rel="noreferrer"
-                         className="inline-flex items-center h-6 px-2 rounded text-[10.5px] text-[var(--accent-text)] hover:underline">
+                         className="inline-flex items-center h-6 px-2 rounded text-2xs text-accent-text hover:underline">
                         source ↗
                       </a>
                     )}
@@ -2184,10 +2153,10 @@ function InlineELPricer({
 
       {/* Results table */}
       {result && matched.length > 0 && (
-        <div className="overflow-x-auto rounded-lg ring-1 ring-inset ring-[var(--line)]">
-          <table className="w-full text-[11.5px]">
+        <div className="overflow-x-auto rounded-lg ring-1 ring-inset ring-line">
+          <table className="w-full text-xs">
             <thead>
-              <tr className="bg-[var(--s1)] text-[10px] text-[var(--t3)] font-semibold uppercase tracking-wide">
+              <tr className="bg-surface text-2xs text-fg-3 font-semibold uppercase tracking-wide">
                 <th className="px-3 py-1.5 text-left">Catalogue No</th>
                 <th className="px-3 py-1.5 text-left">Description</th>
                 <th className="px-3 py-1.5 text-right">Qty</th>
@@ -2196,21 +2165,21 @@ function InlineELPricer({
             </thead>
             <tbody>
               {matched.map((item, i) => (
-                <tr key={i} className="border-t border-[var(--line)]">
+                <tr key={i} className="border-t border-line">
                   <td className="px-3 py-1.5">
-                    <span className="font-mono font-semibold text-[var(--accent-text)]">{item.cat_no}</span>
+                    <span className="mono font-semibold text-accent-text">{item.cat_no}</span>
                     {item.original_input && item.original_input !== item.cat_no && (
-                      <span className="ml-1.5 text-[9.5px] text-amber-500 font-mono">← {item.original_input}</span>
+                      <span className="ml-1.5 text-2xs text-warn mono">← {item.original_input}</span>
                     )}
                     {item.search_note && /^[⚠]|range header/i.test(item.search_note) ? (
-                      <span className="ml-1.5 text-[9px] bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 px-1 py-0.5 rounded cursor-help" title={item.search_note}>⚠ verify</span>
+                      <span className="ml-1.5 text-2xs bg-warn-soft text-warn px-1 py-0.5 rounded cursor-help" title={item.search_note}>⚠ verify</span>
                     ) : item.search_note ? (
-                      <span className="ml-1.5 text-[9px] bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 px-1 py-0.5 rounded cursor-help" title={item.search_note}>Google</span>
+                      <span className="ml-1.5 text-2xs bg-ai-soft text-ai px-1 py-0.5 rounded cursor-help" title={item.search_note}>Google</span>
                     ) : null}
                   </td>
-                  <td className="px-3 py-1.5 text-[var(--t2)] max-w-[200px] truncate">{item.description}</td>
-                  <td className="px-3 py-1.5 text-right text-[var(--t2)]">{item.qty}</td>
-                  <td className="px-3 py-1.5 text-right font-mono text-[var(--t1)]">{fmtGBP(item.ntp)}</td>
+                  <td className="px-3 py-1.5 text-fg-2 max-w-48 truncate">{item.description}</td>
+                  <td className="px-3 py-1.5 text-right text-fg-2">{item.qty}</td>
+                  <td className="px-3 py-1.5 text-right mono text-fg">{fmtGBP(item.ntp)}</td>
                 </tr>
               ))}
             </tbody>
@@ -2220,30 +2189,30 @@ function InlineELPricer({
 
       {/* Unmatched items with closest matches */}
       {result && unmatched.length > 0 && (
-        <div className="rounded-lg ring-1 ring-inset ring-red-100 dark:ring-red-900/30 overflow-hidden">
-          <div className="px-3 py-1.5 bg-red-50 dark:bg-red-900/20 text-[10px] font-semibold text-red-600 dark:text-red-400 uppercase tracking-wide">
+        <div className="rounded-lg ring-1 ring-inset ring-err-line overflow-hidden">
+          <div className="px-3 py-1.5 bg-err-soft text-2xs font-semibold text-err uppercase tracking-wide">
             {unmatched.length} not found in price list
           </div>
           {unmatched.map((item, i) => (
-            <div key={i} className="border-t border-red-50 dark:border-red-900/20 px-3 py-2 space-y-1.5">
+            <div key={i} className="border-t border-err-line px-3 py-2 space-y-1.5">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-mono text-[11px] font-semibold text-red-700 dark:text-red-400">{item.cat_no}</span>
-                {item.description && <span className="text-[10.5px] text-[var(--t3)] truncate">{item.description}</span>}
+                <span className="mono text-xs font-semibold text-err ">{item.cat_no}</span>
+                {item.description && <span className="text-2xs text-fg-3 truncate">{item.description}</span>}
                 {item.status === 'Non-Eaton' && (
-                  <span className="text-[9px] bg-[var(--s3)] text-[var(--t3)] px-1.5 py-0.5 rounded">Non-Eaton</span>
+                  <span className="text-2xs bg-subtle text-fg-3 px-1.5 py-0.5 rounded">Non-Eaton</span>
                 )}
                 {item.search_note && (
-                  <span className="text-[9.5px] text-[var(--t3)] italic truncate max-w-[200px]">{item.search_note}</span>
+                  <span className="text-2xs text-fg-3 italic truncate max-w-48">{item.search_note}</span>
                 )}
               </div>
               {item.closest_matches && item.closest_matches.length > 0 && (
                 <div className="space-y-0.5">
-                  <p className="text-[9.5px] text-[var(--t3)] font-medium">Closest in price list:</p>
+                  <p className="text-2xs text-fg-3 font-medium">Closest in price list:</p>
                   {item.closest_matches.map((m, j) => (
-                    <div key={j} className="flex items-center gap-2 text-[10px]">
-                      <span className="font-mono text-[var(--accent-text)]">{m.cat_no}</span>
-                      <span className="text-[var(--t3)] truncate flex-1">{m.description}</span>
-                      {m.ntp > 0 && <span className="font-mono text-[var(--t2)] shrink-0">{fmtGBP(m.ntp)}</span>}
+                    <div key={j} className="flex items-center gap-2 text-2xs">
+                      <span className="mono text-accent-text">{m.cat_no}</span>
+                      <span className="text-fg-3 truncate flex-1">{m.description}</span>
+                      {m.ntp > 0 && <span className="mono text-fg-2 shrink-0">{fmtGBP(m.ntp)}</span>}
                     </div>
                   ))}
                 </div>
@@ -2255,34 +2224,30 @@ function InlineELPricer({
 
       {/* Accumulated schedule */}
       {schedule.length > 0 && (
-        <div className="rounded-lg ring-1 ring-inset ring-emerald-200 dark:ring-emerald-800/40 overflow-hidden">
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-900/20">
-            <p className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide flex-1">
+        <div className="rounded-lg ring-1 ring-inset ring-ok-line overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-ok-soft ">
+            <p className="text-2xs font-semibold text-ok uppercase tracking-wide flex-1">
               Schedule · {schedule.reduce((s, e) => s + e.items.length, 0)} items · {fmtGBP(schedule.reduce((s, e) => s + e.total_ntp, 0))} NTP
             </p>
-            <button
-              onClick={copyFullSchedule}
-              className="inline-flex items-center gap-1 h-5 px-2 rounded text-[10px] font-semibold bg-emerald-500 hover:bg-emerald-600 text-white transition-colors">
+            <UiButton tone="ghost" size="xs" onClick={copyFullSchedule}>
               {schedCopied ? <CheckCircle2 className="w-2.5 h-2.5" /> : <FileText className="w-2.5 h-2.5" />}
               {schedCopied ? 'Copied!' : 'Copy all'}
-            </button>
-            <button
-              onClick={clearSchedule}
-              className="h-5 px-1.5 rounded text-[10px] text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+            </UiButton>
+            <UiButton tone="quiet-danger" size="xs" onClick={clearSchedule}>
               Clear
-            </button>
+            </UiButton>
           </div>
           {schedule.map((entry, ei) => (
-            <div key={ei} className="border-t border-emerald-100 dark:border-emerald-900/30">
+            <div key={ei} className="border-t border-ok-line ">
               {schedule.length > 1 && (
-                <div className="px-3 py-1 text-[10px] font-medium text-[var(--t3)] bg-[var(--s1)]">{entry.source}</div>
+                <div className="px-3 py-1 text-2xs font-medium text-fg-3 bg-surface">{entry.source}</div>
               )}
               {entry.items.map((item, ii) => (
-                <div key={ii} className="flex items-center gap-2 px-3 py-1 text-[10.5px] border-t border-emerald-50 dark:border-emerald-900/20 first:border-t-0">
-                  <span className="font-mono text-[var(--accent-text)] shrink-0">{item.cat_no}</span>
-                  <span className="text-[var(--t3)] flex-1 truncate">{item.description}</span>
-                  <span className="text-[var(--t3)] shrink-0">×{item.qty}</span>
-                  <span className="font-mono text-[var(--t2)] shrink-0">{fmtGBP(item.line_ntp)}</span>
+                <div key={ii} className="flex items-center gap-2 px-3 py-1 text-2xs border-t border-ok-line first:border-t-0">
+                  <span className="mono text-accent-text shrink-0">{item.cat_no}</span>
+                  <span className="text-fg-3 flex-1 truncate">{item.description}</span>
+                  <span className="text-fg-3 shrink-0">×{item.qty}</span>
+                  <span className="mono text-fg-2 shrink-0">{fmtGBP(item.line_ntp)}</span>
                 </div>
               ))}
             </div>
@@ -2328,46 +2293,45 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
   }
 
   return (
-    <div className="fixed inset-0 z-[9980] bg-black/50 flex items-end sm:items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full max-w-xl bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-inset ring-[var(--line-2)] flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-modal bg-overlay flex items-end sm:items-center justify-center p-4" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="w-full max-w-xl bg-surface rounded-2xl ring-1 ring-inset ring-line-2 flex flex-col max-h-[90vh]">
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-[var(--line-2)]">
-          <PenLine className="w-4 h-4 text-[var(--t3)] shrink-0" />
-          <p className="text-[13px] font-semibold flex-1">New Email</p>
-          <button aria-label="Close" onClick={onClose} className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] transition-colors"><X className="w-4 h-4" /></button>
+        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-line-2">
+          <PenLine className="w-4 h-4 text-fg-3 shrink-0" />
+          <p className="text-base font-semibold flex-1">New Email</p>
+          <UiIconButton icon={X} label="Close" size="sm" onClick={onClose} />
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
           <div>
-            <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">To</label>
+            <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">To</label>
             <input value={to} onChange={e => setTo(e.target.value)} placeholder="recipient@example.com"
-              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
+              className="mt-1 w-full h-8 px-3 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-ai-line" />
           </div>
           <div>
-            <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Subject</label>
+            <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Subject</label>
             <input value={subject} onChange={e => setSubject(e.target.value)} placeholder="Subject…"
-              className="mt-1 w-full h-8 px-3 rounded-lg text-[12.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
+              className="mt-1 w-full h-8 px-3 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-ai-line" />
           </div>
           <div>
-            <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Message</label>
+            <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Message</label>
             <textarea value={body} onChange={e => setBody(e.target.value)} rows={6} placeholder="Write your message…"
-              className="mt-1 w-full px-3 py-2.5 rounded-lg text-[12.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400 resize-none" />
+              className="mt-1 w-full px-3 py-2.5 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-ai-line resize-none" />
           </div>
           {/* Attachments */}
           <div>
             <div className="flex items-center gap-2 mb-2">
-              <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide flex-1">Attachments from Outlook</label>
-              <button onClick={searchAtts} disabled={loadingSugg}
-                className="inline-flex items-center gap-1 h-6 px-2.5 rounded-md text-[10.5px] font-medium bg-[var(--s3)] hover:bg-[var(--s-hover)] text-[var(--t2)] transition-colors disabled:opacity-50">
+              <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide flex-1">Attachments from Outlook</label>
+              <UiButton tone="ghost" size="xs" onClick={searchAtts} disabled={loadingSugg}>
                 {loadingSugg ? <Loader2 className="w-3 h-3 animate-spin" /> : <Search className="w-3 h-3" />}
                 {loadingSugg ? 'Searching…' : 'Search'}
-              </button>
+              </UiButton>
             </div>
             {atts.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {atts.map((a, i) => (
-                  <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
+                  <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-2xs bg-accent-soft text-accent-text ring-1 ring-inset ring-accent-line">
                     <FileText className="w-3 h-3 shrink-0" />
-                    <span className="max-w-[160px] truncate">{a.attachmentName}</span>
+                    <span className="max-w-40 truncate">{a.attachmentName}</span>
                     <button aria-label="Remove attachment" onClick={() => setAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
                   </span>
                 ))}
@@ -2377,29 +2341,29 @@ function ComposeModal({ onClose, toast }: { onClose: () => void; toast: ToastFn 
               <div className="space-y-1 max-h-36 overflow-y-auto">
                 {suggestions.filter(s => !atts.some(a => a.sourceEntryId === s.sourceEntryId && a.attachmentIndex === s.attachmentIndex)).map((s, i) => (
                   <button key={i} onClick={() => setAtts(prev => [...prev, s])}
-                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-left hover:bg-[var(--s3)] transition-colors ring-1 ring-inset ring-[var(--line)]">
-                    <FileText className="w-3 h-3 text-[var(--accent-text)] shrink-0" />
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left hover:bg-subtle transition-colors ring-1 ring-inset ring-line">
+                    <FileText className="w-3 h-3 text-accent-text shrink-0" />
                     <span className="flex-1 min-w-0">
-                      <span className="font-medium text-[var(--t2)] truncate block">{s.attachmentName}</span>
-                      <span className="text-[var(--t3)] truncate block">{s.emailSubject}</span>
+                      <span className="font-medium text-fg-2 truncate block">{s.attachmentName}</span>
+                      <span className="text-fg-3 truncate block">{s.emailSubject}</span>
                     </span>
-                    <Plus className="w-3 h-3 text-[var(--t3)] shrink-0" />
+                    <Plus className="w-3 h-3 text-fg-3 shrink-0" />
                   </button>
                 ))}
               </div>
             )}
             {searchedQ && !loadingSugg && suggestions.length === 0 && (
-              <p className="text-[11px] text-[var(--t3)]">No matching PDFs found in Outlook for "{searchedQ}"</p>
+              <p className="text-xs text-fg-3">No matching PDFs found in Outlook for "{searchedQ}"</p>
             )}
           </div>
         </div>
-        <div className="px-5 py-3 border-t border-[var(--line-2)] flex items-center gap-2">
+        <div className="px-5 py-3 border-t border-line-2 flex items-center gap-2">
           <button onClick={send} disabled={sending || !to.trim() || !subject.trim()}
-            className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-[12.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
+            className="inline-flex items-center gap-1.5 h-8 px-4 rounded-lg text-sm font-semibold bg-fg text-page hover:opacity-90 disabled:opacity-50 transition-colors">
             {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
             {sending ? 'Sending…' : 'Send'}
           </button>
-          <button onClick={onClose} className="h-8 px-3 rounded-lg text-[12px] text-[var(--t3)] hover:bg-[var(--s3)] transition-colors">Cancel</button>
+          <UiButton tone="ghost" size="md" onClick={onClose}>Cancel</UiButton>
         </div>
       </div>
     </div>
@@ -2947,11 +2911,11 @@ function EmailDetailPanel({
   // runtime, which Tailwind never generates, so "active" often looked like nothing.
   function ABtn({ panel, icon: Icon, label, primary, locked }: { panel: NonNullable<typeof activePanel>; icon: React.ComponentType<{className?: string}>; label: string; primary?: boolean; locked?: boolean }) {
     const active = activePanel === panel;
-    const base = 'shrink-0 whitespace-nowrap inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-[12.5px] font-medium transition-colors';
+    const base = 'shrink-0 whitespace-nowrap inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-sm font-medium transition-colors';
     if (locked) {
       return (
         <button aria-label="Coming soon" onClick={() => toast('info', `${label} is coming soon`)} title="Coming soon"
-          className={cn(base, 'text-[var(--t4)] hover:bg-[var(--s3)] cursor-default')}>
+          className={cn(base, 'text-fg-4 hover:bg-subtle cursor-default')}>
           <Icon className="w-3.5 h-3.5 shrink-0 opacity-60" />
           {label}
           <Lock className="w-3 h-3 shrink-0 opacity-60" />
@@ -2963,10 +2927,10 @@ function EmailDetailPanel({
         className={cn(
           base,
           active
-            ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]'
+            ? 'bg-accent-soft text-accent-text ring-1 ring-inset ring-accent-line'
             : primary
-              ? 'text-[var(--t1)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)]'
-              : 'text-[var(--t2)] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+              ? 'text-fg ring-1 ring-inset ring-line-2 hover:bg-subtle'
+              : 'text-fg-2 hover:bg-subtle hover:text-fg',
         )}>
         <Icon className="w-3.5 h-3.5 shrink-0" />
         {label}
@@ -2978,51 +2942,38 @@ function EmailDetailPanel({
     <div className="h-full min-w-0 flex flex-col min-h-0">
       {lightbox && <ImageLightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
       {/* Drag shield — captures the mouse over the email iframe so resizing is smooth */}
-      {resizeMode && <div className="fixed inset-0 z-[9999]" style={{ cursor: resizeMode === 'panel' ? 'row-resize' : 'ns-resize' }} />}
+      {resizeMode && <div className="fixed inset-0 z-modal" style={{ cursor: resizeMode === 'panel' ? 'row-resize' : 'ns-resize' }} />}
 
       {loadingDetail ? (
         <div className="flex-1 flex items-center justify-center">
-          <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" />
+          <Loader2 className="w-5 h-5 animate-spin text-fg-4" />
         </div>
       ) : detail ? (
         <>
           {/* ── Compact header ──────────────────────────────────────────────── */}
-          <div className="shrink-0 px-6 pt-4 pb-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
+          <div className="shrink-0 px-6 pt-4 pb-3 border-b border-line-2 bg-surface">
             {/* Subject + quiet controls (reading size, prev/next) on one line */}
             <div className="flex items-start gap-3">
-              <h2 className="flex-1 min-w-0 text-[17px] font-semibold text-[var(--t1)] leading-snug break-words">{detail.subject}</h2>
-              <div className="shrink-0 flex items-center gap-0.5 text-[var(--t3)]">
-                <button aria-label="Smaller text" title="Smaller text" onClick={() => setTextZoom(textZoom - 0.1)} disabled={textZoom <= 0.8}
-                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-30 transition-colors">
-                  <AArrowDown className="w-4 h-4" />
-                </button>
-                <button aria-label="Reset text size" title="Reset text size" onClick={() => setTextZoom(1.15)}
-                  className="h-7 min-w-[42px] px-1 rounded-md text-[11.5px] num hover:bg-[var(--s3)] hover:text-[var(--t1)] transition-colors">
+              <h2 className="flex-1 min-w-0 text-xl font-semibold text-fg leading-snug break-words">{detail.subject}</h2>
+              <div className="shrink-0 flex items-center gap-0.5 text-fg-3">
+                <UiIconButton icon={AArrowDown} label="Smaller text" size="sm" onClick={() => setTextZoom(textZoom - 0.1)} disabled={textZoom <= 0.8} />
+                <UiButton tone="ghost" className="min-w-10" aria-label="Reset text size" onClick={() => setTextZoom(1.15)} hint="Reset text size">
                   {Math.round(textZoom * 100)}%
-                </button>
-                <button aria-label="Larger text" title="Larger text" onClick={() => setTextZoom(textZoom + 0.1)} disabled={textZoom >= 1.8}
-                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-30 transition-colors">
-                  <AArrowUp className="w-4 h-4" />
-                </button>
-                <span className="w-px h-4 bg-[var(--line-2)] mx-1.5" />
-                <button aria-label={prevEmail?.subject} onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} title={prevEmail?.subject}
-                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-25 transition-colors">
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                {emailIdx >= 0 && <span className="text-[11.5px] num px-0.5">{emailIdx + 1}/{emailList.length}</span>}
-                <button aria-label={nextEmail?.subject} onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} title={nextEmail?.subject}
-                  className="w-7 h-7 rounded-md flex items-center justify-center hover:bg-[var(--s3)] hover:text-[var(--t1)] disabled:opacity-25 transition-colors">
-                  <ChevronRight className="w-4 h-4" />
-                </button>
+                </UiButton>
+                <UiIconButton icon={AArrowUp} label="Larger text" size="sm" onClick={() => setTextZoom(textZoom + 0.1)} disabled={textZoom >= 1.8} />
+                <span className="w-px h-4 bg-line-2 mx-1.5" />
+                <UiIconButton icon={ChevronLeft} label={prevEmail?.subject} size="sm" onClick={() => prevEmail && setEntryId(prevEmail.entryId)} disabled={!prevEmail} />
+                {emailIdx >= 0 && <span className="text-xs num px-0.5">{emailIdx + 1}/{emailList.length}</span>}
+                <UiIconButton icon={ChevronRight} label={nextEmail?.subject} size="sm" onClick={() => nextEmail && setEntryId(nextEmail.entryId)} disabled={!nextEmail} />
               </div>
             </div>
 
             {/* Meta row — one line, addresses truncate instead of wrapping */}
-            <div className="mt-2 flex items-center gap-2.5 min-w-0 text-[12.5px] text-[var(--t3)]">
-              <span className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0" style={{ background: 'linear-gradient(140deg, var(--t3), var(--t4))' }}>
+            <div className="mt-2 flex items-center gap-2.5 min-w-0 text-sm text-fg-3">
+              <span className="w-7 h-7 rounded-full flex items-center justify-center text-2xs font-semibold text-on-accent shrink-0" style={{ background: 'linear-gradient(140deg, var(--t3), var(--t4))' }}>
                 {detail.sender.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()}
               </span>
-              <span className="font-medium text-[var(--t1)] shrink-0 max-w-[40%] truncate">{detail.sender}</span>
+              <span className="font-medium text-fg shrink-0 max-w-[40%] truncate">{detail.sender}</span>
               <span className="flex-1 min-w-0 truncate"
                 title={[detail.senderEmail, detail.to && `To: ${detail.to}`, detail.cc && `CC: ${detail.cc}`].filter(Boolean).join('\n')}>
                 {detail.senderEmail}{detail.to ? `  →  ${detail.to}` : ''}{detail.cc ? `  ·  CC ${detail.cc}` : ''}
@@ -3044,44 +2995,36 @@ function EmailDetailPanel({
                   style={{ maxHeight: attStripHeight }}>
                   {visible.map(att => (
                     att.isPdf ? (
-                      <button aria-label="View · Drag to EL Pricer" key={att.index} onClick={() => openAttachmentPdf(detail.entryId, att.index)}
-                        draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
-                        title="View · Drag to EL Pricer"
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)] hover:bg-[var(--accent-soft)] transition-colors">
+                      <UiButton tone="secondary" aria-label="View · Drag to EL Pricer" key={att.index} onClick={() => openAttachmentPdf(detail.entryId, att.index)} draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }} hint="View · Drag to EL Pricer">
                         <FileText className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">{fmtSize(att.size)}</span>
-                      </button>
+                      </UiButton>
                     ) : isImageFile(att.name) ? (
                       <button aria-label="View · Drag to EL Pricer" key={att.index} onClick={() => setLightbox({ src: attViewUrl(detail.entryId, att.index), name: att.name })}
                         draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name, isImage: true })); e.dataTransfer.effectAllowed = 'copy'; }}
                         title={`View · Drag to EL Pricer · ${fmtSize(att.size)}`}
-                        className="inline-flex items-center gap-1.5 pl-0.5 pr-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-300 ring-emerald-200 dark:ring-emerald-600 hover:bg-emerald-100 transition-colors">
+                        className="inline-flex items-center gap-1.5 pl-0.5 pr-2 py-0.5 rounded-md text-2xs font-medium ring-1 ring-inset cursor-pointer select-none bg-ok-soft text-ok ring-ok-line hover:bg-ok-soft transition-colors">
                         <AttThumb entryId={detail.entryId} index={att.index} />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
                       </button>
                     ) : isExcelFile(att.name) ? (
-                      <button aria-label="Open EL Pricer · Drag to EL Pricer" key={att.index} onClick={() => setActivePanel('pricer')}
-                        draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }}
-                        title="Open EL Pricer · Drag to EL Pricer"
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset cursor-pointer select-none bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 ring-green-200 dark:ring-green-600 hover:bg-green-100 dark:hover:bg-green-900/40 transition-colors">
+                      <UiButton tone="secondary" aria-label="Open EL Pricer · Drag to EL Pricer" key={att.index} onClick={() => setActivePanel('pricer')} draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: att.index, attName: att.name })); e.dataTransfer.effectAllowed = 'copy'; }} hint="Open EL Pricer · Drag to EL Pricer">
                         <FileSpreadsheet className="w-2.5 h-2.5 shrink-0" />{att.name}<span className="opacity-50 ml-0.5">→ Pricer</span>
-                      </button>
+                      </UiButton>
                     ) : (
-                      <span key={att.index} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset bg-[var(--s3)] text-[var(--t3)] ring-[var(--line-2)]">
+                      <span key={att.index} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-2xs font-medium ring-1 ring-inset bg-subtle text-fg-3 ring-line-2">
                         <Paperclip className="w-2.5 h-2.5" />{att.name}
                       </span>
                     )
                   ))}
                   {detail.hasPdf && (detail.senderEmail.toLowerCase().includes('manualnotification') || /SR00[A-Za-z0-9]+/i.test(detail.subject)) && (
-                    <button onClick={queuePdf} disabled={savingPdf}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-semibold bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white disabled:opacity-60 transition-colors">
+                    <UiButton tone="primary" onClick={queuePdf} disabled={savingPdf}>
                       {savingPdf ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Download className="w-2.5 h-2.5" />}Queue
-                    </button>
+                    </UiButton>
                   )}
                   {inlineCount > 0 && (
-                    <button onClick={() => setShowInlineAtts(s => !s)}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors">
+                    <UiButton tone="ghost" onClick={() => setShowInlineAtts(s => !s)}>
                       <ImageIcon className="w-2.5 h-2.5" />
                       {showInlineAtts ? 'Hide inline images' : `${plural(inlineCount, 'inline image')}`}
-                    </button>
+                    </UiButton>
                   )}
                 </div>
                 {/* Attachment strip resize handle */}
@@ -3096,7 +3039,7 @@ function EmailDetailPanel({
                     document.body.style.userSelect = 'none';
                     e.preventDefault();
                   }}>
-                  <div className="w-6 h-0.5 rounded-full bg-[var(--s3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500 transition-colors" />
+                  <div className="w-6 h-0.5 rounded-full bg-subtle group-hover:bg-ai transition-colors" />
                 </div>
               </div>
               );
@@ -3107,12 +3050,12 @@ function EmailDetailPanel({
               It used to be a wrapped row of seven same-weight buttons jammed under
               the email. Now: three primary actions, a divider, quiet tools. It
               scrolls sideways on a narrow pane instead of wrapping into two rows. */}
-          <div className="shrink-0 flex items-center gap-1 px-5 py-2 border-b border-[var(--line-2)] bg-[var(--s1)] overflow-x-auto"
+          <div className="shrink-0 flex items-center gap-1 px-5 py-2 border-b border-line-2 bg-surface overflow-x-auto"
             style={{ scrollbarWidth: 'none' }}>
             <ABtn panel="summarize"    icon={Sparkles}    label="Summarize"     primary locked={STRIPPED} />
             <ABtn panel="reply"        icon={Edit3}       label="Reply"         primary locked={STRIPPED} />
             <ABtn panel="reply-attach" icon={Paperclip}   label="Attach & Send" primary locked={STRIPPED} />
-            <span className="shrink-0 w-px h-5 bg-[var(--line-2)] mx-1.5" />
+            <span className="shrink-0 w-px h-5 bg-line-2 mx-1.5" />
             <ABtn panel="pricer"       icon={Zap}         label="EL Pricer"     locked={STRIPPED} />
             <ABtn panel="cbu"          icon={Battery}     label="CBU Sheet"     locked={STRIPPED} />
             <ABtn panel="quote"        icon={FileDown}    label="Quick Quote"   locked={STRIPPED} />
@@ -3126,7 +3069,7 @@ function EmailDetailPanel({
             {activePanel && (
               // Shrinkable, so on a short window the email keeps its floor
               // (min-h on the body below) instead of being squeezed to nothing.
-              <div className="shrink min-h-0 flex flex-col bg-[var(--s1)] border-b border-[var(--line-2)]">
+              <div className="shrink min-h-0 flex flex-col bg-surface border-b border-line-2">
                 {/* Scrollable panel content */}
                 <div
                   ref={panelRef}
@@ -3142,26 +3085,9 @@ function EmailDetailPanel({
 
                 {/* ── Summarize panel — summary + inline chat + vision ── */}
                 {activePanel === 'summarize' && (
-                  <div className="px-5 py-3 flex flex-col gap-3">
-                    {/* Header */}
-                    <div className="flex items-center gap-2">
-                      <Sparkles className="w-3.5 h-3.5 text-violet-500 shrink-0" />
-                      <p className="text-[11.5px] font-semibold text-[var(--t1)] flex-1">AI Summary</p>
-                      {analyzing && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
-                      {!analyzing && analysis && (
-                        <div className="flex items-center gap-1">
-                          <button aria-label="Mark this summary helpful" onClick={() => submitAnalysisFeedback('up')} disabled={!!analysisLiked}
-                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'up' ? 'text-emerald-500' : 'text-[var(--t4)] hover:text-emerald-500 disabled:opacity-40')}>
-                            <ThumbsUp className="w-2.5 h-2.5" />
-                          </button>
-                          <button aria-label="Mark this summary unhelpful" onClick={() => submitAnalysisFeedback('down')} disabled={!!analysisLiked}
-                            className={cn('w-5 h-5 rounded flex items-center justify-center', analysisLiked === 'down' ? 'text-red-500' : 'text-[var(--t4)] hover:text-red-500 disabled:opacity-40')}>
-                            <ThumbsDown className="w-2.5 h-2.5" />
-                          </button>
-                          <button onClick={() => runSummarize(detail, true)} className="text-[10px] text-[var(--t3)] hover:text-violet-600 dark:hover:text-violet-300 ml-1 transition-colors">Refresh</button>
-                        </div>
-                      )}
-                    </div>
+                  <div className="px-5 py-3 flex flex-col gap-4">
+                    <div className="-mx-5 -mt-3"><AiPanelHeader title="Vector summary"
+                      sub={analyzing ? `Reading email${effectiveInclude(detail).length ? ' + images' : ''}…` : 'Reads the text only unless you tick a file'} /></div>
 
                     {/* Vision controls — tick an image/PDF to feed it to the AI
                         (summary AND follow-up chat). Nothing is ticked by default:
@@ -3173,30 +3099,18 @@ function EmailDetailPanel({
                       if (visual.length === 0) return null;
                       return (
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="inline-flex items-center gap-1 text-[10.5px] text-[var(--t3)]" title="Text only unless you tick something here — images cost tokens">
-                            <Eye className="w-2.5 h-2.5" />Read images (off):
+                          <span className="inline-flex items-center gap-1 text-2xs text-fg-3" title="Text only unless you tick something here — images cost tokens">
+                            <Eye className="w-3 h-3" />Let Vector read:
                           </span>
-                          {visual.map(a => {
-                            const on  = included.has(a.index);
-                            const img = a.isImage || isImageFile(a.name);
-                            return (
-                              <button aria-label={on ? `${a.name} — the AI reads this, click to exclude` : `Include ${a.name} — the AI will read it`} key={a.index}
-                                onClick={() => setIncluded(prev => { const n = new Set(prev); n.has(a.index) ? n.delete(a.index) : n.add(a.index); return n; })}
-                                title={on ? `${a.name} — the AI reads this, click to exclude` : `Include ${a.name} — the AI will read it`}
-                                className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors',
-                                  on ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
-                                     : 'bg-[var(--s3)] text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]')}>
-                                {on ? <Check className="w-2.5 h-2.5 shrink-0" /> : (img ? <ImageIcon className="w-2.5 h-2.5 shrink-0" /> : <FileText className="w-2.5 h-2.5 shrink-0" />)}
-                                <span className="truncate max-w-[130px]">{a.name}</span>
-                              </button>
-                            );
-                          })}
+                          {visual.map(a => (
+                            <AiFileChip key={a.index} name={a.name} on={included.has(a.index)}
+                              kind={a.isImage || isImageFile(a.name) ? 'image' : 'file'}
+                              onToggle={() => setIncluded(prev => { const n = new Set(prev); n.has(a.index) ? n.delete(a.index) : n.add(a.index); return n; })} />
+                          ))}
                           {analysis && !analyzing && (
-                            <button aria-label="Re-summarize with the current image selection" onClick={() => runSummarize(detail, true)}
-                              title="Re-summarize with the current image selection"
-                              className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
+                            <UiButton tone="primary" size="xs" aria-label="Re-summarize with the current image selection" onClick={() => runSummarize(detail, true)} hint="Re-summarize with the current image selection">
                               Apply
-                            </button>
+                            </UiButton>
                           )}
                         </div>
                       );
@@ -3204,16 +3118,25 @@ function EmailDetailPanel({
 
                     {/* Summary body */}
                     {analyzing && !analysis
-                      ? <p className="text-[12px] text-[var(--t3)] py-1">Reading email{effectiveInclude(detail).length ? ' + images' : ''}…</p>
+                      ? <AiThinking label={`Reading email${effectiveInclude(detail).length ? ' + images' : ''}…`} />
                       : analysis
-                        ? <Md text={analysis} />
+                        ? (
+                          <AiMessage badge={analyzing ? <Loader2 className="w-3 h-3 animate-spin text-fg-3" /> : undefined}
+                            actions={analyzing ? undefined : <>
+                              <CopyAction text={analysis} />
+                              <UiIconButton size="xs" icon={ThumbsUp} label="Mark this summary helpful" onClick={() => submitAnalysisFeedback('up')} disabled={!!analysisLiked} />
+                              <UiIconButton size="xs" icon={ThumbsDown} label="Mark this summary unhelpful" onClick={() => submitAnalysisFeedback('down')} disabled={!!analysisLiked} />
+                              <UiIconButton size="xs" icon={RefreshCw} label="Summarize again" onClick={() => runSummarize(detail, true)} />
+                            </>}>
+                            <Md text={analysis} />
+                          </AiMessage>
+                        )
                         : (
-                          <div className="py-1">
-                            <p className="text-[12px] text-[var(--t3)] mb-2">No summary yet — reads the email text. Tick an image above if the AI needs to see it.</p>
-                            <button onClick={() => runSummarize(detail)}
-                              className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
+                          <div className="flex flex-col items-start gap-2">
+                            <p className="text-sm text-fg-3">No summary yet — Vector reads the email text. Tick a file above if it needs to see it.</p>
+                            <UiButton tone="primary" onClick={() => runSummarize(detail)}>
                               <Sparkles className="w-3 h-3" /> Summarize
-                            </button>
+                            </UiButton>
                           </div>
                         )
                     }
@@ -3224,11 +3147,11 @@ function EmailDetailPanel({
                         is emailed here — the hand-off is written and sent from
                         the To-Do tab. */}
                     {analysis && !analyzing && (
-                      <div className="pt-2.5 border-t border-[var(--line)]">
+                      <div className="pt-3 border-t border-line">
                         {todoBucket ? (
                           <div className="flex items-center gap-2">
-                            <CheckCircle2 className="w-3 h-3 text-emerald-500 shrink-0" />
-                            <p className="text-[11px] text-[var(--t2)] flex-1">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-ok shrink-0" />
+                            <p className="text-xs text-fg-2 flex-1">
                               On your To-Do list as{' '}
                               <span className="font-semibold">
                                 {todoBucket === 'direct' ? 'yours to finish'
@@ -3236,24 +3159,20 @@ function EmailDetailPanel({
                                   : 'one for the team'}
                               </span>.
                             </p>
-                            <button onClick={() => setAppTab('Todo')}
-                              className="text-[10.5px] font-semibold text-violet-600 dark:text-violet-300 hover:underline">
-                              Open To-Do
-                            </button>
+                            <UiButton tone="ghost" size="xs" onClick={() => setAppTab('Todo')}>Open To-Do</UiButton>
                           </div>
                         ) : (
                           <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[10.5px] text-[var(--t3)] mr-0.5">Add to To-Do:</span>
+                            <span className="text-2xs text-fg-3 mr-0.5">Add to To-Do:</span>
                             {([
                               ['direct',     'I can do this'],
                               ['needs_info', 'Needs more info'],
                               ['needs_team', 'Needs the team'],
                             ] as Array<[TodoBucket, string]>).map(([b, label]) => (
-                              <button key={b} onClick={() => addToTodo(b)} disabled={addingTodo}
-                                className="inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium bg-[var(--s3)] text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)] hover:text-[var(--t1)] hover:ring-violet-400 disabled:opacity-50 transition-colors">
+                              <UiButton tone="secondary" size="xs" key={b} onClick={() => addToTodo(b)} disabled={addingTodo}>
                                 {addingTodo ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Plus className="w-2.5 h-2.5" />}
                                 {label}
-                              </button>
+                              </UiButton>
                             ))}
                           </div>
                         )}
@@ -3262,31 +3181,19 @@ function EmailDetailPanel({
 
                     {/* Inline follow-up chat (only once there is a summary) */}
                     {analysis && (
-                      <div className="pt-2.5 mt-0.5 border-t border-[var(--line)] flex flex-col gap-2">
-                        <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Ask a follow-up</p>
-                        {chatMessages.length > 0 && (
-                          <div className="space-y-2">
-                            {chatMessages.map((m, i) => (
-                              <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
-                                <div className={cn('max-w-[90%] px-3 py-1.5 rounded-xl text-[12px]',
-                                  m.role === 'user' ? 'bg-violet-600 text-white rounded-br-sm' : 'bg-[var(--s3)] text-[var(--t1)] rounded-bl-sm')}>
-                                  {m.role === 'ai' ? <Md text={m.text} /> : m.text}
-                                </div>
-                              </div>
-                            ))}
-                            {chatLoading && <div className="flex justify-start"><div className="px-3 py-1.5 rounded-xl bg-[var(--s3)] text-[12px] text-[var(--t3)] flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" />Thinking…</div></div>}
+                      <div className="pt-3 border-t border-line flex flex-col gap-4">
+                        {(chatMessages.length > 0 || chatLoading) && (
+                          <div className="flex flex-col gap-5">
+                            {chatMessages.map((m, i) => m.role === 'user'
+                              ? <UserMessage key={i} text={m.text} />
+                              : <AiMessage key={i} actions={<CopyAction text={m.text} />}><Md text={m.text} /></AiMessage>)}
+                            {chatLoading && <AiThinking />}
                             <div ref={chatEndRef} />
                           </div>
                         )}
-                        <div className="flex gap-2 sticky bottom-0 -mx-5 px-5 py-2 bg-[var(--s1)] border-t border-[var(--line)]">
-                          <input value={chatInput} onChange={e => setChatInput(e.target.value)}
-                            onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChatMessage(); } }}
-                            placeholder="Ask about this email or its images…"
-                            className="flex-1 h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 placeholder:text-[var(--t3)] text-[var(--t1)]" />
-                          <button aria-label="Send message" onClick={sendChatMessage} disabled={!chatInput.trim() || chatLoading}
-                            className="w-7 h-7 rounded-lg flex items-center justify-center bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-40 transition-colors shrink-0">
-                            <Send className="w-3 h-3" />
-                          </button>
+                        <div className="sticky bottom-0 -mx-5 px-5 py-2 bg-surface border-t border-line">
+                          <AiComposer size="sm" value={chatInput} onChange={setChatInput} onSubmit={() => sendChatMessage()}
+                            loading={chatLoading} placeholder="Ask Vector about this email or its images…" maxRows={5} />
                         </div>
                       </div>
                     )}
@@ -3297,9 +3204,9 @@ function EmailDetailPanel({
                 {activePanel === 'reply' && (
                   <div className="px-5 py-3 space-y-2">
                     <div className="flex items-center gap-2">
-                      <p className="text-[11px] font-semibold text-[var(--t3)] flex-1">Reply to {detail.senderEmail}</p>
-                      {draftingReply && <Loader2 className="w-3 h-3 animate-spin text-[var(--t3)]" />}
-                      {replySent && <span className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Sent</span>}
+                      <p className="text-xs font-semibold text-fg-3 flex-1">Reply to {detail.senderEmail}</p>
+                      {draftingReply && <Loader2 className="w-3 h-3 animate-spin text-fg-3" />}
+                      {replySent && <span className="text-xs text-ok flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Sent</span>}
                     </div>
                     {!replySent && (
                       <>
@@ -3308,27 +3215,26 @@ function EmailDetailPanel({
                         <textarea value={replyText} onChange={e => setReplyText(e.target.value)} rows={9}
                           placeholder="Write your reply…"
                           style={{ fontSize: 14 * Math.min(textZoom, 1.3) }}
-                          className="w-full min-h-[160px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-3.5 py-3 ring-1 ring-inset ring-[var(--line-2)] resize-y focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+                          className="w-full min-h-40 text-fg bg-surface rounded-lg px-3.5 py-3 ring-1 ring-inset ring-line-2 resize-y focus:outline-none focus:ring-ai-line leading-relaxed font-sans placeholder:text-fg-3" />
                         <div className="flex items-center gap-2 flex-wrap">
                           <button onClick={sendReply} disabled={sendingReply || !replyText.trim()}
-                            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
+                            className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-xs font-semibold bg-fg text-page hover:opacity-90 disabled:opacity-50 transition-colors">
                             {sendingReply ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}Send
                           </button>
                           <button onClick={() => setAssistOpen(o => !o)}
-                            className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+                            className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-xs font-medium ring-1 ring-inset transition-colors',
                               assistOpen
-                                ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
-                                : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]')}>
+                                ? 'bg-ai-soft text-ai ring-ai-line '
+                                : 'text-fg-3 ring-line-2 hover:bg-subtle')}>
                             <Sparkles className="w-3 h-3" />AI Draft
                           </button>
                           <SnippetPicker toast={toast}
                             onInsert={body => setReplyText(prev =>
                               prev.trim() ? `${prev.trimEnd()}\n\n${body}` : body)} />
                           {replyText && (
-                            <button onClick={() => setReplyText('')}
-                              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-red-500 ring-1 ring-inset ring-red-200 dark:ring-red-700/50 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors">
+                            <UiButton tone="quiet-danger" onClick={() => setReplyText('')}>
                               <Trash2 className="w-3 h-3" />Clear
-                            </button>
+                            </UiButton>
                           )}
                         </div>
 
@@ -3337,61 +3243,51 @@ function EmailDetailPanel({
                             an email, and it only reaches the reply above when you
                             press Insert. */}
                         {assistOpen && (
-                          <div className="mt-1 rounded-lg ring-1 ring-inset ring-violet-200 dark:ring-violet-700/50 bg-violet-50/60 dark:bg-violet-900/15 p-2.5 space-y-2">
+                          <div className="mt-1 rounded-lg ring-1 ring-inset ring-ai-line bg-ai-soft p-2.5 space-y-2">
                             <div className="flex items-center gap-2">
-                              <Sparkles className="w-3 h-3 text-violet-500 shrink-0" />
-                              <p className="text-[10.5px] font-semibold text-[var(--t2)] uppercase tracking-wide flex-1">Your idea → polished email</p>
-                              <button aria-label="Close the AI draft box" onClick={() => setAssistOpen(false)}
-                                className="w-5 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)]">
-                                <X className="w-3 h-3" />
-                              </button>
+                              <Sparkles className="w-3 h-3 text-ai shrink-0" />
+                              <p className="text-2xs font-semibold text-fg-2 uppercase tracking-wide flex-1">Your idea → polished email</p>
+                              <UiIconButton icon={X} label="Close the AI draft box" size="xs" onClick={() => setAssistOpen(false)} />
                             </div>
 
                             <textarea value={assistIdea} onChange={e => setAssistIdea(e.target.value)} rows={3}
                               placeholder="Rough notes are fine — e.g. 'tell him the 8kVA is 12 weeks lead time, quote follows tomorrow'"
-                              className="w-full text-[12px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-2.5 py-2 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+                              className="w-full text-sm text-fg bg-surface rounded-lg px-2.5 py-2 ring-1 ring-inset ring-line-2 resize-none focus:outline-none focus:ring-ai-line leading-relaxed font-sans placeholder:text-fg-3" />
 
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <button onClick={() => runAssist('polish')} disabled={!!assistBusy || !assistIdea.trim()}
-                                className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">
+                              <UiButton tone="primary" onClick={() => runAssist('polish')} disabled={!!assistBusy || !assistIdea.trim()}>
                                 {assistBusy === 'polish' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
                                 Polish
-                              </button>
+                              </UiButton>
                               {(['shorten', 'formalize', 'rewrite'] as PolishMode[]).map(m => (
-                                <button key={m} onClick={() => runAssist(m)} disabled={!!assistBusy || !(assistOut || assistIdea).trim()}
-                                  title={m === 'shorten' ? 'Cut it down, keep every fact'
+                                <UiButton tone="secondary" key={m} onClick={() => runAssist(m)} disabled={!!assistBusy || !(assistOut || assistIdea).trim()} hint={m === 'shorten' ? 'Cut it down, keep every fact'
                                     : m === 'formalize' ? 'More formal register for an external customer'
-                                    : 'Same meaning, fresh wording'}
-                                  className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t2)] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-40 transition-colors">
+                                    : 'Same meaning, fresh wording'}>
                                   {assistBusy === m ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
                                   {m === 'shorten' ? 'Shorten' : m === 'formalize' ? 'Formalize' : 'Rewrite'}
-                                </button>
+                                </UiButton>
                               ))}
                               <span className="flex-1" />
-                              <button onClick={() => draftReply(detail)} disabled={draftingReply || !!assistBusy}
-                                title="Ignore the box and write a reply straight from the email"
-                                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+                              <UiButton tone="secondary" onClick={() => draftReply(detail)} disabled={draftingReply || !!assistBusy} hint="Ignore the box and write a reply straight from the email">
                                 {draftingReply ? <Loader2 className="w-3 h-3 animate-spin" /> : <PenLine className="w-3 h-3" />}
                                 From email
-                              </button>
+                              </UiButton>
                             </div>
 
                             {(assistOut || assistBusy || draftingReply) && (
                               <div className="space-y-1.5">
-                                <p className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Result — edit here, then insert</p>
+                                <p className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Result — edit here, then insert</p>
                                 <textarea value={assistOut} onChange={e => setAssistOut(e.target.value)} rows={6}
                                   placeholder={assistBusy || draftingReply ? 'Writing…' : ''}
-                                  className="w-full text-[12px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-2.5 py-2 ring-1 ring-inset ring-[var(--line-2)] resize-none focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+                                  className="w-full text-sm text-fg bg-surface rounded-lg px-2.5 py-2 ring-1 ring-inset ring-line-2 resize-none focus:outline-none focus:ring-ai-line leading-relaxed font-sans placeholder:text-fg-3" />
                                 <div className="flex items-center gap-1.5">
-                                  <button onClick={insertAssist} disabled={!assistOut.trim()}
-                                    className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition-colors">
+                                  <UiButton tone="ghost" onClick={insertAssist} disabled={!assistOut.trim()}>
                                     <Check className="w-3 h-3" />Insert
-                                  </button>
-                                  <button onClick={() => setAssistOut('')} disabled={!assistOut.trim()}
-                                    className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] disabled:opacity-40 transition-colors">
+                                  </UiButton>
+                                  <UiButton tone="secondary" onClick={() => setAssistOut('')} disabled={!assistOut.trim()}>
                                     <RotateCcw className="w-3 h-3" />Discard
-                                  </button>
-                                  <span className="text-[10.5px] text-[var(--t3)]">
+                                  </UiButton>
+                                  <span className="text-2xs text-fg-3">
                                     {replyText.trim() ? 'Appends to what you have written' : 'Goes into the reply above'}
                                   </span>
                                 </div>
@@ -3410,32 +3306,30 @@ function EmailDetailPanel({
                 {activePanel === 'reply-attach' && (
                   <div className="px-5 py-3 space-y-2">
                     <div className="flex items-center gap-2">
-                      <Paperclip className="w-3.5 h-3.5 text-[var(--accent-text)] shrink-0" />
-                      <p className="text-[11.5px] font-semibold text-[var(--t1)] flex-1">Send a quote</p>
-                      <button onClick={aiSuggestSend} disabled={suggestingSend}
-                        title="Work out who this should go to and write the covering note"
-                        className="inline-flex items-center gap-1.5 h-6 px-2 rounded-md text-[10.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">
+                      <Paperclip className="w-3.5 h-3.5 text-accent-text shrink-0" />
+                      <p className="text-xs font-semibold text-fg flex-1">Send a quote</p>
+                      <UiButton tone="primary" size="xs" onClick={aiSuggestSend} disabled={suggestingSend} hint="Work out who this should go to and write the covering note">
                         {suggestingSend ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Sparkles className="w-2.5 h-2.5" />}
                         AI suggest
-                      </button>
+                      </UiButton>
                     </div>
 
                     {/* Addressing */}
-                    <div className="grid grid-cols-[38px_1fr] items-center gap-x-2 gap-y-1.5">
-                      <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">To</label>
+                    <div className="grid grid-cols-[var(--sp-10)_1fr] items-center gap-x-2 gap-y-1.5">
+                      <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">To</label>
                       <input value={sendTo} onChange={e => setSendTo(e.target.value)} list="vector-send-roster"
                         placeholder="who actually needs the quote…"
-                        className="h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
-                      <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Cc</label>
+                        className="h-7 px-2.5 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-ai-line" />
+                      <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Cc</label>
                       <input value={sendCc} onChange={e => setSendCc(e.target.value)} list="vector-send-roster"
                         placeholder="optional — e.g. keep the sender in the loop"
-                        className="h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
+                        className="h-7 px-2.5 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-ai-line" />
                       {!isThreadReply && (
                         <>
-                          <label className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide">Subj</label>
+                          <label className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Subj</label>
                           <input value={sendSubject} onChange={e => setSendSubject(e.target.value)}
                             placeholder="Subject…"
-                            className="h-7 px-2.5 rounded-lg text-[12px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400" />
+                            className="h-7 px-2.5 rounded-lg text-sm bg-subtle ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-ai-line" />
                         </>
                       )}
                     </div>
@@ -3446,14 +3340,14 @@ function EmailDetailPanel({
 
                     {/* One click per address that appears anywhere on the thread */}
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="text-[10px] text-[var(--t3)]">On this thread:</span>
+                      <span className="text-2xs text-fg-3">On this thread:</span>
                       {recipientCandidates(detail).map((c, i) => {
                         const on = sendToList.some(t => t.toLowerCase() === c.email.toLowerCase());
                         return (
                           <button key={i} onClick={() => setSendTo(c.email)} title={`${c.email} — ${c.why}`}
-                            className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors max-w-[200px]',
-                              on ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
-                                 : 'bg-[var(--s3)] text-[var(--t3)] ring-[var(--line-2)] hover:text-[var(--t1)]')}>
+                            className={cn('inline-flex items-center gap-1 h-6 px-2 rounded-md text-2xs font-medium ring-1 ring-inset transition-colors max-w-48',
+                              on ? 'bg-ai-soft text-ai ring-ai-line '
+                                 : 'bg-subtle text-fg-3 ring-line-2 hover:text-fg')}>
                             {on && <Check className="w-2.5 h-2.5 shrink-0" />}
                             <span className="truncate">{c.name || c.email}</span>
                           </button>
@@ -3461,56 +3355,56 @@ function EmailDetailPanel({
                       })}
                     </div>
                     {sendWhy && (
-                      <p className="text-[10.5px] text-[var(--t3)] italic flex items-start gap-1">
-                        <Sparkles className="w-2.5 h-2.5 mt-[3px] shrink-0 text-violet-400" />{sendWhy}
+                      <p className="text-2xs text-fg-3 italic flex items-start gap-1">
+                        <Sparkles className="w-2.5 h-2.5 mt-0.5 shrink-0 text-ai" />{sendWhy}
                       </p>
                     )}
 
                     <textarea value={replyAttachText} onChange={e => setReplyAttachText(e.target.value)} rows={7}
                       placeholder="Covering note…"
                       style={{ fontSize: 14 * Math.min(textZoom, 1.3) }}
-                      className="w-full min-h-[140px] text-[var(--t1)] bg-[var(--s1)] rounded-lg px-3.5 py-3 ring-1 ring-inset ring-[var(--line-2)] resize-y focus:outline-none focus:ring-violet-400 leading-relaxed font-sans placeholder:text-[var(--t3)]" />
+                      className="w-full min-h-36 text-fg bg-surface rounded-lg px-3.5 py-3 ring-1 ring-inset ring-line-2 resize-y focus:outline-none focus:ring-ai-line leading-relaxed font-sans placeholder:text-fg-3" />
                     {/* Suggested attachments */}
                     <div>
-                      <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1.5 flex items-center gap-2">
+                      <p className="text-2xs font-semibold text-fg-3 uppercase tracking-wide mb-1.5 flex items-center gap-2">
                         Suggested attachments from Outlook
-                        {loadingSugg && <Loader2 className="w-3 h-3 animate-spin text-violet-400" />}
+                        {loadingSugg && <Loader2 className="w-3 h-3 animate-spin text-ai" />}
                       </p>
                       {selectedAtts.length > 0 && (
                         <div className="flex flex-wrap gap-1.5 mb-2">
                           {selectedAtts.map((a, i) => (
-                            <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-[10.5px] bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]">
+                            <span key={i} className="inline-flex items-center gap-1 h-6 pl-2 pr-1 rounded-md text-2xs bg-accent-soft text-accent-text ring-1 ring-inset ring-accent-line">
                               <FileText className="w-3 h-3 shrink-0" />
-                              <span className="max-w-[140px] truncate">{a.attachmentName}</span>
+                              <span className="max-w-36 truncate">{a.attachmentName}</span>
                               <button aria-label="Remove attachment" onClick={() => setSelectedAtts(prev => prev.filter((_, j) => j !== i))} className="ml-0.5 opacity-60 hover:opacity-100"><X className="w-3 h-3" /></button>
                             </span>
                           ))}
                         </div>
                       )}
                       {!loadingSugg && attachSuggestions.length === 0 && (
-                        <p className="text-[11px] text-[var(--t3)]">No matching PDFs found in Outlook</p>
+                        <p className="text-xs text-fg-3">No matching PDFs found in Outlook</p>
                       )}
                       {attachSuggestions.filter(s => !selectedAtts.some(a => a.sourceEntryId === s.sourceEntryId && a.attachmentIndex === s.attachmentIndex)).map((s, i) => (
                         <button key={i} onClick={() => setSelectedAtts(prev => [...prev, s])}
-                          className="w-full flex items-center gap-2 px-2.5 py-1.5 mb-1 rounded-lg text-[11px] text-left hover:bg-[var(--s3)] transition-colors ring-1 ring-inset ring-[var(--line)]">
-                          <FileText className="w-3 h-3 text-[var(--accent-text)] shrink-0" />
+                          className="w-full flex items-center gap-2 px-2.5 py-1.5 mb-1 rounded-lg text-xs text-left hover:bg-subtle transition-colors ring-1 ring-inset ring-line">
+                          <FileText className="w-3 h-3 text-accent-text shrink-0" />
                           <span className="flex-1 min-w-0">
-                            <span className="font-medium text-[var(--t2)] truncate block">{s.attachmentName}</span>
-                            <span className="text-[var(--t3)] truncate block text-[10.5px]">{s.emailSubject} · {s.sender}</span>
+                            <span className="font-medium text-fg-2 truncate block">{s.attachmentName}</span>
+                            <span className="text-fg-3 truncate block text-2xs">{s.emailSubject} · {s.sender}</span>
                           </span>
-                          <Plus className="w-3 h-3 text-[var(--t3)] shrink-0" />
+                          <Plus className="w-3 h-3 text-fg-3 shrink-0" />
                         </button>
                       ))}
                     </div>
                     <div className="flex items-center gap-2 flex-wrap">
                       <button onClick={sendWithAtts} disabled={sendingWithAtts || !replyAttachText.trim() || sendToList.length === 0}
-                        className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-[11.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-50 transition-colors">
+                        className="inline-flex items-center gap-1.5 h-7 px-3 rounded-lg text-xs font-semibold bg-fg text-page hover:opacity-90 disabled:opacity-50 transition-colors">
                         {sendingWithAtts ? <Loader2 className="w-3 h-3 animate-spin" />
                           : isThreadReply ? <Send className="w-3 h-3" /> : <Edit3 className="w-3 h-3" />}
                         {isThreadReply ? 'Send reply' : 'Draft in Outlook'}
                         {selectedAtts.length > 0 ? ` (${plural(selectedAtts.length, 'file')})` : ''}
                       </button>
-                      <span className="text-[10.5px] text-[var(--t3)]">
+                      <span className="text-2xs text-fg-3">
                         {isThreadReply
                           ? `Replies in the thread to ${detail.senderEmail}`
                           : `New email — lands in Outlook Drafts so you press Send there`}
@@ -3549,7 +3443,7 @@ function EmailDetailPanel({
 
                 {/* ── Resize grip — bottom edge, OUTSIDE the scroll container so drag works ── */}
                 <div
-                  className="group flex items-center h-6 border-t border-[var(--line)] select-none hover:bg-[var(--s3)] transition-colors"
+                  className="group flex items-center h-6 border-t border-line select-none hover:bg-subtle transition-colors"
                   style={{ cursor: 'row-resize' }}
                   onMouseDown={e => {
                     if ((e.target as HTMLElement).closest('button')) return;
@@ -3562,30 +3456,22 @@ function EmailDetailPanel({
                     e.preventDefault();
                   }}>
                   <div className="flex-1 flex items-center justify-center pointer-events-none">
-                    <div className="w-10 h-1 rounded-full bg-[var(--line-3)] group-hover:bg-[var(--t4)] transition-colors" />
+                    <div className="w-10 h-1 rounded-full bg-line-3 group-hover:bg-fg-4 transition-colors" />
                   </div>
                   <div className="flex items-center gap-0.5 pr-2">
-                    <button aria-label={panelMaximized ? 'Restore' : 'Maximise'}
-                      onClick={() => setPanelMaximized(p => !p)}
-                      title={panelMaximized ? 'Restore' : 'Maximise'}
-                      className="w-6 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
+                    <UiButton tone="ghost" size="xs" aria-label={panelMaximized ? 'Restore' : 'Maximise'} onClick={() => setPanelMaximized(p => !p)} hint={panelMaximized ? 'Restore' : 'Maximise'}>
                       {panelMaximized
                         ? <ChevronLeft className="w-3.5 h-3.5 rotate-90" />
                         : <ChevronRight className="w-3.5 h-3.5 rotate-90" />}
-                    </button>
-                    <button aria-label="Close"
-                      onClick={() => setActivePanel(null)}
-                      title="Close"
-                      className="w-6 h-5 rounded flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
-                      <X className="w-3.5 h-3.5" />
-                    </button>
+                    </UiButton>
+                    <UiIconButton icon={X} label="Close" size="xs" onClick={() => setActivePanel(null)} />
                   </div>
                 </div>
               </div>
             )}
 
           {/* ── Email body — main scrollable area ───────────────────────────── */}
-          <div ref={bodyRef} className={cn('flex-1 overflow-y-auto bg-[var(--s1)]', activePanel ? 'min-h-[180px]' : 'min-h-0')}>
+          <div ref={bodyRef} className={cn('flex-1 overflow-y-auto bg-surface', activePanel ? 'min-h-44' : 'min-h-0')}>
             {detail.htmlBody
               ? <EmailBodyFrame key={detail.entryId} html={detail.htmlBody} entryId={detail.entryId}
                   attachments={detail.attachments} onImageOpen={setLightbox} zoom={textZoom} />
@@ -3636,13 +3522,13 @@ function _ImapSetupScreen_UNUSED({
 
   return (
     <div className="flex flex-col items-center justify-center gap-5 h-full px-8 text-center">
-      <div className="w-14 h-14 rounded-2xl bg-violet-100 dark:bg-violet-900/30 ring-1 ring-inset ring-violet-200 dark:ring-violet-700/40 flex items-center justify-center">
-        <Mail className="w-6 h-6 text-violet-500" />
+      <div className="w-14 h-14 flex items-center justify-center text-ai">
+        <Mail className="w-6 h-6 text-ai" />
       </div>
 
       <div>
-        <p className="text-[15px] font-semibold text-[var(--t1)]">Connect your Eaton inbox</p>
-        <p className="text-[12.5px] text-[var(--t3)] mt-1 max-w-xs leading-relaxed">
+        <p className="text-lg font-semibold text-fg">Connect your Eaton inbox</p>
+        <p className="text-sm text-fg-3 mt-1 max-w-xs leading-relaxed">
           Eaton blocks standard login for apps. You need a one-time <strong>App Password</strong> from Microsoft — it takes about 60 seconds.
         </p>
       </div>
@@ -3650,45 +3536,42 @@ function _ImapSetupScreen_UNUSED({
       {step === 'intro' && (
         <div className="w-full max-w-sm space-y-3">
           {/* Step 1 */}
-          <div className="rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] px-4 py-3 text-left space-y-2">
-            <p className="text-[10.5px] font-bold text-[var(--t3)] uppercase tracking-wide">Step 1 — Open Microsoft Security</p>
-            <p className="text-[11.5px] text-[var(--t2)] leading-relaxed">
+          <div className="rounded-xl bg-surface ring-1 ring-inset ring-line-2 px-4 py-3 text-left space-y-2">
+            <p className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Step 1 — Open Microsoft Security</p>
+            <p className="text-xs text-fg-2 leading-relaxed">
               Click the button below. Sign in with your Eaton account if asked.
             </p>
             <a
               href="https://mysignins.microsoft.com/security-info"
               target="_blank"
               rel="noreferrer"
-              className="w-full inline-flex items-center justify-center gap-2 h-9 px-4 rounded-lg text-[12.5px] font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors">
+              className="w-full inline-flex items-center justify-center gap-2 h-9 px-4 rounded-lg text-sm font-semibold bg-accent text-on-accent hover:bg-accent transition-colors">
               <ExternalLink className="w-3.5 h-3.5" /> Open mysignins.microsoft.com
             </a>
           </div>
 
           {/* Step 2 */}
-          <div className="rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] px-4 py-3 text-left space-y-1.5">
-            <p className="text-[10.5px] font-bold text-[var(--t3)] uppercase tracking-wide">Step 2 — Create an App Password</p>
-            <ol className="text-[11.5px] text-[var(--t2)] leading-relaxed list-decimal list-inside space-y-0.5">
+          <div className="rounded-xl bg-surface ring-1 ring-inset ring-line-2 px-4 py-3 text-left space-y-1.5">
+            <p className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Step 2 — Create an App Password</p>
+            <ol className="text-xs text-fg-2 leading-relaxed list-decimal list-inside space-y-0.5">
               <li>Click <strong>+ Add sign-in method</strong></li>
               <li>Choose <strong>App password</strong> from the dropdown</li>
               <li>Name it anything (e.g. <em>Vector</em>)</li>
               <li>Copy the generated password — shown <strong>once only</strong></li>
             </ol>
-            <p className="text-[10.5px] text-amber-600 dark:text-amber-400 mt-1">
+            <p className="text-2xs text-warn mt-1">
               If "App password" is not in the list, Eaton IT has disabled it — contact IT support.
             </p>
           </div>
 
-          <button
-            onClick={() => setStep('paste')}
-            className="w-full inline-flex items-center justify-center gap-2 h-9 px-4 rounded-lg text-[12.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 transition-colors">
+          <UiButton tone="primary" size="lg" className="w-full" onClick={() => setStep('paste')}>
             I have my app password →
-          </button>
+          </UiButton>
 
           <div className="flex justify-end">
-            <button onClick={onRetry}
-              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-[var(--s3)] text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
+            <UiButton tone="ghost" onClick={onRetry}>
               <RefreshCw className="w-3 h-3" /> Retry connection
-            </button>
+            </UiButton>
           </div>
         </div>
       )}
@@ -3696,16 +3579,16 @@ function _ImapSetupScreen_UNUSED({
       {step === 'paste' && (
         <div className="w-full max-w-sm space-y-3">
           <div>
-            <label className="block text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1 text-left">Email</label>
+            <label className="block text-2xs font-semibold text-fg-3 uppercase tracking-wide mb-1 text-left">Email</label>
             <input
               type="email"
               value={email}
               onChange={e => setEmail(e.target.value)}
-              className="w-full h-9 px-3 rounded-lg text-[12.5px] bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-violet-400"
+              className="w-full h-9 px-3 rounded-lg text-sm bg-surface ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 focus:outline-none focus:ring-ai-line"
             />
           </div>
           <div>
-            <label className="block text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-1 text-left">App Password</label>
+            <label className="block text-2xs font-semibold text-fg-3 uppercase tracking-wide mb-1 text-left">App Password</label>
             <input
               type="text"
               value={password}
@@ -3715,35 +3598,31 @@ function _ImapSetupScreen_UNUSED({
               autoFocus
               autoComplete="off"
               spellCheck={false}
-              className="w-full h-9 px-3 rounded-lg text-[12.5px] font-mono bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t1)] placeholder:text-[var(--t3)] placeholder:font-sans focus:outline-none focus:ring-violet-400"
+              className="w-full h-9 px-3 rounded-lg text-sm mono bg-surface ring-1 ring-inset ring-line-2 text-fg placeholder:text-fg-3 placeholder:font-sans focus:outline-none focus:ring-ai-line"
             />
           </div>
 
-          <button
-            onClick={connect}
-            disabled={connecting || !email.trim() || !password.trim()}
-            className="w-full inline-flex items-center justify-center gap-2 h-9 px-4 rounded-lg text-[12.5px] font-semibold bg-violet-600 text-white hover:bg-violet-700 disabled:opacity-50 transition-colors">
+          <UiButton tone="primary" size="lg" className="w-full" onClick={connect} disabled={connecting || !email.trim() || !password.trim()}>
             {connecting
               ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Connecting…</>
               : <><Mail className="w-3.5 h-3.5" /> Connect</>}
-          </button>
+          </UiButton>
 
           {error && (
-            <div className="rounded-lg bg-red-50 dark:bg-red-900/20 ring-1 ring-inset ring-red-200 dark:ring-red-700/40 px-3 py-2.5 text-left">
-              <p className="text-[11.5px] text-red-700 dark:text-red-300 leading-relaxed">{error}</p>
+            <div className="rounded-lg bg-err-soft ring-1 ring-inset ring-err-line px-3 py-2.5 text-left">
+              <p className="text-xs text-err leading-relaxed">{error}</p>
             </div>
           )}
 
           <div className="flex items-center gap-2">
             <button onClick={() => { setStep('intro'); setError(''); }}
-              className="text-[11px] text-[var(--t3)] hover:text-violet-600 dark:hover:text-violet-400 transition-colors">
+              className="text-xs text-fg-3 hover:text-ai transition-colors">
               ← Back to instructions
             </button>
             <div className="flex-1" />
-            <button onClick={onRetry}
-              className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium bg-[var(--s3)] text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
+            <UiButton tone="ghost" onClick={onRetry}>
               <RefreshCw className="w-3 h-3" /> Retry
-            </button>
+            </UiButton>
           </div>
         </div>
       )}
@@ -3753,7 +3632,7 @@ function _ImapSetupScreen_UNUSED({
 
 
 // ─── List-row avatar helpers (mockup 3-pane look) ────────────────────────────
-const AVATAR_COLORS = ['#5b8cff', '#f87171', '#a78bfa', '#34d399', '#fbbf24', '#38bdf8', '#fb7185', '#818cf8'];
+const AVATAR_COLORS = ['var(--cat-1)', 'var(--cat-4)', 'var(--cat-5)', 'var(--cat-10)', 'var(--cat-12)', 'var(--cat-8)', 'var(--cat-7)', 'var(--cat-3)'];
 function avatarColor(seed: string) {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
@@ -4294,7 +4173,7 @@ export function InboxPage({
   if (available === null) {
     return (
       <div className="flex items-center justify-center h-full">
-        <Loader2 className="w-5 h-5 animate-spin text-[var(--t3)]" />
+        <Loader2 className="w-5 h-5 animate-spin text-fg-3" />
       </div>
     );
   }
@@ -4315,22 +4194,22 @@ export function InboxPage({
     // ── Classic Outlook / pywin32 error screen ────────────────────────────
     return (
       <div className="flex flex-col items-center justify-center gap-4 h-full px-8 text-center">
-        <div className="w-14 h-14 rounded-2xl bg-amber-100 dark:bg-amber-900/30 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/40 flex items-center justify-center">
-          <Mail className="w-6 h-6 text-amber-500" />
+        <div className="w-14 h-14 flex items-center justify-center text-warn">
+          <Mail className="w-6 h-6 text-warn" />
         </div>
         <div>
-          <p className="text-[15px] font-semibold text-[var(--t1)]">Outlook not available</p>
-          <p className="text-[12.5px] text-[var(--t3)] mt-1 max-w-sm leading-relaxed">
-            Make sure Classic Outlook is open and <code className="text-[11px] bg-[var(--s3)] px-1 rounded">pywin32</code> is installed.
+          <p className="text-lg font-semibold text-fg">Outlook not available</p>
+          <p className="text-sm text-fg-3 mt-1 max-w-sm leading-relaxed">
+            Make sure Classic Outlook is open and <code className="text-xs bg-subtle px-1 rounded">pywin32</code> is installed.
           </p>
         </div>
-        <div className="mt-1 px-4 py-3 rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-left max-w-sm w-full">
-          <p className="text-[11px] font-semibold text-[var(--t3)] uppercase tracking-wide mb-2">Setup</p>
-          <p className="text-[12px] text-[var(--t2)] font-mono bg-[var(--s3)] rounded px-2 py-1.5">pip install pywin32</p>
-          {availError && <p className="text-[11px] text-red-500 dark:text-red-400 mt-2">{availError}</p>}
+        <div className="mt-1 px-4 py-3 rounded-xl bg-surface ring-1 ring-inset ring-line-2 text-left max-w-sm w-full">
+          <p className="text-xs font-semibold text-fg-3 uppercase tracking-wide mb-2">Setup</p>
+          <p className="text-sm text-fg-2 mono bg-subtle rounded px-2 py-1.5">pip install pywin32</p>
+          {availError && <p className="text-xs text-err mt-2">{availError}</p>}
         </div>
         <button onClick={retryStatus}
-          className="inline-flex items-center gap-2 h-8 px-4 rounded-lg text-[12px] font-medium bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 transition-colors">
+          className="inline-flex items-center gap-2 h-8 px-4 rounded-lg text-sm font-medium bg-fg text-page hover:opacity-90 transition-colors">
           <RefreshCw className="w-3.5 h-3.5" /> Retry
         </button>
       </div>
@@ -4402,20 +4281,17 @@ export function InboxPage({
 
       {/* ── Full-screen email popout (double-click) ─────────────────────────── */}
       {popoutId && (
-        <div className="fixed inset-0 z-[9960] bg-black/60 backdrop-blur-sm flex items-center justify-center p-3"
+        <div className="fixed inset-0 z-overlay bg-overlay flex items-center justify-center p-3"
           onClick={e => { if (e.target === e.currentTarget) setPopoutId(null); }}>
-          <div className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-inset ring-[var(--line-2)] flex flex-col overflow-hidden"
-            style={{ width: 'min(96vw, 1400px)', height: 'min(95vh, 1200px)' }}>
+          <div className="bg-surface rounded-2xl ring-1 ring-inset ring-line-2 flex flex-col overflow-hidden"
+            style={{ width: 'min(96vw, var(--modal-2xl))', height: 'min(95vh, var(--modal-h))' }}>
             {/* Popout header */}
-            <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-[var(--line-2)] bg-[var(--s1)]">
-              <Mail className="w-4 h-4 text-[var(--t3)] shrink-0" />
-              <p className="flex-1 text-[12.5px] font-semibold text-[var(--t2)] truncate">
+            <div className="shrink-0 flex items-center gap-3 px-5 py-3 border-b border-line-2 bg-surface">
+              <Mail className="w-4 h-4 text-fg-3 shrink-0" />
+              <p className="flex-1 text-sm font-semibold text-fg-2 truncate">
                 {emails.find(e => e.entryId === popoutId)?.subject || '…'}
               </p>
-              <button aria-label="Close" onClick={() => setPopoutId(null)}
-                className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s-hover)] transition-colors">
-                <X className="w-4 h-4" />
-              </button>
+              <UiIconButton icon={X} label="Close" size="sm" onClick={() => setPopoutId(null)} />
             </div>
             {/* Popout body */}
             <div className="flex-1 min-h-0">
@@ -4436,23 +4312,21 @@ export function InboxPage({
       {/* ── Email row context menu ──────────────────────────────────────────── */}
       {emailMenu && (
         <>
-          <div className="fixed inset-0 z-[9990]" onClick={() => { setEmailMenu(null); setCategoryMenuId(null); }} />
+          <div className="fixed inset-0 z-modal" onClick={() => { setEmailMenu(null); setCategoryMenuId(null); }} />
           <div
-            className="fixed z-[9991] bg-[var(--s1)] rounded-xl shadow-xl ring-1 ring-inset ring-[var(--line-2)] py-1 min-w-[176px] text-[12px]"
+            className="fixed z-modal bg-surface rounded-xl shadow-float ring-1 ring-inset ring-line-2 py-1 min-w-44 text-sm"
             style={{ top: emailMenu.y, left: emailMenu.x }}>
-            <button onClick={() => handleFlag(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
-              <Star className={cn('w-3.5 h-3.5', starredEmails.has(emailMenu.id) ? 'text-amber-400 fill-amber-400' : 'text-[var(--t3)]')} />
+            <UiButton tone="ghost" className="w-full" onClick={() => handleFlag(emailMenu.id)}>
+              <Star className={cn('w-3.5 h-3.5', starredEmails.has(emailMenu.id) ? 'text-warn fill-warn' : 'text-fg-3')} />
               {starredEmails.has(emailMenu.id) ? 'Unflag' : 'Flag'}
-            </button>
-            <button onClick={() => handleMarkUnread(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
-              <Mail className="w-3.5 h-3.5 text-[var(--t3)]" />
+            </UiButton>
+            <UiButton tone="ghost" className="w-full" onClick={() => handleMarkUnread(emailMenu.id)}>
+              <Mail className="w-3.5 h-3.5 text-fg-3" />
               Mark as Unread
-            </button>
+            </UiButton>
             {/* Move to folder */}
             <div className="px-3 pt-1.5 pb-1">
-              <p className="text-[9.5px] font-semibold uppercase tracking-[0.06em] text-[var(--t4)] mb-1">Move to</p>
+              <p className="text-2xs font-semibold uppercase tracking-[0.06em] text-fg-4 mb-1">Move to</p>
               <div className="flex flex-wrap gap-1">
                 {([
                   { id: 'inbox' as InboxFolder,    label: 'Inbox',     Icon: InboxIcon },
@@ -4460,57 +4334,52 @@ export function InboxPage({
                   { id: 'processed' as InboxFolder,label: 'Processed', Icon: Check },
                   { id: 'archive' as InboxFolder,  label: 'Archive',   Icon: Archive },
                 ]).map(m => (
-                  <button key={m.id} onClick={() => moveToFolder(emailMenu.id, m.id)}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10.5px] font-medium bg-[var(--s3)] text-[var(--t2)] hover:bg-[var(--accent-soft)] hover:text-[var(--accent-text)] transition-colors">
+                  <UiButton tone="ghost" key={m.id} onClick={() => moveToFolder(emailMenu.id, m.id)}>
                     <m.Icon className="w-3 h-3" />{m.label}
-                  </button>
+                  </UiButton>
                 ))}
               </div>
             </div>
-            <hr className="my-1 border-[var(--line)]" />
-            <button onClick={() => handleForward(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
-              <Forward className="w-3.5 h-3.5 text-[var(--t3)]" />
+            <hr className="my-1 border-line" />
+            <UiButton tone="ghost" className="w-full" onClick={() => handleForward(emailMenu.id)}>
+              <Forward className="w-3.5 h-3.5 text-fg-3" />
               Forward
-            </button>
-            <button onClick={() => handleOpenInOutlook(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
-              <ExternalLink className="w-3.5 h-3.5 text-[var(--t3)]" />
+            </UiButton>
+            <UiButton tone="ghost" className="w-full" onClick={() => handleOpenInOutlook(emailMenu.id)}>
+              <ExternalLink className="w-3.5 h-3.5 text-fg-3" />
               Open in Outlook
-            </button>
-            <button onClick={() => setCategoryMenuId(categoryMenuId === emailMenu.id ? null : emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
-              <FolderOpen className="w-3.5 h-3.5 text-[var(--t3)]" />
+            </UiButton>
+            <UiButton tone="ghost" className="w-full" onClick={() => setCategoryMenuId(categoryMenuId === emailMenu.id ? null : emailMenu.id)}>
+              <FolderOpen className="w-3.5 h-3.5 text-fg-3" />
               <span className="flex-1">Categorize</span>
-              <ChevronRight className="w-3 h-3 text-[var(--t3)]" />
-            </button>
+              <ChevronRight className="w-3 h-3 text-fg-3" />
+            </UiButton>
             {categoryMenuId === emailMenu.id && (
               <div className="px-3 pb-2 flex flex-wrap gap-1.5">
                 {CATEGORIES.map(cat => (
                   <button key={cat} onClick={() => handleCategorize(emailMenu.id, cat)}
                     className={cn(
-                      'px-2 py-0.5 rounded-md text-[10.5px] font-medium ring-1 ring-inset transition-colors',
+                      'px-2 py-0.5 rounded-md text-2xs font-medium ring-1 ring-inset transition-colors',
                       emailCategories[emailMenu.id] === cat
-                        ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
-                        : 'bg-[var(--s3)] text-[var(--t2)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
+                        ? 'bg-ai-soft text-ai ring-ai-line '
+                        : 'bg-subtle text-fg-2 ring-line-2 hover:bg-subtle',
                     )}>
                     {cat}
                   </button>
                 ))}
               </div>
             )}
-            <hr className="my-1 border-[var(--line)]" />
-            <button onClick={() => handleDelete(emailMenu.id)}
-              className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-red-600 dark:text-red-400">
+            <hr className="my-1 border-line" />
+            <UiButton tone="quiet-danger" className="w-full" onClick={() => handleDelete(emailMenu.id)}>
               <Trash2 className="w-3.5 h-3.5" />
               Delete
-            </button>
+            </UiButton>
           </div>
         </>
       )}
 
       {/* ── Top bar ─────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-[var(--s1)] border-b border-[var(--line-2)]">
+      <div className="shrink-0 flex items-center gap-3 px-4 py-2 bg-surface border-b border-line-2">
 
         {/* Mailbox tabs */}
         <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
@@ -4518,10 +4387,10 @@ export function InboxPage({
           <button
             onClick={() => { setStoreId('default'); localStorage.setItem('inbox_storeId', 'default'); }}
             className={cn(
-              'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium whitespace-nowrap transition-colors',
+              'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors',
               storeId === 'default'
-                ? 'bg-[var(--t1)] text-[var(--bg)]'
-                : 'text-[var(--t3)] hover:bg-[var(--s3)]',
+                ? 'bg-fg text-page'
+                : 'text-fg-3 hover:bg-subtle',
             )}>
             <InboxIcon className="w-3 h-3 shrink-0" />
             Personal
@@ -4531,10 +4400,10 @@ export function InboxPage({
               key={m.storeId}
               onClick={() => { setStoreId(m.storeId); localStorage.setItem('inbox_storeId', m.storeId); }}
               className={cn(
-                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium whitespace-nowrap transition-colors',
+                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors',
                 storeId === m.storeId
-                  ? 'bg-[var(--t1)] text-[var(--bg)]'
-                  : 'text-[var(--t3)] hover:bg-[var(--s3)]',
+                  ? 'bg-fg text-page'
+                  : 'text-fg-3 hover:bg-subtle',
               )}>
               <Users className="w-3 h-3 shrink-0" />
               {m.name}
@@ -4548,10 +4417,10 @@ export function InboxPage({
         <button
           onClick={() => setUnreadOnly(u => { const next = !u; localStorage.setItem('inbox_unreadOnly', String(next)); return next; })}
           className={cn(
-            'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors',
+            'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-xs font-medium ring-1 ring-inset transition-colors',
             unreadOnly
-              ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-200 dark:ring-violet-700/40'
-              : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
+              ? 'bg-ai-soft text-ai ring-ai-line '
+              : 'text-fg-3 ring-line-2 hover:bg-subtle',
           )}>
           <Filter className="w-3 h-3" />
           Unread
@@ -4560,44 +4429,33 @@ export function InboxPage({
         {/* Open every PDF in the list as a tab. It acts on the list, not on the
             search, which is why it sits with the mailbox actions rather than
             beside the search box it used to crowd. */}
-        <button aria-label="Open all emails with PDFs as tabs"
-          onClick={openAllPdf}
-          title="Open all emails with PDFs as tabs"
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] transition-colors">
+        <UiButton tone="secondary" aria-label="Open all emails with PDFs as tabs" onClick={openAllPdf} hint="Open all emails with PDFs as tabs">
           <FolderOpen className="w-3 h-3" />
           PDFs
-        </button>
+        </UiButton>
 
         {/* Compose */}
-        <button
-          onClick={() => setComposeOpen(true)}
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] transition-colors">
+        <UiButton tone="secondary" onClick={() => setComposeOpen(true)}>
           <PenLine className="w-3 h-3" />
           Compose
-        </button>
+        </UiButton>
 
         {onSwitchLayout && (
-          <button onClick={onSwitchLayout} title="Switch to the Outlook-style layout"
-            className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)] hover:opacity-90 transition-opacity">
+          <UiButton tone="secondary" onClick={onSwitchLayout} hint="Switch to the Outlook-style layout">
             <Sparkles className="w-3 h-3" />
             New layout
-          </button>
+          </UiButton>
         )}
 
         {/* Refresh */}
-        <button aria-label="Refresh emails"
-          onClick={() => loadEmails(storeId, unreadOnly, true)}
-          disabled={loadingEmails}
-          className="w-7 h-7 rounded-md flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] disabled:opacity-40 transition-colors">
-          <RefreshCw className={cn('w-3.5 h-3.5', loadingEmails && 'animate-spin')} />
-        </button>
+        <UiIconButton icon={RefreshCw} label="Refresh emails" size="sm" onClick={() => loadEmails(storeId, unreadOnly, true)} disabled={loadingEmails} />
       </div>
 
       {/* ── Content: folder rail + email list + detail split pane ── */}
       <div className="flex-1 flex min-h-0">
 
         {/* ── Folder rail (far left) ───────────────────────────────────────── */}
-        <div className="shrink-0 w-[190px] flex flex-col gap-0.5 border-r border-[var(--line)] bg-[var(--s1)] p-3 overflow-y-auto vec-scroll">
+        <div className="shrink-0 w-48 flex flex-col gap-0.5 border-r border-line bg-surface p-3 overflow-y-auto vec-scroll">
           {FOLDERS.map(f => {
             const active = folder === f.id;
             const dropTarget = f.id !== 'attachments';   // 'attachments' is a derived view, not movable-to
@@ -4614,15 +4472,15 @@ export function InboxPage({
                 }) : undefined}
                 title={dropTarget ? `Drag an email here to move it to ${f.label}` : undefined}
                 className={cn(
-                  'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-[9px] text-[12.5px] transition-colors',
-                  over ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] font-semibold ring-1 ring-inset ring-[var(--accent-line)]'
-                    : active ? 'bg-[var(--s3)] text-[var(--t1)] font-semibold'
-                    : 'text-[var(--t2)] font-medium hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+                  'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-panel text-sm transition-colors',
+                  over ? 'bg-accent-soft text-accent-text font-semibold ring-1 ring-inset ring-accent-line'
+                    : active ? 'bg-subtle text-fg font-semibold'
+                    : 'text-fg-2 font-medium hover:bg-subtle hover:text-fg',
                 )}>
                 <f.Icon className="w-4 h-4 shrink-0 opacity-85" />
                 <span className="flex-1 text-left">{f.label}</span>
                 {f.count > 0 && (
-                  <span className="text-[10.5px] tabular-nums" style={{ color: active ? 'var(--t2)' : 'var(--t4)' }}>{f.count}</span>
+                  <span className="text-2xs tabular-nums" style={{ color: active ? 'var(--t2)' : 'var(--t4)' }}>{f.count}</span>
                 )}
               </button>
             );
@@ -4630,7 +4488,7 @@ export function InboxPage({
         </div>
 
         {/* ── Email list (left) ────────────────────────────────────────────── */}
-        <div ref={listPaneRef} className="shrink-0 flex flex-col border-r border-[var(--line-2)] bg-[var(--s1)]" style={{ width: listWidth }}>
+        <div ref={listPaneRef} className="shrink-0 flex flex-col border-r border-line-2 bg-surface" style={{ width: listWidth }}>
 
           {/* ── Search bar ────────────────────────────────────────────────
               One row: the box, the filter toggle, and the button that goes to
@@ -4638,9 +4496,9 @@ export function InboxPage({
               match-mode picker, "open every PDF") moved into the filter panel
               and the header — at 344 px, four controls beside the box left the
               box itself too narrow to read a query back in. */}
-          <div className="shrink-0 px-2 py-1.5 border-b border-[var(--line)] flex items-center gap-1.5">
-            <div className="flex-1 flex items-center gap-1.5 h-7 px-2 rounded-md bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] focus-within:ring-violet-400/60">
-              <Search className="w-3 h-3 text-[var(--t3)] shrink-0" />
+          <div className="shrink-0 px-2 py-1.5 border-b border-line flex items-center gap-1.5">
+            <div className="flex-1 flex items-center gap-1.5 h-7 px-2 rounded-md bg-subtle ring-1 ring-inset ring-line focus-within:ring-ai-line">
+              <Search className="w-3 h-3 text-fg-3 shrink-0" />
               <input
                 type="text"
                 value={emailSearch}
@@ -4651,10 +4509,10 @@ export function InboxPage({
                 }}
                 placeholder="Search… (Enter = quote folders)"
                 title="Type to filter the loaded list — press Enter to search the quote folders (Inbox + Completed by Laith)"
-                className="flex-1 bg-transparent text-[11.5px] text-[var(--t2)] placeholder:text-[var(--t3)] outline-none min-w-0"
+                className="flex-1 bg-transparent text-xs text-fg-2 placeholder:text-fg-3 outline-none min-w-0"
               />
               {emailSearch && (
-                <button aria-label="Clear search" onClick={() => setEmailSearch('')} className="text-[var(--t3)] hover:text-[var(--t1)]">
+                <button aria-label="Clear search" onClick={() => setEmailSearch('')} className="text-fg-3 hover:text-fg">
                   <X className="w-3 h-3" />
                 </button>
               )}
@@ -4665,10 +4523,10 @@ export function InboxPage({
               onClick={() => setShowFilters(v => !v)}
               title={anyFilter ? `Filters — ${pills.map(p => p.label).join(', ')}` : 'Filter by sender, date, folder, attachments or read state'}
               className={cn(
-                'shrink-0 h-7 pl-1.5 pr-2 rounded-md flex items-center gap-1 text-[10.5px] font-medium transition-colors',
+                'shrink-0 h-7 pl-1.5 pr-2 rounded-md flex items-center gap-1 text-2xs font-medium transition-colors',
                 anyFilter
-                  ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)]'
-                  : showFilters ? 'bg-[var(--s3)] text-[var(--t1)]' : 'text-[var(--t3)] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
+                  ? 'bg-accent-soft text-accent-text ring-1 ring-inset ring-accent-line'
+                  : showFilters ? 'bg-subtle text-fg' : 'text-fg-3 hover:bg-subtle hover:text-fg',
               )}>
               <SlidersHorizontal className="w-3.5 h-3.5" />
               {anyFilter ? pills.length : ''}
@@ -4680,8 +4538,8 @@ export function InboxPage({
               title={deepLoading ? 'Stop the search' : 'Search UKQuoteFactoryEL — Inbox + Completed by Laith (subject, sender, body, attachment names)'}
               className={cn(
                 'shrink-0 w-7 h-7 rounded-md flex items-center justify-center transition-colors',
-                deepLoading ? 'text-amber-500 hover:bg-amber-100/60 dark:hover:bg-amber-900/30'
-                  : 'text-[var(--accent-text)] hover:bg-[var(--accent-soft)] disabled:opacity-35 disabled:hover:bg-transparent',
+                deepLoading ? 'text-warn hover:bg-warn-soft '
+                  : 'text-accent-text hover:bg-accent-soft disabled:opacity-35 disabled:hover:bg-transparent',
               )}>
               {deepLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Globe className="w-3.5 h-3.5" />}
             </button>
@@ -4703,17 +4561,15 @@ export function InboxPage({
           {/* What is narrowing the list, when the panel that says so is shut.
               Each pill drops its own filter. */}
           {!showFilters && anyFilter && (
-            <div className="shrink-0 px-2 py-1.5 border-b border-[var(--line)] flex flex-wrap items-center gap-1">
+            <div className="shrink-0 px-2 py-1.5 border-b border-line flex flex-wrap items-center gap-1">
               {pills.map(p => (
-                <button key={p.key} onClick={() => setFilters(p.patch)}
-                  title={`Remove this filter`}
-                  className="inline-flex items-center gap-1 h-[20px] pl-2 pr-1.5 rounded-full text-[10px] font-medium bg-[var(--accent-soft)] text-[var(--accent-text)] ring-1 ring-inset ring-[var(--accent-line)] hover:opacity-80 transition-opacity">
-                  <span className="truncate max-w-[130px]">{p.label}</span>
+                <UiButton tone="secondary" size="xs" key={p.key} onClick={() => setFilters(p.patch)} hint={`Remove this filter`}>
+                  <span className="truncate max-w-32">{p.label}</span>
                   <X className="w-2.5 h-2.5 shrink-0" />
-                </button>
+                </UiButton>
               ))}
               <button onClick={() => setFiltersRaw(EMPTY_FILTERS)}
-                className="text-[10px] font-medium text-[var(--t3)] hover:text-[var(--t1)] px-1">Clear all</button>
+                className="text-2xs font-medium text-fg-3 hover:text-fg px-1">Clear all</button>
             </div>
           )}
 
@@ -4721,11 +4577,11 @@ export function InboxPage({
               The scope of a search is fixed (SEARCH_SCOPE in outlook_reader.py),
               so it is stated, not chosen. */}
           {(deepActive || (!!sq && !deepLoading)) && (
-            <div className="shrink-0 px-2.5 py-1.5 border-b border-[var(--line)] bg-[var(--s2)] flex items-center gap-2 text-[10.5px]">
+            <div className="shrink-0 px-2.5 py-1.5 border-b border-line bg-raised flex items-center gap-2 text-2xs">
               {deepActive ? (
                 <>
-                  <Globe className="w-3 h-3 shrink-0 text-[var(--accent-text)]" />
-                  <span className="flex-1 min-w-0 truncate text-[var(--t3)]"
+                  <Globe className="w-3 h-3 shrink-0 text-accent-text" />
+                  <span className="flex-1 min-w-0 truncate text-fg-3"
                     title={[
                       `Searched ${SEARCH_SCOPE_LABEL}`,
                       `Rule: ${MATCH_MODE_OPTIONS.find(o => o.id === deepMode)?.label}`,
@@ -4736,7 +4592,7 @@ export function InboxPage({
                     {deepLoading
                       ? <>Searching {SEARCH_SCOPE_LABEL}{deepQuery ? <> for “{deepQuery}”</> : ' '}…</>
                       : <>
-                          <span className="font-semibold text-[var(--t2)]">{deepMeta?.total ?? displayEmails.length}</span>
+                          <span className="font-semibold text-fg-2">{deepMeta?.total ?? displayEmails.length}</span>
                           {' '}hit{(deepMeta?.total ?? 0) === 1 ? '' : 's'}{deepQuery ? <> for “{deepQuery}”</> : ''}
                           {deepScope !== 'all' ? ` · in ${SCOPE_OPTIONS.find(o => o.id === deepScope)?.label}` : ''}
                           {deepMode !== 'part' ? ` · ${MATCH_MODE_OPTIONS.find(o => o.id === deepMode)?.label}` : ''}
@@ -4745,17 +4601,17 @@ export function InboxPage({
                           {deepMeta && deepMeta.total > displayEmails.length ? ` · showing ${displayEmails.length}` : ''}
                         </>}
                   </span>
-                  <button onClick={clearDeepSearch} className="shrink-0 text-[var(--t3)] hover:text-[var(--t1)] font-medium">
+                  <button onClick={clearDeepSearch} className="shrink-0 text-fg-3 hover:text-fg font-medium">
                     {deepLoading ? 'Stop' : 'Back to list'}
                   </button>
                 </>
               ) : (
                 <>
-                  <span className="flex-1 min-w-0 truncate text-[var(--t3)]">
+                  <span className="flex-1 min-w-0 truncate text-fg-3">
                     {localFiltered.length} of {emails.length} loaded emails
                   </span>
                   <button onClick={() => runDeepSearch(emailSearch)}
-                    className="shrink-0 font-medium text-[var(--accent-text)] hover:underline">
+                    className="shrink-0 font-medium text-accent-text hover:underline">
                     Search quote folders ↵
                   </button>
                 </>
@@ -4763,12 +4619,12 @@ export function InboxPage({
               <span
                 title={`Search covers ${SEARCH_SCOPE_LABEL} — subject, sender, recipients, body and attachment names.`
                      + (indexInfo?.lastSync ? `\nIndex last synced ${indexInfo.lastSync}` : '')}
-                className="shrink-0 text-[var(--t4)] tabular-nums">
+                className="shrink-0 text-fg-4 tabular-nums">
                 {indexInfo?.built ? `${indexInfo.total.toLocaleString()} indexed` : 'index cold'}
               </span>
               <button aria-label="Re-read the quote folders from Outlook and rebuild the local index" onClick={reindex} disabled={indexBusy}
                 title="Re-read the quote folders from Outlook and rebuild the local index"
-                className="shrink-0 text-[var(--t3)] hover:text-[var(--t1)] disabled:opacity-40">
+                className="shrink-0 text-fg-3 hover:text-fg disabled:opacity-40">
                 {indexBusy ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
               </button>
             </div>
@@ -4776,9 +4632,9 @@ export function InboxPage({
 
           {(deepLoading || (loadingEmails && !deepActive)) ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-2 px-6 text-center">
-              <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" />
+              <Loader2 className="w-5 h-5 animate-spin text-fg-4" />
               {deepLoading && (
-                <p className="text-[11px] text-[var(--t3)] leading-relaxed">
+                <p className="text-xs text-fg-3 leading-relaxed">
                   Searching {SEARCH_SCOPE_LABEL} — subject, sender, body and attachment names.
                   Instant off the local index; the first run reads the folders from Outlook and takes a couple of minutes.
                 </p>
@@ -4786,8 +4642,8 @@ export function InboxPage({
             </div>
           ) : displayEmails.length === 0 ? (
             <div className="flex-1 flex flex-col items-center justify-center gap-2 px-4 text-center">
-              <Mail className="w-8 h-8 text-[var(--t4)]" />
-              <p className="text-[12px] text-[var(--t3)]">
+              <Mail className="w-8 h-8 text-fg-4" />
+              <p className="text-sm text-fg-3">
                 {deepActive
                   ? (deepQuery
                       ? `Nothing in the quote folders matches “${deepQuery}”`
@@ -4799,15 +4655,15 @@ export function InboxPage({
               {/* An empty result under filters is usually the filters, not the
                   mailbox — say which ones are doing it, and offer the way out. */}
               {anyFilter && (
-                <p className="text-[10.5px] text-[var(--t4)] max-w-[240px] leading-relaxed">
+                <p className="text-2xs text-fg-4 max-w-60 leading-relaxed">
                   Filtered by {pills.map(p => p.label).join(', ')}.{' '}
                   <button onClick={() => setFiltersRaw(EMPTY_FILTERS)}
-                    className="font-medium text-[var(--accent-text)] hover:underline">Clear the filters</button>
+                    className="font-medium text-accent-text hover:underline">Clear the filters</button>
                 </p>
               )}
               {!deepActive && (emailSearch.trim().length >= 2 || anyFilter) && (
                 <button onClick={() => runDeepSearch(emailSearch)}
-                  className="text-[11.5px] font-medium text-[var(--accent-text)] hover:underline">
+                  className="text-xs font-medium text-accent-text hover:underline">
                   Search the quote folders instead
                 </button>
               )}
@@ -4825,62 +4681,58 @@ export function InboxPage({
                   onClick={() => openEmail(email.entryId)}
                   onDoubleClick={() => setPopoutId(email.entryId)}
                   className={cn(
-                    'w-full flex gap-2.5 items-start px-3 py-2.5 text-left border-b border-[var(--line)] transition-colors cursor-pointer select-none relative group',
+                    'w-full flex gap-2.5 items-start px-3 py-2.5 text-left border-b border-line transition-colors cursor-pointer select-none relative group',
                     email.entryId === selectedId
-                      ? 'bg-[var(--s3)] border-l-2 border-l-violet-500 dark:border-l-violet-400 pl-[10px]'
-                      : 'hover:bg-[var(--s3)]',
+                      ? 'bg-subtle border-l-2 border-l-ai-line pl-2.5'
+                      : 'hover:bg-subtle',
                   )}>
                   {/* Three-dot menu */}
-                  <button aria-label="Email actions"
-                    onClick={e => { e.stopPropagation(); setEmailMenu({ id: email.entryId, x: e.clientX, y: e.clientY }); }}
-                    className="absolute right-2 top-2 w-5 h-5 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 text-[var(--t3)] hover:bg-[var(--s-hover)] transition-all z-10">
-                    <MoreHorizontal className="w-3 h-3" />
-                  </button>
+                  <UiIconButton icon={MoreHorizontal} label="Email actions" size="xs" className="absolute right-2 top-2 opacity-0 group-hover:opacity-100 z-10" onClick={e => { e.stopPropagation(); setEmailMenu({ id: email.entryId, x: e.clientX, y: e.clientY }); }} />
                   {/* Round avatar */}
-                  <span className="w-[30px] h-[30px] mt-0.5 shrink-0 rounded-full flex items-center justify-center text-[11px] font-semibold text-white select-none"
+                  <span className="w-7 h-7 mt-0.5 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold text-on-accent select-none"
                     style={{ background: avatarColor(email.senderEmail || email.sender) }}>
                     {avatarInitials(email.sender)}
                   </span>
                   <div className="flex-1 min-w-0 flex flex-col gap-0.5">
                     <div className="flex items-center gap-1.5 min-w-0 pr-5">
                       {email.unread && (
-                        <span className="w-1.5 h-1.5 rounded-full bg-violet-500 shrink-0" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-ai shrink-0" />
                       )}
                       {starredEmails.has(email.entryId) && (
-                        <Star className="w-3 h-3 text-amber-400 fill-amber-400 shrink-0" />
+                        <Star className="w-3 h-3 text-warn fill-warn shrink-0" />
                       )}
                       <p className={cn(
-                        'text-[12px] truncate flex-1',
-                        email.unread ? 'font-semibold text-[var(--t1)]' : 'font-medium text-[var(--t2)]',
+                        'text-sm truncate flex-1',
+                        email.unread ? 'font-semibold text-fg' : 'font-medium text-fg-2',
                       )}>
                         <Highlight text={email.sender} terms={hlTerms} mode={hlMode} />
                       </p>
-                      <span className="text-[10px] text-[var(--t3)] shrink-0 tabular-nums">{fmtDate(email.received)}</span>
+                      <span className="text-2xs text-fg-3 shrink-0 tabular-nums">{fmtDate(email.received)}</span>
                     </div>
-                    <p className={cn('text-[11.5px] truncate', email.unread ? 'font-medium text-[var(--t2)]' : 'text-[var(--t3)]')}>
+                    <p className={cn('text-xs truncate', email.unread ? 'font-medium text-fg-2' : 'text-fg-3')}>
                       <Highlight text={email.subject} terms={hlTerms} mode={hlMode} />
                     </p>
                     {/* Search hits can come from anywhere — say where. */}
                     {email.folder && (
-                      <span className="inline-flex items-center gap-1 text-[9.5px] text-[var(--t4)] truncate" title={email.folder}>
+                      <span className="inline-flex items-center gap-1 text-2xs text-fg-4 truncate" title={email.folder}>
                         <FolderOpen className="w-2.5 h-2.5 shrink-0" />
                         <span className="truncate">{email.folder}</span>
                       </span>
                     )}
                     <div className="flex items-center gap-2">
-                      <span className="text-[10.5px] text-[var(--t3)] truncate flex-1"><Highlight text={email.bodyPreview || ' '} terms={hlTerms} mode={hlMode} /></span>
+                      <span className="text-2xs text-fg-3 truncate flex-1"><Highlight text={email.bodyPreview || ' '} terms={hlTerms} mode={hlMode} /></span>
                       {emailCategories[email.entryId] && (
-                        <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 truncate max-w-[64px]">
+                        <span className="shrink-0 text-2xs font-semibold px-1.5 py-0.5 rounded-full bg-ai-soft text-ai truncate max-w-16">
                           {emailCategories[email.entryId]}
                         </span>
                       )}
                       {email.hasPdf && (
-                        <span className="inline-flex items-center gap-0.5 text-[10px] text-[var(--accent-text)] font-medium shrink-0">
+                        <span className="inline-flex items-center gap-0.5 text-2xs text-accent-text font-medium shrink-0">
                           <FileText className="w-2.5 h-2.5" /> PDF
                         </span>
                       )}
                       {email.attachments.length > 0 && !email.hasPdf && (
-                        <span className="inline-flex items-center gap-0.5 text-[10px] text-[var(--t3)] shrink-0">
+                        <span className="inline-flex items-center gap-0.5 text-2xs text-fg-3 shrink-0">
                           <Paperclip className="w-2.5 h-2.5" /> {email.attachments.length}
                         </span>
                       )}
@@ -4892,20 +4744,17 @@ export function InboxPage({
                 </div>
               ))}
               {!sq && hasMoreEmails && (
-                <button
-                  onClick={loadMoreEmails}
-                  disabled={loadingMore}
-                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 text-[11.5px] font-medium text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/15 disabled:opacity-50 transition-colors">
+                <UiButton tone="ghost" className="w-full" onClick={loadMoreEmails} disabled={loadingMore}>
                   {loadingMore
                     ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…</>
                     : <><ChevronDown className="w-3.5 h-3.5" /> Load more</>}
-                </button>
+                </UiButton>
               )}
             </div>
           )}
           {emails.length > 0 && (
-            <div className="shrink-0 px-3 py-2 border-t border-[var(--line)] flex items-center justify-between">
-              <p className="text-[10.5px] text-[var(--t3)]">
+            <div className="shrink-0 px-3 py-2 border-t border-line flex items-center justify-between">
+              <p className="text-2xs text-fg-3">
                 {sq ? `${displayEmails.length} of ${emails.length}` : (
                   emails.filter(e => e.unread).length > 0
                     ? `${emails.filter(e => e.unread).length} unread · ${emails.length}`
@@ -4913,7 +4762,7 @@ export function InboxPage({
                 )}
               </p>
               {cacheAge && (
-                <p className="text-[10px] text-[var(--t4)]">Updated {cacheAge}</p>
+                <p className="text-2xs text-fg-4">Updated {cacheAge}</p>
               )}
             </div>
           )}
@@ -4924,7 +4773,7 @@ export function InboxPage({
           role="separator"
           aria-orientation="vertical"
           title="Drag to resize"
-          className="group relative w-2 shrink-0 cursor-col-resize flex items-center justify-center bg-[var(--s3)] hover:bg-violet-100 dark:hover:bg-violet-900/30 transition-colors"
+          className="group relative w-2 shrink-0 cursor-col-resize flex items-center justify-center bg-subtle hover:bg-ai-soft transition-colors"
           onMouseDown={e => {
             resizingRef.current = true;
             resizeStartX.current = e.clientX;
@@ -4935,11 +4784,11 @@ export function InboxPage({
           }}
           onDoubleClick={() => { setListWidth(288); localStorage.setItem('inbox_list_width', '288'); if (listPaneRef.current) listPaneRef.current.style.width = '288px'; }}
         >
-          <span className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-[var(--s3)] group-hover:bg-violet-400 dark:group-hover:bg-violet-500" />
+          <span className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-subtle group-hover:bg-ai " />
           <span className="relative flex flex-col gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
-            <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
-            <span className="w-0.5 h-0.5 rounded-full bg-violet-500" />
+            <span className="w-0.5 h-0.5 rounded-full bg-ai" />
+            <span className="w-0.5 h-0.5 rounded-full bg-ai" />
+            <span className="w-0.5 h-0.5 rounded-full bg-ai" />
           </span>
         </div>
 
@@ -4954,11 +4803,11 @@ export function InboxPage({
 
           {/* Tab bar */}
           {openTabs.length > 0 && (
-            <div className="shrink-0 flex items-center border-b border-[var(--line-2)] bg-[var(--s1)]">
+            <div className="shrink-0 flex items-center border-b border-line-2 bg-surface">
               {/* Scroll-left arrow */}
               <button aria-label="Scroll tabs left"
                 onClick={() => scrollTabBar('left')}
-                className="shrink-0 w-6 h-full flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors border-r border-[var(--line)]">
+                className="shrink-0 w-6 h-full flex items-center justify-center text-fg-3 hover:text-fg hover:bg-subtle transition-colors border-r border-line">
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
 
@@ -4967,7 +4816,7 @@ export function InboxPage({
                 ref={tabBarRef}
                 className={cn(
                   'flex-1 flex items-center overflow-x-auto scrollbar-none transition-colors',
-                  tabBarDragOver && 'bg-violet-50/60 dark:bg-violet-900/20',
+                  tabBarDragOver && 'bg-ai-soft ',
                 )}
                 onWheel={e => { e.stopPropagation(); tabBarRef.current?.scrollBy({ left: e.deltaY + e.deltaX, behavior: 'auto' }); }}
                 onDragOver={e => {
@@ -5013,27 +4862,27 @@ export function InboxPage({
                     onClick={() => { setActiveTabId(t.id); setSelectedId(t.id); }}
                     onContextMenu={e => { e.preventDefault(); setTabCtxMenu({ id: t.id, x: e.clientX, y: e.clientY }); }}
                     className={cn(
-                      'group relative flex items-center gap-1.5 px-3 py-2 border-r border-[var(--line)] shrink-0 cursor-grab active:cursor-grabbing min-w-[80px] max-w-[200px] transition-colors select-none',
+                      'group relative flex items-center gap-1.5 px-3 py-2 border-r border-line shrink-0 cursor-grab active:cursor-grabbing min-w-20 max-w-48 transition-colors select-none',
                       t.id === activeTabId
-                        ? 'bg-[var(--s1)] text-[var(--t1)] after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-violet-500'
-                        : 'text-[var(--t3)] hover:bg-white/70 dark:hover:bg-[var(--s-hover)]',
+                        ? 'bg-surface text-fg after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-ai'
+                        : 'text-fg-3 hover:bg-surface ',
                       dragOverIdx === tabIdx && dragTabIdx !== null && dragTabIdx !== tabIdx
-                        ? 'ring-1 ring-inset ring-violet-400 dark:ring-violet-500 bg-violet-50/60 dark:bg-violet-900/20'
+                        ? 'ring-1 ring-inset ring-ai-line bg-ai-soft '
                         : '',
                     )}>
                     {/* Pin indicator */}
                     {t.pinned
-                      ? <Pin className="w-2.5 h-2.5 shrink-0 text-violet-500" />
+                      ? <Pin className="w-2.5 h-2.5 shrink-0 text-ai" />
                       : <Mail className="w-3 h-3 shrink-0 opacity-40" />}
                     {/* Unread dot */}
-                    {t.unread && <span className="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" />}
-                    <span className="text-[11px] font-medium truncate flex-1">{t.label}</span>
+                    {t.unread && <span className="w-1.5 h-1.5 rounded-full bg-accent shrink-0" />}
+                    <span className="text-xs font-medium truncate flex-1">{t.label}</span>
                     {/* Close button — hidden for pinned tabs */}
                     {!t.pinned && (
                       <button aria-label="Close tab"
                         onClick={e => { e.stopPropagation(); closeTab(t.id); }}
                         title="Close tab"
-                        className="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-[var(--s-hover)] transition-all shrink-0 ml-0.5">
+                        className="w-4 h-4 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 hover:bg-hover transition-all shrink-0 ml-0.5">
                         <X className="w-2.5 h-2.5" />
                       </button>
                     )}
@@ -5044,7 +4893,7 @@ export function InboxPage({
               {/* Scroll-right arrow */}
               <button aria-label="Scroll tabs right"
                 onClick={() => scrollTabBar('right')}
-                className="shrink-0 w-6 h-full flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors border-l border-[var(--line)]">
+                className="shrink-0 w-6 h-full flex items-center justify-center text-fg-3 hover:text-fg hover:bg-subtle transition-colors border-l border-line">
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
@@ -5053,23 +4902,19 @@ export function InboxPage({
           {/* Tab right-click context menu */}
           {tabCtxMenu && (
             <>
-              <div className="fixed inset-0 z-[9990]" onClick={() => setTabCtxMenu(null)} />
+              <div className="fixed inset-0 z-modal" onClick={() => setTabCtxMenu(null)} />
               <div
-                className="fixed z-[9991] bg-[var(--s1)] rounded-lg shadow-xl ring-1 ring-inset ring-[var(--line)] py-1 min-w-[140px] text-[12px]"
+                className="fixed z-modal bg-surface rounded-lg shadow-float ring-1 ring-inset ring-line py-1 min-w-36 text-sm"
                 style={{ top: tabCtxMenu.y, left: tabCtxMenu.x }}>
-                <button
-                  onClick={() => togglePinTab(tabCtxMenu.id)}
-                  className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-[var(--s3)] transition-colors text-[var(--t2)]">
+                <UiButton tone="ghost" className="w-full" onClick={() => togglePinTab(tabCtxMenu.id)}>
                   {openTabs.find(t => t.id === tabCtxMenu.id)?.pinned
-                    ? <><PinOff className="w-3.5 h-3.5 text-[var(--t3)]" /> Unpin tab</>
-                    : <><Pin className="w-3.5 h-3.5 text-violet-500" /> Pin tab</>}
-                </button>
+                    ? <><PinOff className="w-3.5 h-3.5 text-fg-3" /> Unpin tab</>
+                    : <><Pin className="w-3.5 h-3.5 text-ai" /> Pin tab</>}
+                </UiButton>
                 {!openTabs.find(t => t.id === tabCtxMenu.id)?.pinned && (
-                  <button
-                    onClick={() => { closeTab(tabCtxMenu.id); setTabCtxMenu(null); }}
-                    className="w-full flex items-center gap-2.5 px-3 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors text-red-600 dark:text-red-400">
+                  <UiButton tone="quiet-danger" className="w-full" onClick={() => { closeTab(tabCtxMenu.id); setTabCtxMenu(null); }}>
                     <X className="w-3.5 h-3.5" /> Close tab
-                  </button>
+                  </UiButton>
                 )}
               </div>
             </>
@@ -5078,10 +4923,10 @@ export function InboxPage({
           {/* Empty state */}
           {openTabs.length === 0 && (
             <div className="flex-1 flex flex-col items-center justify-center gap-3 px-8 text-center">
-              <div className="w-12 h-12 rounded-2xl bg-[var(--s3)] flex items-center justify-center">
-                <Mail className="w-5 h-5 text-[var(--t3)]" />
+              <div className="w-12 h-12 flex items-center justify-center">
+                <Mail className="w-5 h-5 text-fg-3" />
               </div>
-              <p className="text-[13px] text-[var(--t3)]">Select an email to read and analyse</p>
+              <p className="text-base text-fg-3">Select an email to read and analyse</p>
             </div>
           )}
 

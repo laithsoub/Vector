@@ -4,7 +4,7 @@ import {
   Sparkles, Send, Trash2, Copy, Check, Loader2, AlertCircle,
   Mail, ClipboardList, Zap, HelpCircle, ChevronRight, CornerDownLeft,
   MessageSquare, Plus, Search, ExternalLink, FolderOpen, X, FileText, User,
-  Download,
+  Download, ChevronDown, Eraser,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
@@ -13,6 +13,11 @@ import { relTime } from '../lib/ui';
 import { exportAnswer, EXPORT_FORMATS, type ExportFormat } from '../lib/export';
 import type { ToastFn } from '../App';
 import type { DqDoc } from '../types';
+import {
+  AiComposer, AiMessage, AiPromptGrid, AiSuggestions, AiThinking, AiThread, AiWelcome, Badge,
+  Button as UiButton, CopyAction, IconButton as UiIconButton, Menu, UserMessage, useThinkingSteps,
+  type AiPrompt,
+} from '../ui';
 
 const CONVS_KEY  = 'mu_assistant_convs';
 const ACTIVE_KEY = 'mu_assistant_active';
@@ -147,8 +152,8 @@ function Markdown({ text }: { text: string }) {
     out.push(
       <ul key={out.length} className="my-1.5 space-y-1 pl-0.5">
         {ulBuf.map((item, i) => (
-          <li key={i} className="flex gap-2 text-[12.5px] text-[var(--t2)] leading-relaxed">
-            <span className="text-violet-400 shrink-0 select-none mt-0.5">•</span>
+          <li key={i} className="flex gap-2 text-sm text-fg-2 leading-relaxed">
+            <span className="text-ai shrink-0 select-none mt-0.5">•</span>
             <span>{inlineRender(item)}</span>
           </li>
         ))}
@@ -161,8 +166,8 @@ function Markdown({ text }: { text: string }) {
     out.push(
       <ol key={out.length} className="my-1.5 space-y-1 pl-0.5">
         {olBuf.map((item, i) => (
-          <li key={i} className="flex gap-2 text-[12.5px] text-[var(--t2)] leading-relaxed">
-            <span className="text-violet-500 font-semibold shrink-0 w-4 text-right mt-0.5 select-none">{i + 1}.</span>
+          <li key={i} className="flex gap-2 text-sm text-fg-2 leading-relaxed">
+            <span className="text-ai font-semibold shrink-0 w-4 text-right mt-0.5 select-none">{i + 1}.</span>
             <span>{inlineRender(item)}</span>
           </li>
         ))}
@@ -173,7 +178,7 @@ function Markdown({ text }: { text: string }) {
   const flushCode = () => {
     if (!codeBuf.length) return;
     out.push(
-      <pre key={out.length} className="my-2 px-3 py-2.5 rounded-lg bg-[var(--term)] text-[11px] text-emerald-300 font-mono overflow-x-auto leading-relaxed">
+      <pre key={out.length} className="my-2 px-3 py-2.5 rounded-lg bg-term text-xs text-ok mono overflow-x-auto leading-relaxed">
         {codeBuf.join('\n')}
       </pre>,
     );
@@ -188,16 +193,16 @@ function Markdown({ text }: { text: string }) {
       const header = cells(tableBuf[0]);
       const rows = tableBuf.slice(2).map(cells);
       out.push(
-        <div key={out.length} className="my-2.5 overflow-x-auto rounded-lg ring-1 ring-inset ring-[var(--line-2)]">
-          <table className="w-full text-[12px] border-collapse">
+        <div key={out.length} className="my-2.5 overflow-x-auto rounded-lg ring-1 ring-inset ring-line-2">
+          <table className="w-full text-sm border-collapse">
             <thead>
               <tr>{header.map((h, i) => (
-                <th key={i} className="text-left font-semibold text-[var(--t1)] px-2.5 py-1.5 border-b border-[var(--line-2)] bg-[var(--s3)] whitespace-nowrap">{inlineRender(h)}</th>
+                <th key={i} className="text-left font-semibold text-fg px-2.5 py-1.5 border-b border-line-2 bg-subtle whitespace-nowrap">{inlineRender(h)}</th>
               ))}</tr>
             </thead>
             <tbody>{rows.map((r, ri) => (
-              <tr key={ri} className="odd:bg-[var(--s1)] even:bg-[var(--s2)]">
-                {r.map((c, ci) => <td key={ci} className="px-2.5 py-1.5 text-[var(--t2)] align-top border-b border-[var(--line)]">{inlineRender(c)}</td>)}
+              <tr key={ri} className="odd:bg-surface even:bg-raised">
+                {r.map((c, ci) => <td key={ci} className="px-2.5 py-1.5 text-fg-2 align-top border-b border-line">{inlineRender(c)}</td>)}
               </tr>
             ))}</tbody>
           </table>
@@ -205,7 +210,7 @@ function Markdown({ text }: { text: string }) {
       );
     } else {
       // Not a real table — render the buffered lines as plain paragraphs.
-      for (const l of tableBuf) out.push(<p key={out.length} className="text-[12.5px] text-[var(--t2)] leading-relaxed">{inlineRender(l)}</p>);
+      for (const l of tableBuf) out.push(<p key={out.length} className="text-sm text-fg-2 leading-relaxed">{inlineRender(l)}</p>);
     }
     tableBuf = [];
   };
@@ -223,14 +228,14 @@ function Markdown({ text }: { text: string }) {
     if (isTableRow) { flushUl(); flushOl(); tableBuf.push(raw); continue; }
     flushTable();
     if (!raw) { flushUl(); flushOl(); out.push(<div key={out.length} className="h-1.5" />); continue; }
-    if (/^---+$/.test(raw)) { flushUl(); flushOl(); out.push(<hr key={out.length} className="my-3 border-violet-200/60 dark:border-violet-800/40" />); continue; }
-    if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[12px] font-bold mt-3 mb-0.5 text-[var(--t1)]">{inlineRender(raw.slice(4))}</p>); continue; }
-    if (raw.startsWith('## '))  { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[13px] font-bold mt-3 mb-0.5 text-[var(--t1)]">{inlineRender(raw.slice(3))}</p>); continue; }
-    if (raw.startsWith('# '))   { flushUl(); flushOl(); out.push(<p key={out.length} className="text-[14px] font-bold mt-3 mb-1   text-[var(--t1)]">{inlineRender(raw.slice(2))}</p>); continue; }
+    if (/^---+$/.test(raw)) { flushUl(); flushOl(); out.push(<hr key={out.length} className="my-3 border-ai-line " />); continue; }
+    if (raw.startsWith('### ')) { flushUl(); flushOl(); out.push(<p key={out.length} className="text-sm font-semibold mt-3 mb-0.5 text-fg">{inlineRender(raw.slice(4))}</p>); continue; }
+    if (raw.startsWith('## '))  { flushUl(); flushOl(); out.push(<p key={out.length} className="text-base font-semibold mt-3 mb-0.5 text-fg">{inlineRender(raw.slice(3))}</p>); continue; }
+    if (raw.startsWith('# '))   { flushUl(); flushOl(); out.push(<p key={out.length} className="text-lg font-semibold mt-3 mb-1 text-fg">{inlineRender(raw.slice(2))}</p>); continue; }
     if (/^[-*•]\s/.test(raw))  { flushOl(); ulBuf.push(raw.replace(/^[-*•]\s+/, '')); continue; }
     if (/^\d+\.\s/.test(raw))  { flushUl(); olBuf.push(raw.replace(/^\d+\.\s+/, '')); continue; }
     flushUl(); flushOl();
-    out.push(<p key={out.length} className="text-[12.5px] text-[var(--t2)] leading-relaxed">{inlineRender(raw)}</p>);
+    out.push(<p key={out.length} className="text-sm text-fg-2 leading-relaxed">{inlineRender(raw)}</p>);
   }
   flushUl(); flushOl(); flushCode(); flushTable();
   return <div className="space-y-0.5">{out}</div>;
@@ -243,10 +248,10 @@ function inlineRender(text: string): React.ReactNode {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index));
-    if (m[1])      parts.push(<strong key={m.index} className="font-semibold text-[var(--t1)]">{m[2]}</strong>);
-    else if (m[3]) parts.push(<code key={m.index} className="px-1 py-0.5 rounded bg-[var(--s3)] text-[11px] font-mono text-[var(--accent-text)]">{m[4]}</code>);
-    else if (m[5]) parts.push(<img key={m.index} src={m[7]} alt={m[6]} className="inline-block max-h-32 rounded border border-[var(--line-2)]" />);
-    else if (m[8]) parts.push(<a key={m.index} href={m[10]} target="_blank" rel="noopener noreferrer" className="text-violet-600 dark:text-violet-300 underline underline-offset-2 hover:text-violet-800 dark:hover:text-violet-100">{m[9]}</a>);
+    if (m[1])      parts.push(<strong key={m.index} className="font-semibold text-fg">{m[2]}</strong>);
+    else if (m[3]) parts.push(<code key={m.index} className="px-1 py-0.5 rounded bg-subtle text-xs mono text-accent-text">{m[4]}</code>);
+    else if (m[5]) parts.push(<img key={m.index} src={m[7]} alt={m[6]} className="inline-block max-h-32 rounded border border-line-2" />);
+    else if (m[8]) parts.push(<a key={m.index} href={m[10]} target="_blank" rel="noopener noreferrer" className="text-ai underline underline-offset-2 hover:text-ai ">{m[9]}</a>);
     last = m.index + m[0].length;
   }
   if (last < text.length) parts.push(text.slice(last));
@@ -266,30 +271,30 @@ function QuoteResultCard({ doc }: { doc: DqDoc }) {
     <Tag
       {...linkProps}
       className={cn(
-        'group flex items-start gap-3 p-3.5 rounded-xl bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] transition-all',
-        linked && 'hover:bg-[var(--accent-soft)] hover:ring-[var(--accent-line)]',
+        'group flex items-start gap-3 p-3.5 rounded-xl bg-subtle ring-1 ring-inset ring-line transition-all',
+        linked && 'hover:bg-accent-soft hover:ring-accent-line',
       )}>
-      <div className="w-8 h-8 rounded-lg bg-[var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
-        <Icon className="w-3.5 h-3.5 text-[var(--accent-text)]" />
+      <div className="w-8 h-8 flex items-center justify-center shrink-0 mt-0.5 text-accent-text">
+        <Icon className="w-3.5 h-3.5 text-accent-text" />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5">
-          <p className="text-[12.5px] font-semibold text-[var(--t1)] leading-snug truncate">{doc.title || doc.filename}</p>
+          <p className="text-sm font-semibold text-fg leading-snug truncate">{doc.title || doc.filename}</p>
           {doc.ext && (
-            <span className="text-[9px] uppercase font-semibold px-1 py-0.5 rounded bg-[var(--accent-soft)] text-[var(--accent-text)] shrink-0">{doc.ext}</span>
+            <span className="text-2xs uppercase font-semibold px-1 py-0.5 rounded bg-accent-soft text-accent-text shrink-0">{doc.ext}</span>
           )}
         </div>
         {doc.summary && (
-          <p className="text-[11px] text-[var(--t3)] mt-0.5 line-clamp-2 leading-snug">{doc.summary}</p>
+          <p className="text-xs text-fg-3 mt-0.5 line-clamp-2 leading-snug">{doc.summary}</p>
         )}
         {(doc.author || doc.modified) && (
-          <p className="text-[10px] text-[var(--t3)] mt-0.5">
+          <p className="text-2xs text-fg-3 mt-0.5">
             {doc.author}{doc.author && doc.modified ? ' · ' : ''}{doc.modified ? relTime(doc.modified) : ''}
           </p>
         )}
       </div>
       {linked && (
-        <ExternalLink className="w-3.5 h-3.5 text-[var(--t4)] group-hover:text-brand-500 dark:group-hover:text-brand-400 transition-colors shrink-0 mt-1" />
+        <ExternalLink className="w-3.5 h-3.5 text-fg-4 group-hover:text-accent-text transition-colors shrink-0 mt-1" />
       )}
     </Tag>
   );
@@ -326,24 +331,14 @@ function phrasesFor(q: string): string[] {
 }
 function ThinkingPhrases({ query }: { query: string }) {
   const phrases = React.useMemo(() => phrasesFor(query), [query]);
-  const [i, setI] = useState(0);
-  useEffect(() => { setI(0); }, [phrases]);
-  useEffect(() => {
-    const t = setInterval(() => setI(p => Math.min(p + 1, phrases.length - 1)), 1500);
-    return () => clearInterval(t);
-  }, [phrases]);
-  return (
-    <span className="text-[11.5px] text-[var(--t3)] italic transition-opacity">
-      {phrases[i]}
-    </span>
-  );
+  const label = useThinkingSteps(phrases, true);
+  return <AiThinking label={label} />;
 }
 
 // ─── Export menu — PDF/Word/Excel/CSV/TXT/MD/HTML/JSON of an answer or thread ───
-function ExportMenu({ content, title, filename, toast, up = false, pill = false, align = 'left' }: {
+function ExportMenu({ content, title, filename, toast, pill = false }: {
   content: string; title: string; filename: string; toast: ToastFn; up?: boolean; pill?: boolean; align?: 'left' | 'right';
 }) {
-  const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState<ExportFormat | null>(null);
 
   async function pick(fmt: ExportFormat) {
@@ -351,7 +346,6 @@ function ExportMenu({ content, title, filename, toast, up = false, pill = false,
     try {
       await exportAnswer(fmt, { content, title, filename });
       toast('ok', `Answer exported to ${fmt.toUpperCase()}`);
-      setOpen(false);
     } catch (e: any) {
       toast('err', failed(`export the answer to ${fmt.toUpperCase()}`, e));
     }
@@ -359,120 +353,60 @@ function ExportMenu({ content, title, filename, toast, up = false, pill = false,
   }
 
   return (
-    <div className="relative inline-block">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className={cn(
-          pill
-            ? 'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium text-[var(--t3)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors'
-            : 'flex items-center gap-1 text-[10.5px] text-[var(--t3)] hover:text-[var(--t1)] transition-colors',
-        )}>
-        <Download className={pill ? 'w-3.5 h-3.5' : 'w-3 h-3'} /> Export
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className={cn(
-            'absolute z-50 w-40 rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] shadow-lg overflow-hidden py-1',
-            up ? 'bottom-full mb-1' : 'top-full mt-1',
-            align === 'right' ? 'right-0' : 'left-0',
-          )}>
-            {EXPORT_FORMATS.map(f => (
-              <button
-                key={f.id}
-                disabled={!!busy}
-                onClick={() => pick(f.id)}
-                className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[var(--t2)] hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
-                {busy === f.id ? <Loader2 className="w-3 h-3 animate-spin shrink-0" /> : <FileText className="w-3 h-3 shrink-0 text-[var(--t4)]" />}
-                <span className="flex-1">{f.label}</span>
-                <span className="text-[10px] text-[var(--t4)] mono">.{f.ext}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+    <Menu position={pill ? 'bottom-end' : 'bottom-start'} closeOnItemClick={false}>
+      <Menu.Target>
+        {pill
+          ? <UiButton tone="secondary" icon={Download}>Export</UiButton>
+          : <UiIconButton size="xs" icon={Download} label="Export answer" />}
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Export as</Menu.Label>
+        {EXPORT_FORMATS.map(f => (
+          <Menu.Item key={f.id} disabled={!!busy} onClick={() => pick(f.id)}
+            leftSection={busy === f.id ? <Loader2 className="animate-spin" /> : <FileText />}
+            rightSection={<span className="mono text-2xs text-fg-4">.{f.ext}</span>}>
+            {f.label}
+          </Menu.Item>
+        ))}
+      </Menu.Dropdown>
+    </Menu>
   );
 }
 
-// ─── Message bubble ───────────────────────────────────────────────────────────
+// ─── Message ─────────────────────────────────────────────────────────────────
 function Bubble({ msg, onCopy, toast, exportTitle }: {
   msg: Message; onCopy: () => void; toast: ToastFn; exportTitle?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-  const isUser = msg.role === 'user';
-
-  function handleCopy() {
-    navigator.clipboard.writeText(msg.text).then(() => {
-      setCopied(true);
-      onCopy();
-      setTimeout(() => setCopied(false), 1500);
-    });
+  if (msg.role === 'user') {
+    return (
+      <UserMessage text={msg.text} time={msg.ts}
+        badge={msg.isEmail ? <Badge tone="warn" leftSection={<Mail className="w-3 h-3" />}>Email detected</Badge> : undefined} />
+    );
   }
-
   return (
-    <div className={cn('flex gap-3 group', isUser ? 'flex-row-reverse' : 'flex-row')}>
-      {/* Avatar — AI only */}
-      {!isUser && (
-        <div className="w-7 h-7 rounded-full bg-violet-100 dark:bg-violet-900/40 ring-1 ring-violet-200 dark:ring-violet-800/50 flex items-center justify-center shrink-0 mt-1">
-          <Sparkles className="w-3.5 h-3.5 text-violet-500" />
-        </div>
-      )}
-
-      <div className={cn('max-w-[78%] flex flex-col gap-1', isUser ? 'items-end' : 'items-start')}>
-        {/* Email badge */}
-        {msg.isEmail && (
-          <span className="inline-flex items-center gap-1 text-[10.5px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/30 px-2 py-0.5 rounded-full mb-0.5">
-            <Mail className="w-3 h-3" /> Email detected — analysing…
-          </span>
-        )}
-
-        {/* Bubble body */}
-        <div className={cn('rounded-2xl px-4 py-2.5', isUser ? 'rounded-tr-sm' : 'v3-card rounded-tl-sm')}
-          style={isUser ? { background: 'var(--t1)', color: 'var(--bg)' } : undefined}>
-          {isUser
-            ? <p className="text-[12.5px] leading-relaxed whitespace-pre-wrap">{msg.text}</p>
-            : <Markdown text={msg.text} />}
-        </div>
-
-        {/* Smart-search result cards */}
-        {!isUser && msg.results && msg.results.length > 0 && (
-          <div className="mt-1.5 w-full space-y-2">
-            {msg.meta && (
-              <p className="text-[10.5px] text-[var(--t3)] px-0.5">
-                {msg.meta.count} match{msg.meta.count !== 1 ? 'es' : ''} for “{msg.meta.term}” · {msg.meta.scope}
-                {msg.results.length < msg.meta.count ? ` · showing top ${msg.results.length}` : ''}
-              </p>
-            )}
-            {msg.results.map((doc, i) => <QuoteResultCard key={i} doc={doc} />)}
-          </div>
-        )}
-
-        {/* Actions row — visible on hover */}
-        <div className={cn(
-          'flex items-center gap-2.5 opacity-0 group-hover:opacity-100 transition-opacity px-1',
-          isUser ? 'flex-row-reverse' : 'flex-row',
-        )}>
-          <button onClick={handleCopy}
-            className="flex items-center gap-1 text-[10.5px] text-[var(--t3)] hover:text-[var(--t1)] transition-colors">
-            {copied
-              ? <><Check className="w-3 h-3 text-emerald-500" /> Copied</>
-              : <><Copy className="w-3 h-3" /> Copy</>}
-          </button>
-          {!isUser && (
-            <ExportMenu
-              content={msg.text}
-              title={exportTitle || 'Ask Vector answer'}
-              filename={(exportTitle || 'vector-answer').slice(0, 50)}
-              toast={toast}
-            />
+    <AiMessage time={msg.ts}
+      footer={msg.results && msg.results.length > 0 ? (
+        <div className="flex flex-col gap-2">
+          {msg.meta && (
+            <p className="text-xs text-fg-3">
+              <span className="mono">{msg.meta.count}</span> match{msg.meta.count !== 1 ? 'es' : ''} for “{msg.meta.term}” · {msg.meta.scope}
+              {msg.results.length < msg.meta.count ? ` · showing top ${msg.results.length}` : ''}
+            </p>
           )}
-          <span className="text-[10px] text-[var(--t4)]">
-            {new Date(msg.ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-          </span>
+          {msg.results.map((doc, i) => <QuoteResultCard key={i} doc={doc} />)}
         </div>
-      </div>
-    </div>
+      ) : undefined}
+      actions={<>
+        <CopyAction text={msg.text} onCopied={onCopy} />
+        <ExportMenu
+          content={msg.text}
+          title={exportTitle || 'Ask Vector answer'}
+          filename={(exportTitle || 'vector-answer').slice(0, 50)}
+          toast={toast}
+        />
+      </>}>
+      <Markdown text={msg.text} />
+    </AiMessage>
   );
 }
 
@@ -529,31 +463,28 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
 
   return (
     /* Backdrop */
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+    <div className="fixed inset-0 z-modal flex items-center justify-center p-4 bg-overlay "
       onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
 
-      <div className="w-full max-w-2xl bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-inset ring-[var(--line-2)] flex flex-col max-h-[80vh]">
+      <div className="w-full max-w-2xl bg-surface rounded-2xl ring-1 ring-inset ring-line-2 flex flex-col max-h-[80vh]">
 
         {/* Header */}
-        <div className="flex items-center gap-3 px-5 py-4 border-b border-[var(--line)]">
-          <div className="w-8 h-8 rounded-lg bg-[var(--accent-soft)] flex items-center justify-center shrink-0">
-            <FolderOpen className="w-4 h-4 text-[var(--accent-text)]" />
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-line">
+          <div className="w-8 h-8 flex items-center justify-center shrink-0 text-accent-text">
+            <FolderOpen className="w-4 h-4 text-accent-text" />
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[13px] font-semibold">{mineOnly ? 'Search my quotes' : 'Search the D&Q Store'}</p>
-            <p className="text-[11px] text-[var(--t3)]">Customer, KVA, or catalog/fitting — searches inside the quote, not just the name</p>
+            <p className="text-base font-semibold">{mineOnly ? 'Search my quotes' : 'Search the D&Q Store'}</p>
+            <p className="text-xs text-fg-3">Customer, KVA, or catalog/fitting — searches inside the quote, not just the name</p>
           </div>
-          <button aria-label="Close quote search" onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s3)] transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+          <UiIconButton icon={X} label="Close quote search" size="sm" onClick={onClose} />
         </div>
 
         {/* Search input */}
-        <div className="px-5 py-3 border-b border-[var(--line)]">
+        <div className="px-5 py-3 border-b border-line">
           <div className="flex gap-2">
-            <div className="flex-1 flex items-center gap-2 h-9 px-3 rounded-lg bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] focus-within:ring-[var(--accent-line)]">
-              <Search className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
+            <div className="flex-1 flex items-center gap-2 h-9 px-3 rounded-lg bg-surface ring-1 ring-inset ring-line-2 focus-within:ring-accent-line">
+              <Search className="w-3.5 h-3.5 text-fg-3 shrink-0" />
               <input
                 ref={inputRef}
                 type="text"
@@ -561,17 +492,14 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
                 onChange={e => setQ(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') search(); }}
                 placeholder="e.g.  quotes from Joe Bayley,  4kva,  ACM1,  EC141"
-                className="flex-1 bg-transparent text-[12.5px] text-[var(--t1)] placeholder:text-[var(--t3)] outline-none min-w-0"
+                className="flex-1 bg-transparent text-sm text-fg placeholder:text-fg-3 outline-none min-w-0"
               />
-              {q && <button aria-label="Clear search" onClick={() => setQ('')} className="text-[var(--t3)] hover:text-ink-600 dark:hover:text-ink-200 shrink-0"><X className="w-3 h-3" /></button>}
+              {q && <button aria-label="Clear search" onClick={() => setQ('')} className="text-fg-3 hover:text-fg-2 shrink-0"><X className="w-3 h-3" /></button>}
             </div>
-            <button
-              onClick={() => search()}
-              disabled={loading || !q.trim()}
-              className="h-9 px-4 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-40 text-white text-[12px] font-semibold flex items-center gap-1.5 transition-colors shrink-0">
+            <UiButton tone="primary" size="lg" className="shrink-0" onClick={() => search()} disabled={loading || !q.trim()}>
               {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
               Search
-            </button>
+            </UiButton>
           </div>
 
           {/* Mine-only toggle */}
@@ -579,16 +507,16 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
             <button aria-label={mineOnly ? 'Showing only quotes you uploaded — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'} onClick={() => toggleMine(!mineOnly)}
               title={mineOnly ? 'Showing only quotes you uploaded — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'}
               className={cn(
-                'h-6 px-2 rounded-md text-[10.5px] font-medium flex items-center gap-1.5 ring-1 ring-inset transition-colors',
+                'h-6 px-2 rounded-md text-2xs font-medium flex items-center gap-1.5 ring-1 ring-inset transition-colors',
                 mineOnly
-                  ? 'bg-[var(--accent-soft)] ring-[var(--accent-line)] text-[var(--accent-text)]'
-                  : 'ring-[var(--line-2)] text-[var(--t3)] hover:bg-[var(--s3)]',
+                  ? 'bg-accent-soft ring-accent-line text-accent-text'
+                  : 'ring-line-2 text-fg-3 hover:bg-subtle',
               )}>
               <User className="w-3 h-3" />
               Mine only
               {mineOnly && <Check className="w-3 h-3" />}
             </button>
-            <span className="text-[10px] text-[var(--t3)]">Searches the full text of each quote, not just its name.</span>
+            <span className="text-2xs text-fg-3">Searches the full text of each quote, not just its name.</span>
           </div>
         </div>
 
@@ -596,7 +524,7 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
         <div className="flex-1 overflow-y-auto">
           {/* Error */}
           {error && (
-            <div className="mx-5 mt-4 flex gap-2.5 items-center px-4 py-3 rounded-xl bg-red-50 dark:bg-red-900/20 ring-1 ring-inset ring-red-200 dark:ring-red-700/40 text-[12px] text-red-700 dark:text-red-400">
+            <div className="mx-5 mt-4 flex gap-2.5 items-center px-4 py-3 rounded-xl bg-err-soft ring-1 ring-inset ring-err-line text-sm text-err ">
               <AlertCircle className="w-4 h-4 shrink-0" />
               {error}
             </div>
@@ -604,7 +532,7 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
 
           {/* Result count */}
           {searched && !loading && !error && (
-            <p className="px-5 pt-3 pb-1 text-[10.5px] text-[var(--t3)]">
+            <p className="px-5 pt-3 pb-1 text-2xs text-fg-3">
               {results.length === 0
                 ? (mineOnly ? 'No quotes you uploaded matched — try turning off “Mine only”.' : 'No matches found')
                 : `${results.length} match${results.length !== 1 ? 'es' : ''}`}
@@ -618,10 +546,10 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
             {/* Empty + idle */}
             {!loading && !error && !searched && (
               <div className="flex flex-col items-center justify-center py-12 gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-[var(--s3)] flex items-center justify-center">
-                  <FolderOpen className="w-5 h-5 text-[var(--t3)]" />
+                <div className="w-12 h-12 flex items-center justify-center">
+                  <FolderOpen className="w-5 h-5 text-fg-3" />
                 </div>
-                <p className="text-[12px] text-[var(--t3)] text-center max-w-xs">
+                <p className="text-sm text-fg-3 text-center max-w-xs">
                   Try a customer (“Joe Bayley”), a rating (“4kva”), or a catalog number (“ACM1”, “EC141”)
                 </p>
               </div>
@@ -631,7 +559,7 @@ function QuoteSearchPanel({ onClose }: { onClose: () => void }) {
             {loading && (
               <div className="space-y-2 pt-2">
                 {[1, 2, 3].map(i => (
-                  <div key={i} className="h-16 rounded-xl bg-[var(--s3)] animate-pulse" />
+                  <div key={i} className="h-16 rounded-xl bg-subtle animate-pulse" />
                 ))}
               </div>
             )}
@@ -863,318 +791,157 @@ export function AssistantPage({
     .map(m => `## ${m.role === 'user' ? 'You' : 'Ask Vector'}\n\n${m.text}`)
     .join('\n\n---\n\n');
 
+  const prompts: AiPrompt[] = QUICK_PROMPTS.map(p => ({
+    icon: p.icon as AiPrompt['icon'],
+    label: p.label,
+    sub: p.sub,
+    onRun: () => {
+      if (p.quoteSearch) setQuoteSearchOpen(true);
+      else if (p.emailHint) textareaRef.current?.focus();
+      else send(p.prompt);
+    },
+  }));
+
+  const lastUserText = [...messages].reverse().find(m => m.role === 'user')?.text || '';
+
   return (
-    // Full-bleed: PAGE_FRAME marks Assistant 0, so the shell adds no padding to
-    // break out of (this used to cancel a p-6 with -mx-6 -my-6). Single column:
-    // the D&Q Store is reached from the chat itself (/api/quote-ask searches it and
-    // answers with result cards), from the "Search for a Quote" chip, and from the
-    // Search tab — a fixed 340px panel repeating all three only narrowed the chat.
-    <div className="flex" style={{ height: 'calc(100vh - var(--header-h))', background: 'var(--bg)' }}>
+    // Full-bleed: PAGE_FRAME marks Assistant 0, so the shell adds no padding.
+    // Single column: the D&Q Store is reached from the chat itself (/api/quote-ask
+    // searches it and answers with result cards), from the "Search for a Quote"
+    // prompt, and from the Search tab.
+    <div className="flex flex-col bg-page" style={{ height: 'calc(100vh - var(--header-h))' }}>
 
-      {/* ── Chat column ─────────────────────────────────────────────────────── */}
-      <div className="flex-1 min-w-0 flex flex-col">
-
-      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center justify-between px-5 py-2.5 bg-[var(--s1)] border-b border-[var(--line)]">
-        <div className="flex items-center gap-2.5">
-          <div className="w-7 h-7 rounded-lg bg-violet-100 dark:bg-violet-900/40 flex items-center justify-center">
-            <Sparkles className="w-3.5 h-3.5 text-violet-500" />
-          </div>
-          <div className="leading-none">
-            <p className="text-[13px] font-semibold">Ask Vector</p>
-            <p className="text-[10.5px] text-[var(--t3)] mt-0.5">One AI brain · knows your app, quotes & Fenton's EL guidance</p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <span className={cn(
-            'hidden sm:inline-flex items-center gap-1.5 text-[10.5px] font-medium px-2 py-0.5 rounded-full ring-1 ring-inset',
-            connected
-              ? 'bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 ring-emerald-200 dark:ring-emerald-700/30'
-              : 'bg-[var(--s3)] text-[var(--t3)] ring-[var(--line-2)]',
-          )}>
-            <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', connected ? 'bg-emerald-500' : 'bg-ink-400')} />
-            {connected ? 'SharePoint connected' : 'SharePoint disconnected'}
-          </span>
-
-          {!aiAvailable && (
-            <span className="hidden sm:inline-flex items-center gap-1.5 text-[10.5px] font-medium px-2 py-0.5 rounded-full ring-1 ring-inset bg-amber-50 dark:bg-amber-900/20 text-amber-700 dark:text-amber-400 ring-amber-200 dark:ring-amber-700/30">
-              <AlertCircle className="w-3 h-3" /> No Gemini key
-            </span>
-          )}
-
-          {messages.length > 0 && (
-            <ExportMenu content={transcript} title={convTitle} filename={convTitle} toast={toast} pill align="right" />
-          )}
-
-          {messages.length > 0 && (
-            <button onClick={clear}
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium text-[var(--t3)] hover:text-red-600 dark:hover:text-red-400 ring-1 ring-inset ring-[var(--line-2)] hover:ring-red-200 dark:hover:ring-red-700/40 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors">
-              <Trash2 className="w-3.5 h-3.5" /> Clear
-            </button>
-          )}
-
-          {/* History toggle button */}
-          <div className="relative" ref={historyRef}>
-            <button
-              onClick={() => setHistoryOpen(o => !o)}
-              className={cn(
-                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11.5px] font-medium ring-1 ring-inset transition-colors',
-                historyOpen
-                  ? 'bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 ring-violet-200 dark:ring-violet-700/40'
-                  : 'text-[var(--t3)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
-              )}>
-              <MessageSquare className="w-3.5 h-3.5" />
-              {convs.length > 0 && (
-                <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-violet-500 text-white text-[9px] font-bold leading-none">
-                  {convs.length}
-                </span>
-              )}
-            </button>
-
-            {/* History dropdown panel */}
-            {historyOpen && (
-              <div className="absolute right-0 top-full mt-1.5 w-80 z-50 rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] shadow-lg overflow-hidden">
-                {/* New chat button */}
-                <div className="p-2 border-b border-[var(--line)]">
-                  <button
-                    onClick={newChat}
-                    className="w-full flex items-center justify-center gap-2 h-8 rounded-lg bg-violet-500 hover:bg-violet-600 text-white text-[12px] font-semibold transition-colors">
-                    <Plus className="w-3.5 h-3.5" /> New chat
-                  </button>
-                </div>
-
-                {/* Conversation list */}
-                <div className="max-h-80 overflow-y-auto py-1">
-                  {convs.length === 0 ? (
-                    <p className="px-3 py-4 text-center text-[11.5px] text-[var(--t3)]">No conversations yet</p>
-                  ) : (
-                    convs.map(conv => (
-                      <div
-                        key={conv.id}
-                        onClick={() => switchConv(conv.id)}
-                        className={cn(
-                          'flex items-center gap-2 px-3 py-2 cursor-pointer group transition-colors',
-                          conv.id === activeId
-                            ? 'bg-violet-50 dark:bg-violet-900/20'
-                            : 'hover:bg-[var(--s3)]',
-                        )}>
-                        <div className="min-w-0 flex-1">
-                          <p className={cn(
-                            'text-[13px] font-medium truncate leading-snug',
-                            conv.id === activeId
-                              ? 'text-violet-700 dark:text-violet-300'
-                              : 'text-[var(--t2)]',
-                          )}>
-                            {conv.title || 'New conversation'}
-                          </p>
-                          <p className="text-[10.5px] text-[var(--t3)] mt-0.5">
-                            {relTime(new Date(conv.ts).toISOString())}
-                            {conv.messages.length > 0 && ` · ${conv.messages.length} msg${conv.messages.length !== 1 ? 's' : ''}`}
-                          </p>
-                        </div>
-                        <button aria-label="Delete conversation"
-                          onClick={e => { e.stopPropagation(); deleteConv(conv.id); }}
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded text-[var(--t4)] hover:text-red-500 dark:hover:text-red-400 transition-all shrink-0">
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-
-                {/* Clear all */}
-                {convs.length > 0 && (
-                  <div className="p-2 border-t border-[var(--line)]">
-                    <button
-                      onClick={() => {
-                        setConvs([]);
-                        setActiveId(genId());
-                        setHistoryOpen(false);
-                      }}
-                      className="w-full text-center text-[11px] text-[var(--t3)] hover:text-red-500 dark:hover:text-red-400 transition-colors py-1">
-                      Clear all conversations
-                    </button>
-                  </div>
-                )}
-              </div>
+      {/* ── Bar ─────────────────────────────────────────────────────────────── */}
+      <div className="shrink-0 flex items-center gap-2 px-page h-h-lg border-b border-line bg-ai-wash">
+        <Menu position="bottom-start" width="var(--popover-w)">
+          <Menu.Target>
+            <UiButton tone="ghost" icon={MessageSquare} trailing={<ChevronDown className="w-3 h-3" />}>
+              <span className="truncate max-w-64">{convs.find(c => c.id === activeId)?.title || 'New conversation'}</span>
+            </UiButton>
+          </Menu.Target>
+          <Menu.Dropdown>
+            <Menu.Item leftSection={<Plus />} onClick={newChat}>New conversation</Menu.Item>
+            {convs.length > 0 && <Menu.Divider />}
+            {convs.length > 0 && <Menu.Label>Recent</Menu.Label>}
+            <div className="max-h-80 overflow-y-auto">
+              {convs.map(conv => (
+                <Menu.Item key={conv.id} component="div" onClick={() => switchConv(conv.id)}
+                  className={conv.id === activeId ? 'bg-accent-soft' : undefined}
+                  rightSection={
+                    <UiIconButton icon={Trash2} label="Delete conversation" tone="danger" size="xs"
+                      onClick={e => { e.stopPropagation(); deleteConv(conv.id); }} />
+                  }>
+                  <span className="block truncate text-fg">{conv.title || 'New conversation'}</span>
+                  <span className="block mono text-2xs text-fg-4">
+                    {relTime(new Date(conv.ts).toISOString())}
+                    {conv.messages.length > 0 && ` · ${conv.messages.length} msg`}
+                  </span>
+                </Menu.Item>
+              ))}
+            </div>
+            {convs.length > 0 && <Menu.Divider />}
+            {convs.length > 0 && (
+              <Menu.Item color="err" leftSection={<Trash2 />}
+                onClick={() => { setConvs([]); setActiveId(genId()); }}>
+                Clear all conversations
+              </Menu.Item>
             )}
-          </div>
-        </div>
+          </Menu.Dropdown>
+        </Menu>
+
+        <div className="flex-1" />
+
+        <Badge tone={connected ? 'ok' : 'neutral'} dot>{connected ? 'SharePoint connected' : 'SharePoint offline'}</Badge>
+        {!aiAvailable && <Badge tone="warn" leftSection={<AlertCircle className="w-3 h-3" />}>No Gemini key</Badge>}
+        {messages.length > 0 && (
+          <>
+            <ExportMenu content={transcript} title={convTitle} filename={convTitle} toast={toast} pill />
+            <UiIconButton icon={Eraser} label="Clear this conversation" onClick={clear} />
+          </>
+        )}
+        <UiButton tone="primary" icon={Plus} onClick={newChat}>New chat</UiButton>
       </div>
 
-      {/* ── Messages ────────────────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto">
+      {/* ── Conversation ────────────────────────────────────────────────────── */}
+      <div className="flex-1 min-h-0 overflow-y-auto px-page">
         {isEmpty ? (
-          /* ── Welcome state ── */
-          <div className="flex flex-col items-center justify-center h-full px-6 py-10 text-center">
-            <div className="w-14 h-14 rounded-[var(--r-xl)] bg-[var(--violet-soft)] ring-1 ring-inset ring-[var(--violet-soft)] flex items-center justify-center mb-[18px]">
-              <Sparkles className="w-6 h-6 text-[var(--violet)]" />
-            </div>
-            <h2 className="text-[19px] font-semibold tracking-[-0.02em] text-[var(--t1)]">
-              What can I help with?
-            </h2>
-            <p className="mt-[9px] text-[13px] text-[var(--t2)] max-w-[430px] leading-[1.55]">
-              Ask anything about your workflow, or paste an email and I'll figure out exactly what needs to be done.
-            </p>
-
-            <div className="mt-7 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 w-full max-w-[640px]">
-              {QUICK_PROMPTS.map(p => (
-                <button key={p.label}
-                  onClick={() => {
-                    if (p.quoteSearch) { setQuoteSearchOpen(true); }
-                    else if (p.emailHint) { textareaRef.current?.focus(); }
-                    else { send(p.prompt); }
-                  }}
-                  className={cn(
-                    'flex items-start gap-3 px-3.5 py-3 rounded-xl ring-1 ring-inset text-left transition-all group shadow-sm',
-                    'bg-[var(--s1)] ring-[var(--line)] hover:ring-[var(--violet)] hover:bg-[var(--violet-soft)]',
-                  )}>
-                  <div className={cn(
-                    'w-7 h-7 rounded-[var(--r-sm)] flex items-center justify-center shrink-0 mt-0.5 transition-colors',
-                    'bg-[var(--violet-soft)] group-hover:brightness-110',
-                  )}>
-                    <p.icon className="w-3.5 h-3.5 text-[var(--violet)]" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-[12.5px] font-semibold text-[var(--t1)] leading-snug">{p.label}</p>
-                    <p className="text-[10.5px] text-[var(--t3)] mt-0.5 leading-snug">{p.sub}</p>
-                  </div>
-                </button>
-              ))}
+          <div className="min-h-full flex items-center justify-center py-10">
+            <div className="w-full" style={{ maxWidth: 'var(--measure-chat)' }}>
+              <AiWelcome title="What can I help with?"
+                sub="Ask anything about your workflow, search your quotes, or paste an email and I'll work out exactly what needs doing.">
+                <AiPromptGrid prompts={prompts} disabled={!aiAvailable} />
+              </AiWelcome>
             </div>
           </div>
         ) : (
-          /* ── Conversation ── */
-          <div className="px-5 py-5 space-y-5 w-full max-w-3xl mx-auto">
-            {messages.map((msg, idx) => {
-              const isLast = idx === messages.length - 1;
-              const showOffers = msg.role === 'assistant' && isLast && !loading
-                && !!msg.suggestions && msg.suggestions.length > 0;
-              const exportTitle = msg.role === 'assistant'
-                ? (msg.title || deriveTitle(msg.text)) : 'Ask Vector answer';
-              return (
-                <div key={msg.id} className="space-y-2">
-                  <Bubble msg={msg} onCopy={() => toast('ok', 'Answer copied to the clipboard')} toast={toast} exportTitle={exportTitle} />
-                  {/* AI quick-action offers — click to have Vector do it next */}
-                  {showOffers && (
-                    <div className="ml-10 flex flex-wrap gap-1.5">
-                      {msg.suggestions!.map((s, i) => (
-                        <button
-                          key={i}
-                          onClick={() => send(s)}
-                          disabled={loading || !aiAvailable}
-                          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-medium bg-violet-50 dark:bg-violet-900/20 ring-1 ring-inset ring-violet-200 dark:ring-violet-700/40 text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-900/40 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                          <Sparkles className="w-3 h-3 shrink-0" />
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {/* Typing indicator */}
-            {loading && (
-              <div className="flex gap-3">
-                <div className="w-7 h-7 rounded-full bg-violet-100 dark:bg-violet-900/40 ring-1 ring-violet-200 dark:ring-violet-800/50 flex items-center justify-center shrink-0 mt-1">
-                  <Loader2 className="w-3.5 h-3.5 text-violet-500 animate-spin" />
-                </div>
-                <div className="bg-[var(--s2)] ring-1 ring-inset ring-[var(--line)] rounded-2xl rounded-tl-sm px-4 py-3 shadow-sm">
-                  <div className="flex gap-2.5 items-center h-4">
-                    <div className="flex gap-1.5 items-center shrink-0">
-                      {[0, 1, 2].map(i => (
-                        <span key={i} className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce"
-                          style={{ animationDelay: `${i * 160}ms` }} />
-                      ))}
-                    </div>
-                    <ThinkingPhrases query={[...messages].reverse().find(m => m.role === 'user')?.text || ''} />
+          <div className="py-8">
+            <AiThread deps={[messages.length, loading]}>
+              {messages.map((msg, idx) => {
+                const isLast = idx === messages.length - 1;
+                const showOffers = msg.role === 'assistant' && isLast && !loading
+                  && !!msg.suggestions && msg.suggestions.length > 0;
+                const exportTitle = msg.role === 'assistant'
+                  ? (msg.title || deriveTitle(msg.text)) : 'Ask Vector answer';
+                return (
+                  <div key={msg.id} className="flex flex-col gap-3">
+                    <Bubble msg={msg} onCopy={() => toast('ok', 'Answer copied to the clipboard')} toast={toast} exportTitle={exportTitle} />
+                    {showOffers && (
+                      <div className="pl-9">
+                        <AiSuggestions items={msg.suggestions!} onPick={s => send(s)} disabled={loading || !aiAvailable} />
+                      </div>
+                    )}
                   </div>
-                </div>
-              </div>
-            )}
-
-            <div ref={endRef} />
+                );
+              })}
+              {loading && <ThinkingPhrases query={lastUserText} />}
+            </AiThread>
           </div>
         )}
       </div>
 
-      {/* ── Input area ──────────────────────────────────────────────────────── */}
-      <div className="shrink-0 border-t border-[var(--line)] bg-[var(--s1)] px-5 pt-3.5 pb-4">
-
-        {/* Quick prompt chips — shown inside conversation */}
-        {!isEmpty && (
-          <div className="flex gap-1.5 mb-3 overflow-x-auto pb-0.5 -mx-1 px-1 scrollbar-none">
-            {/* Quote search chip — opens the quote-search modal (not a mode toggle) */}
-            <button aria-label="Open quote search (searches your past SharePoint quotes)"
-              onClick={() => setQuoteSearchOpen(true)}
-              title="Open quote search (searches your past SharePoint quotes)"
-              className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-medium whitespace-nowrap shrink-0 bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-violet-50 dark:hover:bg-violet-900/20 hover:ring-violet-200 dark:hover:ring-violet-700/40 hover:text-violet-700 dark:hover:text-violet-300 transition-colors">
-              <Search className="w-3 h-3 shrink-0" />
-              Search for a Quote
-            </button>
-            {QUICK_PROMPTS.filter(p => !p.emailHint && !p.quoteSearch).map(p => (
-              <button key={p.label}
-                disabled={loading || !aiAvailable}
-                onClick={() => send(p.prompt)}
-                className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-full text-[11px] font-medium whitespace-nowrap shrink-0 bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-violet-50 dark:hover:bg-violet-900/20 hover:ring-violet-200 dark:hover:ring-violet-700/40 hover:text-violet-700 dark:hover:text-violet-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
-                <p.icon className="w-3 h-3 shrink-0" />
-                {p.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* No API key warning */}
-        {!aiAvailable && (
-          <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/30 text-[11.5px] text-amber-700 dark:text-amber-400">
-            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-            No Gemini API key — go to <strong className="mx-0.5">Settings</strong> and add your key.
-          </div>
-        )}
-
-        <div className="flex gap-2 items-end">
-          <div className="flex-1 relative">
-            <textarea
-              ref={textareaRef}
-              value={input}
-              rows={1}
-              disabled={loading || !aiAvailable}
-              placeholder={isEmpty ? 'Ask anything, or paste an email…' : 'Follow up…'}
-              onChange={e => { setInput(e.target.value); resize(); }}
-              onPaste={() => setTimeout(resize, 0)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-              }}
-              className="w-full resize-none rounded-[var(--r-md)] px-[14px] py-[11px] pr-20 bg-[var(--s2)] ring-1 ring-inset ring-[var(--line-2)] text-[13px] text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:ring-[var(--violet)] disabled:opacity-50 leading-[1.5] overflow-y-auto"
-              style={{ maxHeight: 200 }}
-            />
-            {/* Hint overlay */}
-            <div className="absolute right-3 bottom-2.5 flex items-center gap-0.5 text-[10px] text-[var(--t4)] pointer-events-none select-none">
-              <CornerDownLeft className="w-3 h-3" />
-              <span>Send</span>
+      {/* ── Composer ────────────────────────────────────────────────────────── */}
+      <div className="shrink-0 px-page pb-4 pt-2">
+        <div className="mx-auto flex flex-col gap-2" style={{ maxWidth: 'var(--measure-chat)' }}>
+          {!aiAvailable && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-control bg-warn-soft border border-warn-line text-sm text-warn">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+              No Gemini API key — add one in <strong className="font-semibold">Settings</strong>.
             </div>
-          </div>
-
-          <button
-            onClick={() => send()}
-            disabled={loading || !input.trim() || !aiAvailable}
-            style={{ boxShadow: '0 8px 22px -10px color-mix(in oklab, var(--violet) 70%, transparent)' }}
-            className="h-10 w-10 rounded-[var(--r-md)] bg-[var(--violet)] hover:brightness-110 active:scale-95 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed transition-all shrink-0">
-            {loading
-              ? <Loader2 className="w-4 h-4 animate-spin" />
-              : <Send className="w-4 h-4" />}
-          </button>
+          )}
+          <AiComposer
+            inputRef={textareaRef}
+            value={input}
+            onChange={setInput}
+            onSubmit={() => send()}
+            loading={loading}
+            disabled={!aiAvailable}
+            placeholder={isEmpty ? 'Ask anything, or paste an email…' : 'Follow up…'}
+            tools={<>
+              <UiButton tone="ghost" size="xs" icon={Search} onClick={() => setQuoteSearchOpen(true)}
+                hint="Search your past SharePoint quotes">
+                Quote search
+              </UiButton>
+              {!isEmpty && (
+                <Menu position="top-start">
+                  <Menu.Target>
+                    <UiButton tone="ghost" size="xs" icon={Sparkles} trailing={<ChevronDown className="w-3 h-3" />}>Quick asks</UiButton>
+                  </Menu.Target>
+                  <Menu.Dropdown>
+                    {QUICK_PROMPTS.filter(p => !p.emailHint && !p.quoteSearch).map(p => (
+                      <Menu.Item key={p.label} leftSection={<p.icon />} disabled={loading || !aiAvailable}
+                        onClick={() => send(p.prompt)}>
+                        {p.label}
+                      </Menu.Item>
+                    ))}
+                  </Menu.Dropdown>
+                </Menu>
+              )}
+            </>}
+          />
+          <p className="text-center text-2xs text-fg-4 select-none">History is saved on this computer only.</p>
         </div>
-
-        <p className="mt-2 text-center text-[10px] text-[var(--t4)] select-none">
-          Shift+Enter for new line · history saved locally
-        </p>
       </div>
-      </div>{/* end chat column */}
 
-      {/* Quote search modal */}
       {quoteSearchOpen && <QuoteSearchPanel onClose={() => setQuoteSearchOpen(false)} />}
     </div>
   );

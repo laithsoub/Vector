@@ -10,6 +10,7 @@ import React, { useMemo, useState } from 'react';
 import { Copy, Check, Info } from 'lucide-react';
 
 import { INVERTER_MODULES, MODULES_PRICED, type InverterModule } from '../lib/inverterModules';
+import { Button as UiButton } from '../ui';
 
 const f2 = (n: number) =>
   `£${n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -53,10 +54,9 @@ export default function CbuModules() {
   };
 
   const CopyBtn = ({ val, id, label }: { val: string; id: string; label: string }) => (
-    <button aria-label={label} title={label} onClick={() => copy(val, id)}
-      className="ml-1.5 p-0.5 rounded text-[var(--t4)] hover:text-[var(--accent-text)] hover:bg-[var(--accent-soft)] transition-colors shrink-0">
-      {copied === id ? <Check className="w-3 h-3 text-[var(--ok)]"/> : <Copy className="w-3 h-3"/>}
-    </button>
+    <UiButton tone="ghost" className="ml-1.5 shrink-0" aria-label={label} onClick={() => copy(val, id)} hint={label}>
+      {copied === id ? <Check className="w-3 h-3 text-ok"/> : <Copy className="w-3 h-3"/>}
+    </UiButton>
   );
 
   // Tab-separated, which is what Bidman and Excel both paste as columns.
@@ -67,14 +67,14 @@ export default function CbuModules() {
     copy(text, 'selection');
   };
 
-  const ycls = 'bg-[var(--warn-soft)] border border-[var(--line)] px-2 py-1 text-xs font-semibold text-[var(--t1)] rounded';
+  const ycls = 'bg-warn-soft border border-line px-2 py-1 text-xs font-semibold text-fg rounded';
 
   const phaseBtn = (id: 'all' | '1PH' | '3PH', label: string) => (
     <button key={id} onClick={() => setPhase(id)}
-      className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wide transition-all${
+      className={`px-2.5 py-1 rounded-lg text-2xs font-semibold uppercase tracking-wide transition-all${
         phase === id
-          ? ' bg-[var(--s2)] text-[var(--t1)] shadow-sm'
-          : ' text-[var(--t3)] hover:text-[var(--t1)]'}`}>
+          ? ' bg-raised text-fg '
+          : ' text-fg-3 hover:text-fg'}`}>
       {label}
     </button>
   );
@@ -85,12 +85,12 @@ export default function CbuModules() {
       {/* ── Title ────────────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-bold text-[var(--t1)]">LoadStar inverter modules</h2>
-          <p className="text-[11px] text-[var(--t4)] mt-0.5">
+          <h2 className="text-sm font-semibold text-fg">LoadStar inverter modules</h2>
+          <p className="text-xs text-fg-4 mt-0.5">
             The systems that ship as-is — quoted on the part code, nothing to configure · price list of {niceDate(MODULES_PRICED)}
           </p>
         </div>
-        <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-[var(--s3)] shrink-0">
+        <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-subtle shrink-0">
           {phaseBtn('all', 'All')}
           {phaseBtn('1PH', 'Single')}
           {phaseBtn('3PH', 'Three')}
@@ -99,7 +99,7 @@ export default function CbuModules() {
 
       {/* The sizer quotes Sell Out at 1.0; these are Nett Trade. Two bases on one
           quote is the mistake worth a permanent line on screen. */}
-      <div className="flex items-start gap-2 text-[11px] text-[var(--warn)] bg-[var(--warn-soft)] border border-[var(--warn-soft)] rounded-xl px-3 py-2">
+      <div className="flex items-start gap-2 text-xs text-warn bg-warn-soft border border-warn-soft rounded-xl px-3 py-2">
         <Info className="w-3.5 h-3.5 mt-px shrink-0"/>
         <span>
           These prices are <strong>Nett Trade</strong> — not the Sell Out basis the sizer's BoM uses. Do not mix the two on one quote.
@@ -108,39 +108,39 @@ export default function CbuModules() {
       </div>
 
       {/* ── Table ────────────────────────────────────────────────────────────── */}
-      <div className="bg-[var(--s2)] border border-[var(--line)] rounded-2xl overflow-hidden">
+      <div className="bg-raised border border-line rounded-2xl overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-xs border-collapse">
             <thead>
-              <tr className="bg-[var(--term)] text-white">
-                <th className="text-left px-3 py-3 text-xs font-bold uppercase tracking-wide">Part code</th>
-                <th className="text-left px-3 py-3 text-xs font-bold uppercase tracking-wide">Description</th>
-                <th className="text-left px-3 py-3 text-xs font-bold uppercase tracking-wide w-24 hidden sm:table-cell">Role</th>
-                <th className="text-center px-3 py-3 text-xs font-bold uppercase tracking-wide w-20">Qty</th>
-                <th className="text-right px-3 py-3 text-xs font-bold uppercase tracking-wide">Nett Trade</th>
-                <th className="text-right px-3 py-3 text-xs font-bold uppercase tracking-wide">Line total</th>
+              <tr className="bg-term text-on-accent">
+                <th className="text-left px-3 py-3 text-xs font-semibold uppercase tracking-wide">Part code</th>
+                <th className="text-left px-3 py-3 text-xs font-semibold uppercase tracking-wide">Description</th>
+                <th className="text-left px-3 py-3 text-xs font-semibold uppercase tracking-wide w-24 hidden sm:table-cell">Role</th>
+                <th className="text-center px-3 py-3 text-xs font-semibold uppercase tracking-wide w-20">Qty</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase tracking-wide">Nett Trade</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase tracking-wide">Line total</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((m, i) => {
                 const n = qty[m.code] || 0;
-                const stripe = i % 2 === 0 ? 'bg-[var(--s2)]' : 'bg-[var(--s3)]';
+                const stripe = i % 2 === 0 ? 'bg-raised' : 'bg-subtle';
                 return (
                   <tr key={m.code}
-                    className={`border-b border-[var(--line)] transition-colors ${stripe}${n ? ' bg-[var(--warn-soft)]' : ' hover:bg-[var(--warn-soft)]'}`}>
-                    <td className="px-3 py-2.5 font-mono whitespace-nowrap text-[var(--t1)] font-semibold">
+                    className={`border-b border-line transition-colors ${stripe}${n ? ' bg-warn-soft' : ' hover:bg-warn-soft'}`}>
+                    <td className="px-3 py-2.5 mono whitespace-nowrap text-fg font-semibold">
                       <div className="flex items-center">
                         <span>{m.code}</span>
                         <CopyBtn val={m.code} id={`code-${m.code}`} label="Copy part code"/>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-[var(--t2)]">
+                    <td className="px-3 py-2.5 text-fg-2">
                       <div className="flex items-center">
                         <span>{m.desc}</span>
                         <CopyBtn val={m.desc} id={`desc-${m.code}`} label="Copy description"/>
                       </div>
                     </td>
-                    <td className="px-3 py-2.5 text-[var(--t3)] whitespace-nowrap hidden sm:table-cell">
+                    <td className="px-3 py-2.5 text-fg-3 whitespace-nowrap hidden sm:table-cell">
                       {ROLE_LABEL[m.role]} · {m.phase === '1PH' ? 'Single' : 'Three'}
                     </td>
                     <td className="px-3 py-2.5 text-center">
@@ -149,15 +149,15 @@ export default function CbuModules() {
                           const v = Math.max(0, Math.floor(Number(e.target.value) || 0));
                           setQty(q => ({ ...q, [m.code]: v }));
                         }}
-                        className="w-14 px-1.5 py-1 text-xs text-center rounded-lg border border-[var(--line)] bg-[var(--warn-soft)] focus:outline-none focus:border-[var(--accent-line)] transition-colors font-semibold"/>
+                        className="w-14 px-1.5 py-1 text-xs text-center rounded-lg border border-line bg-warn-soft focus:outline-none focus:border-accent-line transition-colors font-semibold"/>
                     </td>
-                    <td className="px-3 py-2.5 text-right font-mono whitespace-nowrap font-semibold text-[var(--t2)]">
+                    <td className="px-3 py-2.5 text-right mono whitespace-nowrap font-semibold text-fg-2">
                       <div className="flex items-center justify-end">
                         {f2(m.price)}
                         <CopyBtn val={m.price.toFixed(2)} id={`price-${m.code}`} label="Copy price"/>
                       </div>
                     </td>
-                    <td className={`px-3 py-2.5 text-right font-mono whitespace-nowrap${n ? ' font-bold text-[var(--t1)]' : ' text-[var(--t4)]'}`}>
+                    <td className={`px-3 py-2.5 text-right mono whitespace-nowrap${n ? ' font-semibold text-fg' : ' text-fg-4'}`}>
                       {n ? f2(n * m.price) : '—'}
                     </td>
                   </tr>
@@ -166,21 +166,21 @@ export default function CbuModules() {
             </tbody>
             {lines.length > 0 && (
               <tfoot>
-                <tr className="bg-[var(--term)] text-white">
-                  <td colSpan={4} className="px-3 py-2.5 text-xs font-bold uppercase tracking-wide text-right">
+                <tr className="bg-term text-on-accent">
+                  <td colSpan={4} className="px-3 py-2.5 text-xs font-semibold uppercase tracking-wide text-right">
                     Total · {lines.length} line{lines.length === 1 ? '' : 's'}, Nett Trade
                     {hiddenLines > 0 && (
-                      <span className="ml-1 normal-case font-semibold text-[var(--warn)]">
+                      <span className="ml-1 normal-case font-semibold text-warn">
                         — {hiddenLines} hidden by the phase filter
                       </span>
                     )}
                   </td>
-                  <td colSpan={2} className="px-3 py-2.5 text-right font-bold font-mono whitespace-nowrap text-[var(--ok)]">
+                  <td colSpan={2} className="px-3 py-2.5 text-right font-semibold mono whitespace-nowrap text-ok">
                     <div className="flex items-center justify-end gap-1">
                       {f2(total)}
                       <button aria-label="Copy total" title="Copy total" onClick={() => copy(total.toFixed(2), 'total')}
-                        className="p-0.5 rounded text-white/70 hover:text-white transition-colors">
-                        {copied === 'total' ? <Check className="w-3 h-3 text-[var(--ok)]"/> : <Copy className="w-3 h-3"/>}
+                        className="p-0.5 rounded text-on-accent hover:text-on-accent transition-colors">
+                        {copied === 'total' ? <Check className="w-3 h-3 text-ok"/> : <Copy className="w-3 h-3"/>}
                       </button>
                     </div>
                   </td>
@@ -191,20 +191,18 @@ export default function CbuModules() {
         </div>
 
         {lines.length > 0 && (
-          <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-[var(--line)]">
-            <span className="text-[10px] text-[var(--t4)]">
+          <div className="flex items-center justify-between gap-3 px-3 py-2 border-t border-line">
+            <span className="text-2xs text-fg-4">
               Copies the quantified lines tab-separated — pastes into Bidman or Excel as columns.
             </span>
             <div className="flex items-center gap-1.5 shrink-0">
-              <button onClick={() => setQty({})}
-                className="px-2.5 py-1 rounded-lg text-[10px] font-bold text-[var(--t3)] hover:text-[var(--err)] hover:bg-[var(--err-soft)] transition-colors">
+              <UiButton tone="quiet-danger" onClick={() => setQty({})}>
                 Clear
-              </button>
-              <button onClick={copySelection}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-all">
+              </UiButton>
+              <UiButton tone="primary" onClick={copySelection}>
                 {copied === 'selection' ? <Check className="w-3.5 h-3.5"/> : <Copy className="w-3.5 h-3.5"/>}
                 {copied === 'selection' ? 'Copied' : 'Copy lines'}
-              </button>
+              </UiButton>
             </div>
           </div>
         )}

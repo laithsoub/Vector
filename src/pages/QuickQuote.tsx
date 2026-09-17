@@ -10,6 +10,7 @@ import { useSalesmen, type Salesman } from '../lib/salesmen';
 import { extractMaterialHints } from '../lib/elHints';
 import { openExternal } from '../lib/shell';
 import type { ToastFn } from '../App';
+import { Button as UiButton, IconButton as UiIconButton } from '../ui';
 
 type Src = 'cbu' | 'lum' | 'manual';
 interface Line { id: number; catNo: string; product: string; description: string; qty: number; price: number; src: Src }
@@ -119,97 +120,93 @@ export function QuickQuotePanel({ emailSubject, emailBody, senderName, senderEma
   }
 
   const srcTag: Record<Src, { t: string; c: string; Icon: any }> = {
-    cbu:    { t: 'CBU',       c: 'text-blue-600 dark:text-blue-300 bg-blue-50 dark:bg-blue-900/25',       Icon: Cpu },
-    lum:    { t: 'Luminaire', c: 'text-amber-600 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/25',   Icon: Lightbulb },
-    manual: { t: 'Manual',    c: 'text-[var(--t3)] bg-[var(--s3)]',             Icon: Wrench },
+    cbu:    { t: 'CBU',       c: 'text-accent-text bg-accent-soft ',       Icon: Cpu },
+    lum:    { t: 'Luminaire', c: 'text-warn bg-warn-soft ',   Icon: Lightbulb },
+    manual: { t: 'Manual',    c: 'text-fg-3 bg-subtle',             Icon: Wrench },
   };
-  const inp = 'h-7 px-2 rounded-md text-[11.5px] bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 text-[var(--t1)]';
+  const inp = 'h-7 px-2 rounded-md text-xs bg-subtle ring-1 ring-inset ring-line-2 focus:outline-none focus:ring-ai-line text-fg';
 
   return (
     <div className="px-5 py-3 space-y-3">
       {/* Header fields */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Job name</span>
+        <label className="flex flex-col gap-0.5"><span className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Job name</span>
           <input value={quoteName} onChange={e => setQuoteName(e.target.value)} className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Job number</span>
+        <label className="flex flex-col gap-0.5"><span className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Job number</span>
           <input value={quoteNumber} onChange={e => setQuoteNumber(e.target.value)} placeholder="CR00…" className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Quotation No</span>
+        <label className="flex flex-col gap-0.5"><span className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Quotation No</span>
           <input value={quoteNo} onChange={e => setQuoteNo(e.target.value)} placeholder="EU1L… (optional)" className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Date</span>
+        <label className="flex flex-col gap-0.5"><span className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Date</span>
           <input value={date} onChange={e => setDate(e.target.value)} className={inp} /></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">Salesman</span>
+        <label className="flex flex-col gap-0.5"><span className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">Salesman</span>
           <select value={smIdx} onChange={e => { smPicked.current = true; setSmIdx(Number(e.target.value)); }} className={inp}>
             {SALESMEN.map((s, i) => <option key={s.email} value={i}>{s.name}</option>)}
           </select></label>
-        <label className="flex flex-col gap-0.5"><span className="text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">CBU system</span>
+        <label className="flex flex-col gap-0.5"><span className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">CBU system</span>
           <div className="relative">
             <select value={system} onChange={e => changeSystem(e.target.value)} className={cn(inp, 'w-full appearance-none pr-6')}>
               <option value="">{detecting ? 'Detecting…' : 'None'}</option>
               {ALL_SYSTEMS.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
-            <ChevronDown className="w-3 h-3 absolute right-2 top-2 text-[var(--t3)] pointer-events-none" />
+            <ChevronDown className="w-3 h-3 absolute right-2 top-2 text-fg-3 pointer-events-none" />
           </div></label>
       </div>
 
       {/* Action row */}
       <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={detectCbu} disabled={detecting}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] disabled:opacity-50">
+        <UiButton tone="secondary" onClick={detectCbu} disabled={detecting}>
           {detecting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Cpu className="w-3 h-3" />} Detect CBU
-        </button>
-        <button onClick={pullLuminaires} disabled={pulling}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)] disabled:opacity-50">
+        </UiButton>
+        <UiButton tone="secondary" onClick={pullLuminaires} disabled={pulling}>
           {pulling ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Pull luminaires
-        </button>
-        <button onClick={addManual}
-          className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[11px] font-medium ring-1 ring-inset ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)]">
+        </UiButton>
+        <UiButton tone="secondary" onClick={addManual}>
           <Plus className="w-3 h-3" /> Add line
-        </button>
+        </UiButton>
       </div>
 
       {/* Line items */}
-      <div className="rounded-lg ring-1 ring-inset ring-[var(--line-2)] overflow-hidden">
-        <div className="grid grid-cols-[68px_84px_1fr_40px_76px_80px_22px] gap-1 px-2 py-1.5 bg-[var(--s3)] text-[10px] font-semibold text-[var(--t3)] uppercase tracking-wide">
+      <div className="rounded-lg ring-1 ring-inset ring-line-2 overflow-hidden">
+        <div className="grid grid-cols-[var(--qq-cols)] gap-1 px-2 py-1.5 bg-subtle text-2xs font-semibold text-fg-3 uppercase tracking-wide">
           <span>Catalog No</span><span>Product</span><span>Description</span><span className="text-center">Qty</span><span className="text-right">Unit £</span><span className="text-right">Line £</span><span />
         </div>
-        {lines.length === 0 && <p className="px-3 py-4 text-[11.5px] text-[var(--t3)] text-center">No lines yet — detect a CBU, pull luminaires, or add a line.</p>}
+        {lines.length === 0 && <p className="px-3 py-4 text-xs text-fg-3 text-center">No lines yet — detect a CBU, pull luminaires, or add a line.</p>}
         {lines.map(l => {
           const tag = srcTag[l.src];
           return (
-            <div key={l.id} className="grid grid-cols-[68px_84px_1fr_40px_76px_80px_22px] gap-1 px-2 py-1 items-center border-t border-[var(--line)]">
-              <input value={l.catNo} onChange={e => upd(l.id, { catNo: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-[10.5px]')} />
-              <input value={l.product} onChange={e => upd(l.id, { product: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-[10.5px]')} />
+            <div key={l.id} className="grid grid-cols-[var(--qq-cols)] gap-1 px-2 py-1 items-center border-t border-line">
+              <input value={l.catNo} onChange={e => upd(l.id, { catNo: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-2xs')} />
+              <input value={l.product} onChange={e => upd(l.id, { product: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-2xs')} />
               <div className="flex items-center gap-1 min-w-0">
-                <span className={cn('shrink-0 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-medium', tag.c)}><tag.Icon className="w-2.5 h-2.5" /></span>
-                <input value={l.description} onChange={e => upd(l.id, { description: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-[10.5px]')} />
+                <span className={cn('shrink-0 inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-2xs font-medium', tag.c)}><tag.Icon className="w-2.5 h-2.5" /></span>
+                <input value={l.description} onChange={e => upd(l.id, { description: e.target.value })} className={cn(inp, 'w-full !h-6 !px-1.5 !text-2xs')} />
               </div>
-              <input type="number" value={l.qty} onChange={e => upd(l.id, { qty: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-[10.5px] text-center')} />
-              <input type="number" step="0.01" value={l.price} onChange={e => upd(l.id, { price: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-[10.5px] text-right')} />
-              <span className="text-[10.5px] text-right text-[var(--t2)] tabular-nums">{gbp((Number(l.qty) || 0) * (Number(l.price) || 0))}</span>
-              <button aria-label="Delete this line" onClick={() => del(l.id)} className="w-5 h-5 flex items-center justify-center text-[var(--t4)] hover:text-red-500 transition-colors"><Trash2 className="w-3 h-3" /></button>
+              <input type="number" value={l.qty} onChange={e => upd(l.id, { qty: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-2xs text-center')} />
+              <input type="number" step="0.01" value={l.price} onChange={e => upd(l.id, { price: Number(e.target.value) })} className={cn(inp, 'w-full !h-6 !px-1 !text-2xs text-right')} />
+              <span className="text-2xs text-right text-fg-2 mono">{gbp((Number(l.qty) || 0) * (Number(l.price) || 0))}</span>
+              <UiIconButton icon={Trash2} label="Delete this line" tone="danger" size="xs" onClick={() => del(l.id)} />
             </div>
           );
         })}
-        <div className="flex items-center justify-end gap-4 px-3 py-1.5 border-t border-[var(--line-2)] bg-[var(--s3)]">
-          <span className="text-[11px] font-semibold text-[var(--t3)] uppercase tracking-wide">Total (list, ex-VAT)</span>
-          <span className="text-[13px] font-bold text-[var(--t1)] tabular-nums">{gbp(total)}</span>
+        <div className="flex items-center justify-end gap-4 px-3 py-1.5 border-t border-line-2 bg-subtle">
+          <span className="text-xs font-semibold text-fg-3 uppercase tracking-wide">Total (list, ex-VAT)</span>
+          <span className="text-base font-semibold text-fg tabular-nums">{gbp(total)}</span>
         </div>
       </div>
 
       {/* Generate */}
       <div className="flex items-center gap-3 flex-wrap">
-        <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--t2)] cursor-pointer select-none">
-          <input type="checkbox" checked={appendComm} onChange={e => setAppendComm(e.target.checked)} className="accent-violet-600" />
+        <label className="inline-flex items-center gap-1.5 text-xs text-fg-2 cursor-pointer select-none">
+          <input type="checkbox" checked={appendComm} onChange={e => setAppendComm(e.target.checked)} className="accent-accent" />
           Commissioning
         </label>
-        <label className="inline-flex items-center gap-1.5 text-[11px] text-[var(--t2)] cursor-pointer select-none">
-          <input type="checkbox" checked={appendTC} onChange={e => setAppendTC(e.target.checked)} className="accent-violet-600" />
+        <label className="inline-flex items-center gap-1.5 text-xs text-fg-2 cursor-pointer select-none">
+          <input type="checkbox" checked={appendTC} onChange={e => setAppendTC(e.target.checked)} className="accent-accent" />
           T&amp;C
         </label>
-        <button onClick={generate} disabled={generating || lines.length === 0}
-          className="ml-auto inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg text-[12px] font-semibold bg-violet-600 hover:bg-violet-700 text-white disabled:opacity-50 transition-colors">
+        <UiButton tone="primary" size="md" className="ml-auto" onClick={generate} disabled={generating || lines.length === 0}>
           {generating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />} {generating ? 'Building…' : 'Generate quote PDF'}
-        </button>
+        </UiButton>
       </div>
     </div>
   );

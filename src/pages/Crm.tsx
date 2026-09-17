@@ -14,6 +14,7 @@ import {
 import { cn } from '../lib/cn';
 import { openExternal, isTauri } from '../lib/shell';
 import { Card, Pill, Button, fmtMoneyFull, relTime } from '../lib/ui';
+import { EmptyState, Input as UiInput, Select as UiSelect, Switch as UiSwitch, Button as UiButton, IconButton as UiIconButton } from '../ui';
 import { api } from '../lib/api';
 import { confirmAsync } from '../lib/notify';
 import { failed, plural } from '../lib/errors';
@@ -25,12 +26,12 @@ import type {
 import type { ToastFn } from '../App';
 
 const inputCls =
-  'w-full h-[34px] px-[11px] rounded-[9px] text-xs bg-[var(--s1)] border border-[var(--line-2)] ' +
-  'text-[var(--t1)] placeholder:text-[var(--t3)] focus:outline-none focus:border-[var(--accent-line)]';
+  'w-full h-8 px-2.5 rounded-panel text-xs bg-surface border border-line-2 ' +
+  'text-fg placeholder:text-fg-3 focus:outline-none focus:border-accent-line';
 
 const selectCls =
-  'h-7 px-2 rounded-[8px] bg-[var(--s1)] border border-[var(--line-2)] ' +
-  'text-[var(--t2)] focus:outline-none focus:border-[var(--accent-line)] cursor-pointer';
+  'h-7 px-2 rounded-panel bg-surface border border-line-2 ' +
+  'text-fg-2 focus:outline-none focus:border-accent-line cursor-pointer';
 
 export function CrmPage({ toast }: { toast: ToastFn }) {
   // Two sources of truth sit side by side: the SharePoint Quotations List
@@ -173,10 +174,9 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
   const targetName = companies.find(c => c.id === targetId)?.name;
 
   return (
-    <div className="space-y-[22px]">
+    <div className="space-y-5">
       {/* ── Source switch ────────────────────────────────────────────────────── */}
-      <div className="flex items-center gap-1 p-1 rounded-[11px] w-fit"
-           style={{ background: 'var(--s3)', border: '1px solid var(--line)' }}>
+      <div className="flex items-center gap-1 p-0.5 rounded-control w-fit bg-subtle border border-line">
         <TabBtn active={tab === 'accounts'} Icon={Database} onClick={() => setTab('accounts')}
                 label="Accounts" sub="from SharePoint" count={companies.length || null} />
         <TabBtn active={tab === 'mailbox'} Icon={Inbox} onClick={() => setTab('mailbox')}
@@ -191,18 +191,14 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
       ) : (
       <>
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[200px] max-w-md">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
-          <input
-            value={query} onChange={e => setQuery(e.target.value)}
-            placeholder="Search accounts & quotes — name, salesman, ref…"
-            className={cn(inputCls, 'pl-8')} />
-        </div>
-        <span className="text-[11.5px] text-[var(--t3)] tabular-nums">
+        <UiInput icon={Search} className="flex-1 min-w-48 max-w-md"
+          value={query} onChange={e => setQuery(e.currentTarget.value)}
+          placeholder="Search accounts & quotes — name, salesman, ref…" />
+        <span className="mono text-xs text-fg-3">
           {filtered.length} {filtered.length === 1 ? 'account' : 'accounts'}
         </span>
         {sync && sync.snapshotCount > 0 && !sync.running && (
-          <span className="text-[11px] text-[var(--t4)]">· {sync.snapshotCount} synced{sync.lastSyncedAt ? ` ${relTime(sync.lastSyncedAt)}` : ''}</span>
+          <span className="text-xs text-fg-4">· {sync.snapshotCount} synced{sync.lastSyncedAt ? ` ${relTime(sync.lastSyncedAt)}` : ''}</span>
         )}
         <div className="flex-1" />
         {sync?.running ? (
@@ -220,43 +216,39 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
       </div>
 
       {/* Filters */}
-      <div className="flex items-center gap-2 flex-wrap text-[11.5px]">
-        <Filter className="w-3.5 h-3.5 text-[var(--t3)]" />
-        <select value={salesman} onChange={e => setSalesman(e.target.value)} className={selectCls} title="Filter by salesman">
-          <option value="">All salesmen</option>
-          {salesmenList.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-        <select value={sortBy} onChange={e => setSortBy(e.target.value as any)} className={selectCls} title="Sort">
-          <option value="name">Sort: Name A–Z</option>
-          <option value="quotes">Sort: Most quotes</option>
-          <option value="total">Sort: Highest total</option>
-          <option value="recent">Sort: Most recent</option>
-        </select>
-        <button onClick={() => setOpenOnly(v => !v)}
-          style={openOnly ? { background: 'var(--accent)', color: 'var(--accent-ink)', border: '1px solid transparent' } : undefined}
-          className={cn('h-7 px-2.5 rounded-[8px] transition-colors',
-            openOnly ? '' : 'border border-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)]')}>
-          Open opps only
-        </button>
+      <div className="flex items-center gap-2 flex-wrap text-xs">
+        <Filter className="w-3.5 h-3.5 text-fg-3" />
+        <UiSelect searchable w="calc(var(--sp-16) * 3)" aria-label="Filter by salesman"
+          value={salesman || '__all'} onChange={v => setSalesman(!v || v === '__all' ? '' : v)}
+          data={[{ value: '__all', label: 'All salesmen' }, ...salesmenList.map(s => ({ value: s, label: s }))]} />
+        <UiSelect w="calc(var(--sp-16) * 2.75)" aria-label="Sort"
+          value={sortBy} onChange={v => v && setSortBy(v as any)}
+          data={[
+            { value: 'name', label: 'Sort: Name A–Z' },
+            { value: 'quotes', label: 'Sort: Most quotes' },
+            { value: 'total', label: 'Sort: Highest total' },
+            { value: 'recent', label: 'Sort: Most recent' },
+          ]} />
+        <UiSwitch label="Open opps only" checked={openOnly} onChange={e => setOpenOnly(e.currentTarget.checked)} />
         {(salesman || openOnly || sortBy !== 'name' || query || browseAll) && (
           <button onClick={() => { setSalesman(''); setOpenOnly(false); setSortBy('name'); setQuery(''); setBrowseAll(false); }}
-            className="h-7 px-2 rounded-[8px] text-[var(--t3)] hover:text-[var(--t1)] inline-flex items-center gap-1">
+            className="h-7 px-2 rounded-panel text-fg-3 hover:text-fg inline-flex items-center gap-1">
             <X className="w-3 h-3" /> {browseAll && !salesman && !openOnly && !query ? 'Back to highlights' : 'Clear'}
           </button>
         )}
       </div>
 
       {sync && (sync.running || sync.phase === 'error') && (
-        <div className="rounded-[12px] v3-card px-4 py-3 space-y-2">
-          <div className="flex items-center gap-2 text-[12px]">
+        <div className="rounded-panel v3-card px-4 py-3 space-y-2">
+          <div className="flex items-center gap-2 text-sm">
             {sync.running && <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" style={{ color: 'var(--accent)' }} />}
             {sync.phase === 'error' && <AlertTriangle className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--err)' }} />}
             <span className="flex-1" style={{ color: sync.phase === 'error' ? 'var(--err)' : 'var(--t2)' }}>{sync.message}</span>
-            {sync.pct != null && <span className="text-[var(--t4)] tabular-nums">{sync.pct}%</span>}
+            {sync.pct != null && <span className="text-fg-4 tabular-nums">{sync.pct}%</span>}
           </div>
           {sync.running && (
-            <div className="h-1.5 rounded-full bg-[var(--s3)] overflow-hidden">
-              <div className="h-full rounded-full transition-all duration-500"
+            <div className="h-1.5 rounded-full bg-subtle overflow-hidden">
+              <div className="h-full rounded-full transition-all duration"
                 style={{ width: `${sync.pct ?? 8}%`, background: 'var(--accent)' }} />
             </div>
           )}
@@ -264,14 +256,14 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
       )}
 
       {mergeMode && (
-        <div className="flex items-center gap-3 flex-wrap p-3 rounded-[12px] text-[12px]" style={{ border: '1px solid var(--accent-line)', background: 'var(--accent-soft)' }}>
+        <div className="flex items-center gap-3 flex-wrap p-3 rounded-panel text-sm" style={{ border: 'var(--hairline) solid var(--accent-line)', background: 'var(--accent-soft)' }}>
           <GitMerge className="w-4 h-4 shrink-0" style={{ color: 'var(--accent-text)' }} />
-          <span className="text-[var(--t2)]">
+          <span className="text-fg-2">
             {picked.size < 2 ? 'Pick 2+ cards to merge into one account.' : `${picked.size} selected — keep as:`}
           </span>
           {picked.size >= 2 && (
             <select value={targetId ?? ''} onChange={e => setTargetId(Number(e.target.value))}
-              className="h-7 px-2 rounded-[8px] text-[11.5px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)]">
+              className="h-7 px-2 rounded-panel text-xs bg-surface border border-line-2 text-fg">
               {[...picked].map(id => <option key={id} value={id}>{companies.find(c => c.id === id)?.name}</option>)}
             </select>
           )}
@@ -292,18 +284,17 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
           }} />
       )}
 
-      <div className="grid grid-cols-12 gap-[22px] items-start">
-      <div className="col-span-12 lg:col-span-4 space-y-[22px]">
+      <div className="grid grid-cols-12 gap-6 items-start">
+      <div className="col-span-12 lg:col-span-4 space-y-6 min-w-0">
       {(() => {
-        if (loading) return <div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
+        if (loading) return <div className="flex items-center justify-center py-20 text-fg-3"><Loader2 className="w-5 h-5 animate-spin" /></div>;
         if (companies.length === 0) return (
-          <Card className="text-center py-16 text-[var(--t3)] text-[13px]">
-            No accounts yet. Click <b>Sync from SharePoint</b> to pull your quotes.
-          </Card>
+          <EmptyState icon={Database} title="No accounts yet"
+            description={<>Use <b className="font-medium text-fg-2">Sync from SharePoint</b> to pull your quotes.</>} />
         );
 
         const renderGrid = (list: CrmCompanyCard[]) => (
-          <div className="grid gap-[17px]" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))' }}>
+          <div className="flex flex-col">
             {list.map(c => (
               <AccountCard key={c.id} c={c} mergeMode={mergeMode} picked={picked.has(c.id)}
                 selected={selectedId === c.id}
@@ -316,19 +307,19 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
         if (inSearch) {
           const accs = filtered.slice(0, 12);
           return (
-            <div className="space-y-[22px]">
+            <div className="space-y-5">
               <Section title="Accounts" count={filtered.length}>
                 {accs.length ? renderGrid(accs) : <Empty>No accounts match “{query}”.</Empty>}
                 {filtered.length > accs.length && (
                   <button onClick={() => { setBrowseAll(true); setQuery(''); }}
-                    className="mt-3 text-[12px] hover:underline" style={{ color: 'var(--accent-text)' }}>
+                    className="mt-3 text-sm hover:underline" style={{ color: 'var(--accent-text)' }}>
                     +{filtered.length - accs.length} more accounts — browse all →
                   </button>
                 )}
               </Section>
               <Section title="Quotes" count={quoteHits.length}>
                 {quoteHits.length ? (
-                  <div className="rounded-[14px] v3-card divide-y divide-[var(--line)] overflow-hidden">
+                  <div className="flex flex-col divide-y divide-line">
                     {quoteHits.map(q => <QuoteHitRow key={q.id} q={q} onOpen={() => q.companyId && setSelected(q.companyId)} />)}
                   </div>
                 ) : <Empty>No quotes match “{query}”.</Empty>}
@@ -366,14 +357,13 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
       })()}
       </div>
 
-      <div className="col-span-12 lg:col-span-8 lg:border-l-2 lg:pl-5" style={{ borderColor: 'color-mix(in oklab, var(--violet) 40%, transparent)' }}>
+      <div className="col-span-12 lg:col-span-8 lg:border-l lg:border-line lg:pl-6 min-w-0">
         {selectedId != null ? (
           <CompanyDetail id={selectedId} toast={toast} onBack={() => { setSelected(null); refresh(); }} />
         ) : (
-          <div className="rounded-[var(--r-xl)] v3-card py-24 px-6 flex flex-col items-center justify-center text-center">
-            <Database className="w-8 h-8 text-[var(--t4)] mb-3" />
-            <p className="text-[13px] font-medium text-[var(--t3)]">Select an account</p>
-            <p className="text-[11.5px] text-[var(--t4)] mt-1">Pick a card on the left to see contacts, quotes, facts and documents.</p>
+          <div className="py-16">
+            <EmptyState icon={Database} title="Select an account"
+              description="Pick one on the left to see contacts, quotes, facts and documents." />
           </div>
         )}
       </div>
@@ -391,19 +381,17 @@ function TabBtn({ active, Icon, label, sub, count, onClick }: {
 }) {
   return (
     <button onClick={onClick}
-      style={active ? { background: 'var(--s1)', boxShadow: 'var(--card-sh)' } : undefined}
-      className={cn('flex items-center gap-2 h-[34px] px-3 rounded-[9px] transition-colors',
-        active ? '' : 'hover:bg-[var(--s-hover)]')}>
+      className={cn('flex items-center gap-2 h-9 px-3 rounded-control transition-colors',
+        active ? 'bg-surface ring-1 ring-line-2' : 'hover:bg-hover')}>
       <Icon className="w-3.5 h-3.5 shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--t3)' }} />
       <span className="text-left leading-tight">
-        <span className={cn('block text-[12px]', active ? 'font-semibold text-[var(--t1)]' : 'text-[var(--t2)]')}>
+        <span className={cn('block text-sm', active ? 'font-semibold text-fg' : 'text-fg-2')}>
           {label}
         </span>
-        <span className="block text-[9.5px] text-[var(--t4)]">{sub}</span>
+        <span className="block text-2xs text-fg-4">{sub}</span>
       </span>
       {count != null && (
-        <span className="text-[10.5px] tabular-nums px-1.5 py-px rounded-full"
-              style={{ background: active ? 'var(--accent-soft)' : 'var(--s2)', color: 'var(--t3)' }}>
+        <span className="mono text-2xs text-fg-3">
           {count}
         </span>
       )}
@@ -504,16 +492,16 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
     <div className="space-y-4">
       {/* ── Mine / Team + controls ─────────────────────────────────────────── */}
       <div className="flex items-center gap-3 flex-wrap">
-        <div className="flex items-center gap-1 p-1 rounded-[10px]"
-             style={{ background: 'var(--s3)', border: '1px solid var(--line)' }}>
+        <div className="flex items-center gap-1 p-1 rounded-panel"
+             style={{ background: 'var(--s3)', border: 'var(--hairline) solid var(--line)' }}>
           <SideBtn active={side === 'mine'} Icon={User} label="Mine" count={counts.mine}
                    onClick={() => setSide('mine')} />
           <SideBtn active={side === 'team'} Icon={Users} label="Team" count={counts.team}
                    onClick={() => setSide('team')} />
         </div>
 
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
-          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[var(--t3)]" />
+        <div className="relative flex-1 min-w-48 max-w-sm">
+          <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-3" />
           <input value={query} onChange={e => setQuery(e.target.value)}
             placeholder="Search reference, project, sender, folder…"
             className={cn(inputCls, 'pl-8')} />
@@ -537,15 +525,15 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
       </div>
 
       {lastScan && !running && (
-        <p className="text-[11px] text-[var(--t4)]">
+        <p className="text-xs text-fg-4">
           {counts.total} quote{counts.total === 1 ? '' : 's'} indexed · swept {relTime(lastScan)}
           {status?.scanned ? ` · ${status.scanned.toLocaleString()} messages read` : ''}
         </p>
       )}
 
       {status && (running || status.phase === 'error') && (
-        <div className="rounded-[12px] v3-card px-4 py-3 space-y-2">
-          <div className="flex items-center gap-2 text-[12px]">
+        <div className="rounded-panel v3-card px-4 py-3 space-y-2">
+          <div className="flex items-center gap-2 text-sm">
             {running && <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" style={{ color: 'var(--accent)' }} />}
             {status.phase === 'error' && <AlertTriangle className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--err)' }} />}
             <span className="flex-1" style={{ color: status.phase === 'error' ? 'var(--err)' : 'var(--t2)' }}>
@@ -553,7 +541,7 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
             </span>
           </div>
           {running && (
-            <p className="text-[10.5px] text-[var(--t4)]">
+            <p className="text-2xs text-fg-4">
               Outlook must stay open. Every folder of every mailbox is read, so a long window takes a few minutes.
             </p>
           )}
@@ -563,17 +551,17 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
       {/* ── The list ───────────────────────────────────────────────────────── */}
       {never ? (
         <Card className="text-center py-16">
-          <Inbox className="w-8 h-8 text-[var(--t4)] mx-auto mb-3" />
-          <p className="text-[13px] font-medium text-[var(--t2)]">No mailbox sweep yet</p>
-          <p className="text-[11.5px] text-[var(--t4)] mt-1 max-w-md mx-auto">
+          <Inbox className="w-8 h-8 text-fg-4 mx-auto mb-3" />
+          <p className="text-base font-medium text-fg-2">No mailbox sweep yet</p>
+          <p className="text-xs text-fg-4 mt-1 max-w-md mx-auto">
             Vector will read every folder of every mailbox you have open — your own and the shared
             quote factory — and index every quote reference it finds, split into your work and the team’s.
           </p>
         </Card>
       ) : loading ? (
-        <div className="flex items-center justify-center py-16 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>
+        <div className="flex items-center justify-center py-16 text-fg-3"><Loader2 className="w-5 h-5 animate-spin" /></div>
       ) : quotes.length === 0 ? (
-        <Card className="text-center py-14 text-[13px] text-[var(--t3)]">
+        <Card className="text-center py-14 text-base text-fg-3">
           {query.trim()
             ? <>No {side === 'mine' ? 'quote of yours' : 'team quote'} matches “{query.trim()}”.</>
             : side === 'mine'
@@ -581,7 +569,7 @@ function MailboxQuotes({ toast, onOpenAccount, onCounts }: {
               : <>Nothing here yet — every quote found in the swept window is yours.</>}
         </Card>
       ) : (
-        <div className="rounded-[14px] v3-card divide-y divide-[var(--line)] overflow-hidden">
+        <div className="rounded-panel v3-card divide-y divide-line overflow-hidden">
           {quotes.map(q => (
             <MailQuoteRow key={q.key} q={q} side={side} toast={toast}
                           onOpenAccount={onOpenAccount} onMove={move} />
@@ -598,11 +586,11 @@ function SideBtn({ active, Icon, label, count, onClick }: {
   return (
     <button onClick={onClick}
       style={active ? { background: 'var(--accent)', color: 'var(--accent-ink)' } : undefined}
-      className={cn('h-[30px] px-3 rounded-[8px] text-[12px] font-medium inline-flex items-center gap-1.5 transition-colors',
-        active ? '' : 'text-[var(--t2)] hover:bg-[var(--s-hover)]')}>
+      className={cn('h-7 px-3 rounded-panel text-sm font-medium inline-flex items-center gap-1.5 transition-colors',
+        active ? '' : 'text-fg-2 hover:bg-hover')}>
       <Icon className="w-3.5 h-3.5" />
       {label}
-      <span className="tabular-nums text-[10.5px] px-1.5 rounded-full"
+      <span className="tabular-nums text-2xs px-1.5 rounded-full"
             style={active ? { background: 'rgba(255,255,255,.22)' } : { background: 'var(--s2)', color: 'var(--t3)' }}>
         {count}
       </span>
@@ -627,9 +615,9 @@ function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
   }
 
   return (
-    <div className="px-4 py-2.5 hover:bg-[var(--s3)] transition-colors">
+    <div className="px-4 py-2.5 hover:bg-subtle transition-colors">
       <div className="flex items-start gap-3">
-        <span className="shrink-0 mt-px px-1.5 py-0.5 rounded-[6px] text-[10px] font-semibold mono"
+        <span className="shrink-0 mt-px px-1.5 py-0.5 rounded-control text-2xs font-semibold mono"
               style={q.kind === 'bm'
                 ? { background: 'var(--violet-soft)', color: 'var(--violet)' }
                 : { background: 'var(--accent-soft)', color: 'var(--accent-text)' }}
@@ -638,8 +626,8 @@ function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
         </span>
 
         <div className="min-w-0 flex-1">
-          <p className="text-[12px] text-[var(--t1)] truncate">{q.subject}</p>
-          <div className="flex items-center gap-2 flex-wrap mt-0.5 text-[10.5px] text-[var(--t3)]">
+          <p className="text-sm text-fg truncate">{q.subject}</p>
+          <div className="flex items-center gap-2 flex-wrap mt-0.5 text-2xs text-fg-3">
             {q.account && (
               q.companyId
                 ? <button onClick={() => onOpenAccount(q.companyId!)}
@@ -659,31 +647,28 @@ function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
         </div>
 
         <div className="shrink-0 flex items-center gap-1">
-          <button onClick={() => setOpen(o => !o)}
-            className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)]">
+          <UiButton tone="ghost" size="xs" onClick={() => setOpen(o => !o)}>
             {open ? 'Less' : 'Why?'}
-          </button>
-          <button aria-label="Open this mail in Outlook" onClick={openInOutlook} title="Open this mail in Outlook"
-            className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)] inline-flex items-center gap-1">
+          </UiButton>
+          <UiButton tone="ghost" size="xs" aria-label="Open this mail in Outlook" onClick={openInOutlook} hint="Open this mail in Outlook">
             <ExternalLink className="w-3 h-3" /> Open
-          </button>
-          <button aria-label={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`} onClick={() => onMove(q, other)} title={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`}
-            className="h-6 px-2 rounded-[7px] text-[10.5px] text-[var(--t3)] hover:bg-[var(--s2)] hover:text-[var(--t1)] inline-flex items-center gap-1">
+          </UiButton>
+          <UiButton tone="ghost" size="xs" aria-label={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`} onClick={() => onMove(q, other)} hint={`Move this quote to ${other === 'mine' ? 'Mine' : 'Team'}`}>
             <ArrowLeftRight className="w-3 h-3" /> {other === 'mine' ? 'Mine' : 'Team'}
-          </button>
+          </UiButton>
         </div>
       </div>
 
       {open && (
-        <div className="mt-2 ml-1 pl-3 space-y-1 text-[10.5px] text-[var(--t2)]"
-             style={{ borderLeft: '2px solid var(--line-2)' }}>
+        <div className="mt-2 ml-1 pl-3 space-y-1 text-2xs text-fg-2"
+             style={{ borderLeft: 'var(--focus-w) solid var(--line-2)' }}>
           <p>
-            <span className="text-[var(--t3)]">Filed as {side === 'mine' ? 'yours' : 'the team’s'} because </span>
+            <span className="text-fg-3">Filed as {side === 'mine' ? 'yours' : 'the team’s'} because </span>
             {q.why || 'no reason recorded'}
-            {q.whyFolder && <span className="text-[var(--t3)]"> ({q.whyFolder})</span>}
+            {q.whyFolder && <span className="text-fg-3"> ({q.whyFolder})</span>}
           </p>
           {q.overridden && (
-            <p className="text-[var(--t3)]">
+            <p className="text-fg-3">
               You moved this one — the scan itself said {q.scannerSide === 'mine' ? 'yours' : 'the team’s'}.{' '}
               <button onClick={() => onMove(q, '')} className="hover:underline" style={{ color: 'var(--accent-text)' }}>
                 Undo
@@ -691,21 +676,21 @@ function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
             </p>
           )}
           <p className="flex items-start gap-1.5">
-            <FolderOpen className="w-3 h-3 shrink-0 mt-px text-[var(--t3)]" />
+            <FolderOpen className="w-3 h-3 shrink-0 mt-px text-fg-3" />
             <span>{q.folders.join(' · ') || q.folder || '—'}</span>
           </p>
-          {q.recipients && <p><span className="text-[var(--t3)]">To:</span> {q.recipients}</p>}
-          <p><span className="text-[var(--t3)]">Seen:</span>{' '}
+          {q.recipients && <p><span className="text-fg-3">To:</span> {q.recipients}</p>}
+          <p><span className="text-fg-3">Seen:</span>{' '}
             <span className="tabular-nums">{(q.first || '').slice(0, 10)} → {(q.last || '').slice(0, 10)}</span>
           </p>
           {q.docs.length > 0 && (
             <p className="flex items-start gap-1.5">
-              <Paperclip className="w-3 h-3 shrink-0 mt-px text-[var(--t3)]" />
+              <Paperclip className="w-3 h-3 shrink-0 mt-px text-fg-3" />
               <span>{q.docs.map(d => d.name).join(' · ')}</span>
             </p>
           )}
           {!q.companyId && q.account && (
-            <p className="text-[var(--t3)]">Not matched to an account yet — no card claims “{q.account}”.</p>
+            <p className="text-fg-3">Not matched to an account yet — no card claims “{q.account}”.</p>
           )}
         </div>
       )}
@@ -713,41 +698,37 @@ function MailQuoteRow({ q, side, toast, onOpenAccount, onMove }: {
   );
 }
 
-// ─── Account card ────────────────────────────────────────────────────────────
+// ─── Account row ─────────────────────────────────────────────────────────────
 function AccountCard({ c, mergeMode, picked, selected, onClick }: { c: CrmCompanyCard; mergeMode: boolean; picked: boolean; selected?: boolean; onClick: () => void }) {
+  const on = (mergeMode && picked) || selected;
   return (
-    <button onClick={onClick}
-      style={mergeMode && picked ? { boxShadow: '0 0 0 2px var(--accent)' } : selected ? { boxShadow: '0 0 0 2px var(--violet)' } : undefined}
+    <button onClick={onClick} aria-pressed={on}
       className={cn(
-        'w-full text-left rounded-[14px] p-4 transition-all v3-card',
-        !(mergeMode && picked) && !selected && 'hover:border-[var(--accent-line)]')}>
-      <div className="flex items-start gap-2.5 mb-3">
-        {mergeMode ? (
-          picked ? <CheckSquare className="w-5 h-5 shrink-0" style={{ color: 'var(--accent)' }} />
-                 : <Square className="w-5 h-5 text-[var(--t4)] shrink-0" />
-        ) : (
-          <div className="w-[38px] h-[38px] rounded-[11px] grid place-items-center text-[13px] font-bold shrink-0"
-            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6))', color: 'var(--accent-ink)' }}>
-            {c.name.slice(0, 2).toUpperCase()}
-          </div>
-        )}
+        'relative w-full text-left px-3 py-2.5 border-b border-line transition-colors',
+        on ? 'bg-accent-soft before:absolute before:left-0 before:inset-y-2 before:w-0.5 before:rounded-full before:bg-accent'
+           : 'hover:bg-hover',
+      )}>
+      <div className="flex items-start gap-2.5">
+        {mergeMode && (picked
+          ? <CheckSquare className="w-4 h-4 mt-0.5 shrink-0 text-accent-text" />
+          : <Square className="w-4 h-4 mt-0.5 shrink-0 text-fg-4" />)}
         <div className="min-w-0 flex-1">
-          <h3 className="text-[13.5px] font-semibold text-[var(--t1)] truncate leading-tight">{c.name}</h3>
-          <p className="text-[11px] text-[var(--t3)] mt-0.5">
+          <div className="flex items-baseline gap-2 min-w-0">
+            <h3 className="text-md font-medium text-fg truncate flex-1">{c.name}</h3>
+            {c.country && <span className="mono text-2xs text-fg-3 shrink-0">{c.country}</span>}
+          </div>
+          <div className="flex items-baseline gap-3 mt-0.5 text-xs text-fg-3">
+            <span className="mono">{c.quoteCount} q</span>
+            <span className="mono">{c.contactCount} c</span>
+            <span className="mono text-fg-2 ml-auto">{c.totalValue ? fmtMoneyFull(c.totalValue, '€') : '—'}</span>
+          </div>
+          <p className="text-2xs text-fg-4 mt-0.5 truncate">
             {c.lastQuote ? `Last quote ${relTime(c.lastQuote)}` : 'No quotes yet'}
             {c.aliasCount > 1 && ` · ${c.aliasCount} names`}
+            {c.salesmen.length > 0 && ` · ${c.salesmen.join(', ')}`}
           </p>
         </div>
-        {c.country && <Pill tone="neutral">{c.country}</Pill>}
       </div>
-      <div className="grid grid-cols-3 gap-2 text-center">
-        <Stat label="Quotes"   value={String(c.quoteCount)} />
-        <Stat label="Contacts" value={String(c.contactCount)} />
-        <Stat label="Total"    value={c.totalValue ? fmtMoneyFull(c.totalValue, '€') : '—'} tone={c.totalValue ? 'brand' : 'muted'} />
-      </div>
-      {c.salesmen.length > 0 && (
-        <p className="text-[10.5px] text-[var(--t3)] mt-2.5 truncate">{c.salesmen.join(', ')}</p>
-      )}
     </button>
   );
 }
@@ -756,9 +737,9 @@ function AccountCard({ c, mergeMode, picked, selected, onClick }: { c: CrmCompan
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
     <section>
-      <div className="flex items-baseline gap-2 mb-2.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[var(--t2)]">{title}</h2>
-        {count != null && <span className="text-[11px] text-[var(--t4)] tabular-nums">{count}</span>}
+      <div className="flex items-baseline gap-2 pb-1.5 border-b border-line">
+        <h2 className="eyebrow">{title}</h2>
+        {count != null && <span className="mono text-2xs text-fg-4">{count}</span>}
       </div>
       {children}
     </section>
@@ -766,22 +747,22 @@ function Section({ title, count, children }: { title: string; count?: number; ch
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="text-[12px] text-[var(--t3)] py-6 text-center">{children}</p>;
+  return <EmptyState compact title={children} />;
 }
 
 function QuoteHitRow({ q, onOpen }: { q: CrmQuoteHit; onOpen: () => void }) {
   const stateTone = q.state === 'won' ? 'ok' : q.state === 'lost' ? 'err' : 'brand';
   return (
     <button onClick={onOpen}
-      className="w-full text-left flex items-center gap-3 px-3.5 py-2.5 bg-[var(--s2)] hover:bg-[var(--s3)] transition-colors">
-      <FileText className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
+      className="w-full text-left flex items-center gap-3 px-3 py-2.5 hover:bg-hover transition-colors">
+      <FileText className="w-3.5 h-3.5 text-fg-3 shrink-0" />
       <div className="min-w-0 flex-1">
-        <div className="text-[12.5px] font-medium text-[var(--t1)] truncate">{q.name || q.account}</div>
-        <div className="text-[11px] text-[var(--t3)] truncate">
+        <div className="text-sm font-medium text-fg truncate">{q.name || q.account}</div>
+        <div className="text-xs text-fg-3 truncate">
           {q.account}{q.salesman ? ` · ${q.salesman}` : ''}{q.ref ? ` · ${q.ref}` : ''}
         </div>
       </div>
-      <span className="text-[12px] font-medium tabular-nums text-[var(--t1)] shrink-0">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</span>
+      <span className="mono text-sm text-fg shrink-0">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</span>
       <Pill tone={stateTone as any}>{q.state}</Pill>
     </button>
   );
@@ -789,9 +770,9 @@ function QuoteHitRow({ q, onOpen }: { q: CrmQuoteHit; onOpen: () => void }) {
 
 function Stat({ label, value, tone = 'muted' }: { label: string; value: string; tone?: 'brand' | 'muted' }) {
   return (
-    <div className="rounded-[9px] bg-[var(--s3)] py-2 px-1.5">
-      <div className="text-[14px] font-semibold tabular-nums leading-none" style={{ color: tone === 'brand' ? 'var(--accent-text)' : 'var(--t1)' }}>{value}</div>
-      <div className="text-[9px] uppercase tracking-[0.05em] text-[var(--t3)] mt-1">{label}</div>
+    <div>
+      <div className="eyebrow">{label}</div>
+      <div className="mono text-lg leading-tight mt-0.5" style={{ color: tone === 'brand' ? 'var(--accent-text)' : 'var(--t1)' }}>{value}</div>
     </div>
   );
 }
@@ -814,7 +795,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
   useEffect(() => { load(); }, [load]);
 
   if (loading || !data) {
-    return <div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>;
+    return <div className="flex items-center justify-center py-20 text-fg-3"><Loader2 className="w-5 h-5 animate-spin" /></div>;
   }
   const { company, contacts, facts, quotes, opp, enriched } = data;
   const mailQuotes = data.mailQuotes ?? [];
@@ -857,7 +838,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
   const totalIssued = quotes.reduce((s, q) => s + (q.price || 0), 0);
 
   return (
-    <div className="space-y-[22px]">
+    <div className="space-y-5">
       <div className="flex items-center gap-3">
         <Button tone="ghost" size="sm" Icon={ArrowLeft} onClick={onBack}>All accounts</Button>
         <div className="flex-1" />
@@ -885,18 +866,18 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
       {/* Header */}
       <Card className="animate-fade-up">
         <div className="flex items-start gap-3">
-          <div className="w-14 h-14 rounded-[14px] grid place-items-center text-[18px] font-bold shrink-0"
-            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 55%, #8b5cf6))', color: 'var(--accent-ink)' }}>
+          <div className="w-14 h-14 rounded-panel grid place-items-center text-2xl font-semibold shrink-0"
+            style={{ background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>
             {company.name.slice(0, 2).toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-[16px] font-semibold text-[var(--t1)]">{company.name}</h2>
+              <h2 className="text-xl font-semibold text-fg">{company.name}</h2>
               {company.country && <Pill tone="neutral">{company.country}</Pill>}
             </div>
             {(company.aliases?.length ?? 0) > 1 && (
               <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                <span className="text-[10px] uppercase tracking-wide text-[var(--t3)]">Names:</span>
+                <span className="text-2xs uppercase tracking-wide text-fg-3">Names:</span>
                 {company.aliases!.map(a => <Pill key={a} tone="neutral">{a}</Pill>)}
               </div>
             )}
@@ -905,7 +886,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                 <Pill key={t} tone="violet">{t}</Pill>
               ))}
             </div>
-            {company.notes && <p className="text-[12px] text-[var(--t2)] mt-2 whitespace-pre-wrap">{company.notes}</p>}
+            {company.notes && <p className="text-sm text-fg-2 mt-2 whitespace-pre-wrap">{company.notes}</p>}
           </div>
           <div className="flex gap-2 shrink-0">
             <HeaderStat label="Quotes" value={String(quotes.length)} />
@@ -915,38 +896,38 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         </div>
       </Card>
 
-      <div className="grid gap-[22px] lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-2">
         {/* Contacts */}
         <Card>
           <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[13px] font-semibold text-[var(--t1)]">Contacts</h3>
+            <h3 className="text-base font-semibold text-fg">Contacts</h3>
             <Button tone="ghost" size="sm" Icon={UserPlus} onClick={() => setContactForm({})}>Add</Button>
           </div>
           {contactForm && <ContactForm initial={contactForm} onCancel={() => setContactForm(null)} onSave={saveContact} />}
           {contacts.length === 0 && !contactForm ? (
-            <p className="text-[12px] text-[var(--t3)] py-4 text-center">
+            <p className="text-sm text-fg-3 py-4 text-center">
               {enriched ? 'No contacts yet.' : 'Connect to JOE to pull the salesman as a contact, or add one.'}
             </p>
           ) : (
             <ul className="space-y-2">
               {contacts.map(ct => (
-                <li key={ct.id} className="group flex items-start gap-2.5 p-2.5 rounded-lg bg-[var(--s3)]">
+                <li key={ct.id} className="group flex items-start gap-2.5 p-2.5 rounded-lg bg-subtle">
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <span className="text-[12.5px] font-medium text-[var(--t1)] truncate">{ct.name}</span>
-                      {ct.role && <span className="text-[11px] text-[var(--t3)]">· {ct.role}</span>}
+                      <span className="text-sm font-medium text-fg truncate">{ct.name}</span>
+                      {ct.role && <span className="text-xs text-fg-3">· {ct.role}</span>}
                       {ct.auto && <Pill tone="brand">from quotes</Pill>}
                     </div>
-                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-[11.5px]">
-                      {ct.email && <a href={`mailto:${ct.email}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[var(--accent-text)] hover:underline"><Mail className="w-3 h-3" />{ct.email}</a>}
-                      {ct.phone && <a href={`tel:${ct.phone}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[var(--t2)]"><Phone className="w-3 h-3" />{ct.phone}</a>}
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1 text-xs">
+                      {ct.email && <a href={`mailto:${ct.email}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-accent-text hover:underline"><Mail className="w-3 h-3" />{ct.email}</a>}
+                      {ct.phone && <a href={`tel:${ct.phone}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-fg-2"><Phone className="w-3 h-3" />{ct.phone}</a>}
                     </div>
-                    {ct.notes && <p className="text-[11px] text-[var(--t3)] mt-1 whitespace-pre-wrap">{ct.notes}</p>}
+                    {ct.notes && <p className="text-xs text-fg-3 mt-1 whitespace-pre-wrap">{ct.notes}</p>}
                   </div>
                   {!ct.auto && (
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button aria-label="Edit contact" onClick={() => setContactForm(ct)} className="p-1 text-[var(--t3)] hover:text-[var(--accent-text)]"><Pencil className="w-3.5 h-3.5" /></button>
-                      <button aria-label="Delete contact" onClick={() => delContact(ct.id)} className="p-1 text-[var(--t3)] hover:text-[var(--err)]"><Trash2 className="w-3.5 h-3.5" /></button>
+                      <button aria-label="Edit contact" onClick={() => setContactForm(ct)} className="p-1 text-fg-3 hover:text-accent-text"><Pencil className="w-3.5 h-3.5" /></button>
+                      <UiIconButton icon={Trash2} label="Delete contact" tone="danger" onClick={() => delContact(ct.id)} />
                     </div>
                   )}
                 </li>
@@ -957,7 +938,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
 
         {/* Facts */}
         <Card>
-          <h3 className="text-[13px] font-semibold text-[var(--t1)] mb-3">Facts</h3>
+          <h3 className="text-base font-semibold text-fg mb-3">Facts</h3>
           <div className="flex gap-2 mb-3">
             <input value={factText} onChange={e => setFactText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') addFact(); }}
@@ -965,16 +946,16 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
             <Button tone="primary" size="sm" Icon={Plus} onClick={addFact}>Add</Button>
           </div>
           {facts.length === 0 ? (
-            <p className="text-[12px] text-[var(--t3)] py-2 text-center">No facts noted yet.</p>
+            <p className="text-sm text-fg-3 py-2 text-center">No facts noted yet.</p>
           ) : (
             <ul className="space-y-1.5">
               {facts.map(f => (
-                <li key={f.id} className="group flex items-start gap-2 text-[12px] text-[var(--t2)]">
+                <li key={f.id} className="group flex items-start gap-2 text-sm text-fg-2">
                   {f.source === 'ai'
-                    ? <Sparkles className="w-3 h-3 text-[var(--violet)] mt-1 shrink-0" />
-                    : <Star className="w-3 h-3 text-[var(--warn)] mt-1 shrink-0" />}
+                    ? <Sparkles className="w-3 h-3 text-ai mt-1 shrink-0" />
+                    : <Star className="w-3 h-3 text-warn mt-1 shrink-0" />}
                   <span className="flex-1">{f.text}</span>
-                  <button aria-label="Delete fact" onClick={() => delFact(f.id)} className="p-0.5 text-[var(--t4)] hover:text-[var(--err)] opacity-0 group-hover:opacity-100"><X className="w-3.5 h-3.5" /></button>
+                  <UiIconButton icon={X} label="Delete fact" tone="danger" className="opacity-0 group-hover:opacity-100" onClick={() => delFact(f.id)} />
                 </li>
               ))}
             </ul>
@@ -982,7 +963,7 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         </Card>
       </div>
 
-      <div className="grid gap-[22px] lg:grid-cols-2">
+      <div className="grid gap-5 lg:grid-cols-2">
         <InsightsCard id={id} toast={toast} onPinned={load} />
         <DocsCard id={id} toast={toast} />
       </div>
@@ -990,18 +971,18 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
       {/* Quotes / opportunities */}
       <Card padded={false}>
         <div className="flex items-center justify-between px-5 pt-4 pb-3 gap-3">
-          <h3 className="text-[13px] font-semibold text-[var(--t1)]">Quotes &amp; opportunities</h3>
-          <span className="text-[11px] text-[var(--t3)] text-right">
+          <h3 className="text-base font-semibold text-fg">Quotes &amp; opportunities</h3>
+          <span className="text-xs text-fg-3 text-right">
             {enriched ? 'Prices & salesmen from the Quotations List' : 'Connect to JOE to load prices & salesmen'}
           </span>
         </div>
         {quotes.length === 0 ? (
-          <p className="text-[12px] text-[var(--t3)] py-6 text-center">No quotes recorded for this account yet.</p>
+          <p className="text-sm text-fg-3 py-6 text-center">No quotes recorded for this account yet.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-[12px]">
+            <table className="w-full text-sm">
               <thead>
-                <tr className="text-[10px] uppercase tracking-wide text-[var(--t3)] border-y border-[var(--line)]">
+                <tr className="text-2xs uppercase tracking-wide text-fg-3 border-y border-line">
                   <th className="text-left font-medium px-5 py-2">Ref</th>
                   <th className="text-left font-medium px-3 py-2">Quote</th>
                   <th className="text-left font-medium px-3 py-2">Salesman</th>
@@ -1012,20 +993,20 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
               </thead>
               <tbody>
                 {quotes.map(q => (
-                  <tr key={q.id} className="border-b border-[var(--line)]">
-                    <td className="px-5 py-2 font-mono text-[10.5px] text-[var(--t3)] whitespace-nowrap">{q.ref || '—'}</td>
-                    <td className="px-3 py-2 text-[var(--t1)]">
+                  <tr key={q.id} className="border-b border-line">
+                    <td className="px-5 py-2 mono text-2xs text-fg-3 whitespace-nowrap">{q.ref || '—'}</td>
+                    <td className="px-3 py-2 text-fg">
                       <button aria-label="Open archived PDF" onClick={() => openPdf(q)} title="Open archived PDF"
-                        className="inline-flex items-center gap-1 text-left hover:text-[var(--accent-text)] hover:underline">
+                        className="inline-flex items-center gap-1 text-left hover:text-accent-text hover:underline">
                         <FileText className="w-3 h-3 shrink-0 opacity-60" />
                         {q.name || '—'}
                       </button>
-                      {q.status && <span className="ml-1.5 text-[10px] text-[var(--t3)]">· {q.status}</span>}
+                      {q.status && <span className="ml-1.5 text-2xs text-fg-3">· {q.status}</span>}
                     </td>
-                    <td className="px-3 py-2 text-[var(--t2)]">{q.salesman || '—'}</td>
-                    <td className="px-3 py-2 text-right font-medium tabular-nums text-[var(--t1)]">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</td>
-                    <td className="px-3 py-2 text-[var(--t3)] whitespace-nowrap">
-                      {relTime(q.timestamp)}{q.runs > 1 && <span className="text-[var(--t3)]"> · {q.runs}×</span>}
+                    <td className="px-3 py-2 text-fg-2">{q.salesman || '—'}</td>
+                    <td className="px-3 py-2 text-right font-medium mono text-fg">{q.price == null ? '—' : fmtMoneyFull(q.price, '€')}</td>
+                    <td className="px-3 py-2 text-fg-3 whitespace-nowrap">
+                      {relTime(q.timestamp)}{q.runs > 1 && <span className="text-fg-3"> · {q.runs}×</span>}
                     </td>
                     <td className="px-5 py-2">
                       <div className="flex items-center justify-end gap-1">
@@ -1038,9 +1019,9 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
                 ))}
               </tbody>
               <tfoot>
-                <tr className="border-t border-[var(--line)] text-[11.5px]">
-                  <td className="px-5 py-2 text-[var(--t3)] uppercase tracking-wide text-[10px]" colSpan={3}>Total issued</td>
-                  <td className="px-3 py-2 text-right font-semibold tabular-nums" style={{ color: 'var(--accent-text)' }}>{enriched ? fmtMoneyFull(totalIssued, '€') : '—'}</td>
+                <tr className="border-t border-line text-xs">
+                  <td className="px-5 py-2 text-fg-3 uppercase tracking-wide text-2xs" colSpan={3}>Total issued</td>
+                  <td className="px-3 py-2 text-right font-semibold mono" style={{ color: 'var(--accent-text)' }}>{enriched ? fmtMoneyFull(totalIssued, '€') : '—'}</td>
                   <td colSpan={2} />
                 </tr>
               </tfoot>
@@ -1055,31 +1036,31 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
       {mailQuotes.length > 0 && (
         <Card padded={false}>
           <div className="flex items-center justify-between px-5 pt-4 pb-3 gap-3">
-            <h3 className="text-[13px] font-semibold text-[var(--t1)] inline-flex items-center gap-2">
-              <Inbox className="w-3.5 h-3.5 text-[var(--t3)]" /> From the mailbox
-              <span className="text-[11px] font-normal text-[var(--t3)] tabular-nums">{mailQuotes.length}</span>
+            <h3 className="text-base font-semibold text-fg inline-flex items-center gap-2">
+              <Inbox className="w-3.5 h-3.5 text-fg-3" /> From the mailbox
+              <span className="text-xs font-normal text-fg-3 tabular-nums">{mailQuotes.length}</span>
             </h3>
-            <span className="text-[11px] text-[var(--t3)]">Found in Outlook, not in the Quotations List</span>
+            <span className="text-xs text-fg-3">Found in Outlook, not in the Quotations List</span>
           </div>
-          <div className="divide-y divide-[var(--line)] border-t border-[var(--line)]">
+          <div className="divide-y divide-line border-t border-line">
             {mailQuotes.map(q => (
               <div key={q.key} className="px-5 py-2 flex items-center gap-3">
-                <span className="shrink-0 px-1.5 py-0.5 rounded-[6px] text-[10px] font-semibold mono"
+                <span className="shrink-0 px-1.5 py-0.5 rounded-control text-2xs font-semibold mono"
                       style={q.kind === 'bm'
                         ? { background: 'var(--violet-soft)', color: 'var(--violet)' }
                         : { background: 'var(--accent-soft)', color: 'var(--accent-text)' }}>
                   {q.ref || q.key}
                 </span>
-                <span className="min-w-0 flex-1 text-[12px] text-[var(--t1)] truncate" title={q.subject}>
+                <span className="min-w-0 flex-1 text-sm text-fg truncate" title={q.subject}>
                   {q.subject}
                 </span>
                 <Pill tone={q.side === 'mine' ? 'brand' : 'neutral'}>{q.side === 'mine' ? 'Mine' : 'Team'}</Pill>
                 {q.docs.length > 0 && (
-                  <span className="shrink-0 inline-flex items-center gap-1 text-[10.5px] text-[var(--t3)]">
+                  <span className="shrink-0 inline-flex items-center gap-1 text-2xs text-fg-3">
                     <Paperclip className="w-3 h-3" />{q.docs.length}
                   </span>
                 )}
-                <span className="shrink-0 text-[10.5px] text-[var(--t3)] tabular-nums w-[68px] text-right">
+                <span className="shrink-0 text-2xs text-fg-3 mono w-16 text-right">
                   {(q.last || '').slice(0, 10)}
                 </span>
               </div>
@@ -1114,8 +1095,8 @@ function InsightsCard({ id, toast, onPinned }: { id: number; toast: ToastFn; onP
   return (
     <Card>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-[13px] font-semibold text-[var(--t1)] inline-flex items-center gap-1.5">
-          <Sparkles className="w-3.5 h-3.5 text-[var(--violet)]" /> AI insights
+        <h3 className="text-base font-semibold text-fg inline-flex items-center gap-1.5">
+          <Sparkles className="w-3.5 h-3.5 text-ai" /> AI insights
         </h3>
         <Button tone="ghost" size="sm" Icon={loading ? Loader2 : RefreshCw} disabled={loading}
           onClick={() => run(items != null)} className={loading ? '[&_svg]:animate-spin' : ''}>
@@ -1123,20 +1104,20 @@ function InsightsCard({ id, toast, onPinned }: { id: number; toast: ToastFn; onP
         </Button>
       </div>
       {items == null ? (
-        <p className="text-[12px] text-[var(--t3)] py-4 text-center">Generate facts &amp; warnings from this account's run history.</p>
+        <p className="text-sm text-fg-3 py-4 text-center">Generate facts &amp; warnings from this account's run history.</p>
       ) : items.length === 0 ? (
-        <p className="text-[12px] text-[var(--t3)] py-4 text-center">Nothing noteworthy in the data yet.</p>
+        <p className="text-sm text-fg-3 py-4 text-center">Nothing noteworthy in the data yet.</p>
       ) : (
         <ul className="space-y-2">
           {items.map((it, i) => (
-            <li key={i} className="group flex items-start gap-2 p-2 rounded-[10px] text-[12px] text-[var(--t2)]"
+            <li key={i} className="group flex items-start gap-2 p-2 rounded-panel text-sm text-fg-2"
               style={{ background: it.type === 'warning' ? 'var(--warn-soft)' : 'var(--violet-soft)' }}>
               {it.type === 'warning'
-                ? <AlertTriangle className="w-3.5 h-3.5 text-[var(--warn)] mt-0.5 shrink-0" />
-                : <Sparkles className="w-3.5 h-3.5 text-[var(--violet)] mt-0.5 shrink-0" />}
+                ? <AlertTriangle className="w-3.5 h-3.5 text-warn mt-0.5 shrink-0" />
+                : <Sparkles className="w-3.5 h-3.5 text-ai mt-0.5 shrink-0" />}
               <span className="flex-1">{it.text}</span>
               <button aria-label="Pin to facts" onClick={() => pin(it.text)} title="Pin to facts"
-                className="p-0.5 text-[var(--t4)] hover:text-[var(--accent-text)] opacity-0 group-hover:opacity-100"><Pin className="w-3.5 h-3.5" /></button>
+                className="p-0.5 text-fg-4 hover:text-accent-text opacity-0 group-hover:opacity-100"><Pin className="w-3.5 h-3.5" /></button>
             </li>
           ))}
         </ul>
@@ -1163,8 +1144,8 @@ function DocsCard({ id, toast }: { id: number; toast: ToastFn }) {
   return (
     <Card>
       <div className="flex items-center justify-between mb-3">
-        <h3 className="text-[13px] font-semibold text-[var(--t1)] inline-flex items-center gap-1.5">
-          <FileText className="w-3.5 h-3.5 text-[var(--accent-text)]" /> D&amp;Q documents
+        <h3 className="text-base font-semibold text-fg inline-flex items-center gap-1.5">
+          <FileText className="w-3.5 h-3.5 text-accent-text" /> D&amp;Q documents
         </h3>
         <Button tone="ghost" size="sm" Icon={loading ? Loader2 : RefreshCw} disabled={loading}
           onClick={run} className={loading ? '[&_svg]:animate-spin' : ''}>
@@ -1172,19 +1153,19 @@ function DocsCard({ id, toast }: { id: number; toast: ToastFn }) {
         </Button>
       </div>
       {docs == null ? (
-        <p className="text-[12px] text-[var(--t3)] py-4 text-center">Search the D&amp;Q Store for this account's documents (needs JOE connection).</p>
+        <p className="text-sm text-fg-3 py-4 text-center">Search the D&amp;Q Store for this account's documents (needs JOE connection).</p>
       ) : docs.length === 0 ? (
-        <p className="text-[12px] text-[var(--t3)] py-4 text-center">No matching documents found.</p>
+        <p className="text-sm text-fg-3 py-4 text-center">No matching documents found.</p>
       ) : (
         <ul className="space-y-1.5">
           {docs.map((d, i) => (
             <li key={i}>
               <a href={d.url} target="_blank" rel="noreferrer"
-                className="group flex items-center gap-2 p-2 rounded-lg hover:bg-[var(--s3)] text-[12px]">
-                <FileText className="w-3.5 h-3.5 text-[var(--t3)] shrink-0" />
-                <span className="flex-1 truncate text-[var(--t2)]">{d.title || d.filename}</span>
-                {d.ext && <span className="text-[10px] uppercase text-[var(--t3)]">{d.ext}</span>}
-                <ExternalLink className="w-3 h-3 text-[var(--t4)] opacity-0 group-hover:opacity-100" />
+                className="group flex items-center gap-2 p-2 rounded-lg hover:bg-subtle text-sm">
+                <FileText className="w-3.5 h-3.5 text-fg-3 shrink-0" />
+                <span className="flex-1 truncate text-fg-2">{d.title || d.filename}</span>
+                {d.ext && <span className="text-2xs uppercase text-fg-3">{d.ext}</span>}
+                <ExternalLink className="w-3 h-3 text-fg-4 opacity-0 group-hover:opacity-100" />
               </a>
             </li>
           ))}
@@ -1196,9 +1177,9 @@ function DocsCard({ id, toast }: { id: number; toast: ToastFn }) {
 
 function HeaderStat({ label, value, tone = 'muted' }: { label: string; value: string; tone?: 'brand' | 'muted' }) {
   return (
-    <div className="rounded-[9px] bg-[var(--s3)] px-3 py-2 text-right min-w-[88px]">
-      <div className="text-[15px] font-semibold tabular-nums leading-none" style={{ color: tone === 'brand' ? 'var(--accent-text)' : 'var(--t1)' }}>{value}</div>
-      <div className="text-[9px] uppercase tracking-[0.05em] text-[var(--t3)] mt-1">{label}</div>
+    <div className="rounded-panel bg-subtle px-3 py-2 text-right min-w-20">
+      <div className="text-lg font-semibold tabular-nums leading-none" style={{ color: tone === 'brand' ? 'var(--accent-text)' : 'var(--t1)' }}>{value}</div>
+      <div className="text-2xs uppercase tracking-[0.05em] text-fg-3 mt-1">{label}</div>
     </div>
   );
 }
@@ -1207,9 +1188,9 @@ function StateBtn({ active, tone, onClick, children }: { active: boolean; tone: 
   const on: Record<string, string> = { brand: 'var(--accent)', ok: 'var(--ok)', err: 'var(--err)' };
   return (
     <button onClick={onClick}
-      style={active ? { background: on[tone], color: tone === 'brand' ? 'var(--accent-ink)' : '#fff' } : undefined}
-      className={cn('px-2 h-6 rounded-[7px] text-[10.5px] font-medium transition-colors',
-        active ? '' : 'text-[var(--t3)] hover:bg-[var(--s3)]')}>
+      style={active ? { background: on[tone], color: tone === 'brand' ? 'var(--accent-ink)' : 'var(--on-status)' } : undefined}
+      className={cn('px-2 h-6 rounded-panel text-2xs font-medium transition-colors',
+        active ? '' : 'text-fg-3 hover:bg-subtle')}>
       {children}
     </button>
   );
@@ -1255,7 +1236,7 @@ function ContactForm({
   const [v, setV] = useState<Partial<CrmContact>>(initial);
   const set = (k: keyof CrmContact) => (e: React.ChangeEvent<HTMLInputElement>) => setV(p => ({ ...p, [k]: e.target.value }));
   return (
-    <div className="mb-3 p-3 rounded-[11px]" style={{ border: '1px solid var(--accent-line)', background: 'var(--accent-soft)' }}>
+    <div className="mb-3 p-3 rounded-panel" style={{ border: 'var(--hairline) solid var(--accent-line)', background: 'var(--accent-soft)' }}>
       <div className="grid gap-2 sm:grid-cols-2">
         <input className={inputCls} placeholder="Name *" value={v.name || ''} onChange={set('name')} autoFocus />
         <input className={inputCls} placeholder="Role (Buyer, Engineer…)" value={v.role || ''} onChange={set('role')} />
@@ -1274,7 +1255,7 @@ function ContactForm({
 function Field({ label, children, full }: { label: string; children: React.ReactNode; full?: boolean }) {
   return (
     <label className={cn('block', full && 'sm:col-span-2')}>
-      <span className="block text-[10.5px] uppercase tracking-wide text-[var(--t3)] mb-1">{label}</span>
+      <span className="block text-2xs uppercase tracking-wide text-fg-3 mb-1">{label}</span>
       {children}
     </label>
   );

@@ -9,6 +9,7 @@ import App from './App.tsx';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 import '@mantine/spotlight/styles.css';
+import '@mantine/dropzone/styles.css';
 import './index.css';
 
 // The packaged app loads twice:
@@ -24,7 +25,7 @@ if (isTauri && !onSidecar) {
   // Bootstrap page (tauri.localhost) — wait for Rust to navigate us to the sidecar.
   document.getElementById('root')!.innerHTML =
     '<div style="height:100vh;display:flex;align-items:center;justify-content:center;' +
-    'font:500 15px system-ui;color:#888">Starting Vector…</div>';
+    'font:500 var(--fs-lg) var(--font-sans);color:var(--t3)">Starting Vector…</div>';
 } else {
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

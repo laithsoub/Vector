@@ -15,7 +15,7 @@ import {
   Mail, History, Plus, Minus, ArrowRight,
 } from 'lucide-react';
 
-import { Checkbox, Select } from '@mantine/core';
+import { Checkbox, EmptyState, Select, IconButton as UiIconButton } from '../ui';
 
 import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, Button, relTime } from '../lib/ui';
@@ -141,21 +141,21 @@ function CpqDot({ toast }: { toast: ToastFn }) {
       onClick={sweep} disabled={working} title={tip}
       aria-label={working ? 'Refreshing the CPQ session' : label}
       className={cn(
-        'h-[36px] shrink-0 rounded-[9px] border flex items-center gap-[7px] transition-colors',
+        'h-9 shrink-0 rounded-panel border flex items-center gap-1.5 transition-colors',
         needs && !working ? 'px-2.5' : 'px-2.5',
-        working ? 'border-[var(--line-2)] bg-[var(--s2)] cursor-not-allowed'
-                : 'border-[var(--line-2)] hover:bg-[var(--s-hover)]',
+        working ? 'border-line-2 bg-raised cursor-not-allowed'
+                : 'border-line-2 hover:bg-hover',
       )}
       style={tone && !working
         ? { borderColor: `color-mix(in oklab, ${tone} 32%, transparent)`,
             background: connected ? 'var(--ok-soft)' : 'var(--warn-soft)' }
         : undefined}>
       {working
-        ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--t3)]" />
+        ? <Loader2 className="w-3.5 h-3.5 animate-spin text-fg-3" />
         : <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: tone || 'var(--t3)' }} />}
       {/* Signed in and quiet needs no words. Anything else does. */}
       {!connected && !working && (
-        <span className="text-[11px] font-medium whitespace-nowrap"
+        <span className="text-xs font-medium whitespace-nowrap"
               style={{ color: tone || 'var(--t2)' }}>{label}</span>
       )}
     </button>
@@ -188,9 +188,9 @@ function QueueTable({ rows, onFetch, disabled, todo }: {
   const th = 'px-2 py-1 font-medium whitespace-nowrap';
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-[11.5px]">
+      <table className="w-full text-xs">
         <thead>
-          <tr className="text-[10px] uppercase tracking-wide text-[var(--t3)] text-left">
+          <tr className="text-2xs uppercase tracking-wide text-fg-3 text-left">
             <th className={th}>Transaction</th><th className={th}>Project · customer</th>
             <th className={th}>Country · BU</th><th className={th}>Sales</th>
             <th className={th} title="Days since CPQ Last Updated">Age</th>
@@ -202,32 +202,32 @@ function QueueTable({ rows, onFetch, disabled, todo }: {
           {rows.map(r => {
             const fresh = !!r.first_seen && Date.now() - new Date(r.first_seen).getTime() < 864e5;
             return (
-              <tr key={`${r.transaction}-${r.row}`} className="border-t border-[var(--line-2)]">
-                <td className="px-2 py-1.5 whitespace-nowrap font-medium text-[var(--t1)] tabular-nums">
+              <tr key={`${r.transaction}-${r.row}`} className="border-t border-line-2">
+                <td className="px-2 py-1.5 whitespace-nowrap font-medium text-fg tabular-nums">
                   {r.transaction || r.raw_transaction || '—'}
                   {fresh && (
-                    <span className="ml-1.5 text-[9.5px] font-semibold px-1 rounded"
+                    <span className="ml-1.5 text-2xs font-semibold px-1 rounded"
                           style={{ color: 'var(--ok)', background: 'var(--ok-soft)' }}>NEW</span>
                   )}
                 </td>
-                <td className="px-2 py-1.5 max-w-[300px] truncate text-[var(--t2)]"
+                <td className="px-2 py-1.5 max-w-72 truncate text-fg-2"
                     title={`${r.name} — ${r.customer_name} (${r.customer})`}>
-                  {r.name}<span className="text-[var(--t3)]"> · {r.customer_name}</span>
+                  {r.name}<span className="text-fg-3"> · {r.customer_name}</span>
                 </td>
-                <td className="px-2 py-1.5 whitespace-nowrap text-[var(--t2)]">
+                <td className="px-2 py-1.5 whitespace-nowrap text-fg-2">
                   {[r.country, r.bu].filter(Boolean).join(' · ')}
                 </td>
-                <td className="px-2 py-1.5 whitespace-nowrap text-[var(--t2)]">{r.sales}</td>
-                <td className="px-2 py-1.5 whitespace-nowrap tabular-nums text-[var(--t3)]"
+                <td className="px-2 py-1.5 whitespace-nowrap text-fg-2">{r.sales}</td>
+                <td className="px-2 py-1.5 whitespace-nowrap tabular-nums text-fg-3"
                     title={r.cpq_updated || ''}>
                   {r.age_days == null ? '—' : r.age_days <= 0 ? 'today' : `${r.age_days} d`}
                 </td>
-                <td className="px-2 py-1.5 whitespace-nowrap text-right tabular-nums text-[var(--t2)]">
+                <td className="px-2 py-1.5 whitespace-nowrap text-right mono text-fg-2">
                   {typeof r.value === 'number'
                     ? r.value.toLocaleString(undefined, { maximumFractionDigits: 0 })
                     : r.value || '—'}
                 </td>
-                <td className="px-2 py-1.5 max-w-[240px] truncate text-[var(--t3)]"
+                <td className="px-2 py-1.5 max-w-60 truncate text-fg-3"
                     title={[r.status, r.notes].filter(Boolean).join(' — ')}>
                   {todo ? [r.status, r.notes].filter(Boolean).join(' · ') : QUEUE_KIND[r.kind]}
                 </td>
@@ -236,9 +236,9 @@ function QueueTable({ rows, onFetch, disabled, todo }: {
                     <button
                       onClick={() => onFetch(r.transaction)} disabled={disabled}
                       className={cn(
-                        'inline-flex items-center gap-1 h-[24px] px-2 rounded-md border text-[11px] font-medium transition-colors',
-                        disabled ? 'border-[var(--line-2)] text-[var(--t3)] cursor-not-allowed'
-                                 : 'border-[var(--line-2)] text-[var(--t1)] hover:bg-[var(--s-hover)]',
+                        'inline-flex items-center gap-1 h-6 px-2 rounded-md border text-xs font-medium transition-colors',
+                        disabled ? 'border-line-2 text-fg-3 cursor-not-allowed'
+                                 : 'border-line-2 text-fg hover:bg-hover',
                       )}>
                       <CloudDownload className="w-3 h-3" />
                       {r.kind === 'fetch' ? 'Fetch' : 'Fetch anyway'}
@@ -303,41 +303,38 @@ function QueuePanel({ toast, onFetch, disabled }: {
     <Card className="order-1">
       <div className="flex items-center gap-2 min-w-0">
         <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1.5 min-w-0 text-left">
-          <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-[var(--t3)] transition-transform', open && 'rotate-90')} />
-          <ClipboardList className="w-4 h-4 shrink-0 text-[var(--t2)]" />
-          <span className="text-[12.5px] font-semibold text-[var(--t1)] truncate"
+          <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-fg-3 transition-transform', open && 'rotate-90')} />
+          <ClipboardList className="w-4 h-4 shrink-0 text-fg-2" />
+          <span className="text-sm font-semibold text-fg truncate"
                 title={q.bu_filter?.length
                   ? `Only BU ${q.bu_filter.join(', ')} — ${q.other_bu ?? 0} open row(s) in other BUs are not listed`
                   : 'Every BU'}>
             {q.bu_filter?.length ? `${q.bu_filter.map(b => b[0] + b.slice(1).toLowerCase()).join(' / ')} waiting` : 'Waiting'} in Dalia's sheet
           </span>
         </button>
-        <span className="text-[11px] tabular-nums px-1.5 py-[1px] rounded-md shrink-0"
+        <span className="text-xs tabular-nums px-1.5 py-px rounded-md shrink-0"
               style={todo.length ? { color: 'var(--accent)', background: 'var(--s3)' } : { color: 'var(--t3)' }}>
           {q.ran == null && q.ok == null ? 'not read yet' : todo.length ? `${todo.length} to fetch` : 'nothing new'}
         </span>
-        <span className="ml-auto min-w-0 text-[10.5px] text-[var(--t3)] truncate"
+        <span className="ml-auto min-w-0 text-2xs text-fg-3 truncate"
               title={[q.file?.name, q.file?.modified && `saved ${q.file.modified}`, q.error].filter(Boolean).join('\n')}>
           {q.ok === false
             ? <span style={{ color: 'var(--err)' }}>{q.error}</span>
             : `Read ${ago(q.ran)}`}
           {q.enabled ? ` · every ${q.everyMin} min` : ' · auto-read off'}
         </span>
-        <button onClick={refresh} disabled={working} title="Read the sheet now"
-                className="p-1.5 shrink-0 rounded hover:bg-[var(--s-hover)] text-[var(--t3)]">
-          <RefreshCw className={cn('w-3.5 h-3.5', working && 'animate-spin')} />
-        </button>
+        <UiIconButton icon={RefreshCw} label="Read the sheet now" className="shrink-0" onClick={refresh} disabled={working} />
       </div>
 
       {open && q.ran != null && (
         <div className="mt-2.5 flex flex-col gap-2">
           {todo.length > 0
             ? <QueueTable rows={todo} onFetch={onFetch} disabled={disabled} todo />
-            : <p className="text-[11px] text-[var(--t3)]">Nothing to pick up — every open row is priced here, on hold, or has no number.</p>}
+            : <p className="text-xs text-fg-3">Nothing to pick up — every open row is priced here, on hold, or has no number.</p>}
           {other.length > 0 && (
             <>
               <button onClick={() => setShowOther(s => !s)}
-                      className="self-start flex items-center gap-1 text-[11px] text-[var(--t3)] hover:text-[var(--t1)]">
+                      className="self-start flex items-center gap-1 text-xs text-fg-3 hover:text-fg">
                 <ChevronRight className={cn('w-3 h-3 transition-transform', showOther && 'rotate-90')} />
                 {plural(other.length, 'other open row')} — priced here, on hold, no number or no BU
               </button>
@@ -353,19 +350,13 @@ function QueuePanel({ toast, onFetch, disabled }: {
 function Kpi({ label, value, tone, hint }: {
   label: string; value: React.ReactNode; tone?: string; hint?: string;
 }) {
-  // A toned KPI carries its colour in the border and a wash behind it, not in
-  // the number alone — a coloured digit on a white card is the first thing that
-  // disappears on a bright screen.
+  // A toned figure carries its state in a leading rule as well as the digits,
+  // so it still reads on a bright screen without a tinted box around it.
   return (
-    <div className="rounded-[11px] border px-3 py-2.5"
-         style={{
-           borderColor: tone ? `color-mix(in srgb, ${tone} 45%, transparent)` : 'var(--line-2)',
-           background: tone ? `color-mix(in srgb, ${tone} 8%, var(--s1))` : 'var(--s1)',
-         }}>
-      <div className="text-[16px] font-semibold tabular-nums leading-none"
-           style={{ color: tone || 'var(--t1)' }}>{value}</div>
-      <div className="text-[10px] uppercase tracking-wider font-semibold text-[var(--t2)] mt-1.5">{label}</div>
-      {hint && <div className="text-[9.5px] text-[var(--t3)] mt-1 leading-tight">{hint}</div>}
+    <div className="pl-3 py-1 border-l-2" style={{ borderColor: tone || 'var(--line-2)' }}>
+      <div className="eyebrow">{label}</div>
+      <div className="mono text-2xl font-medium leading-tight mt-1" style={{ color: tone || 'var(--t1)' }}>{value}</div>
+      {hint && <div className="text-xs text-fg-3 mt-0.5 leading-snug">{hint}</div>}
     </div>
   );
 }
@@ -376,14 +367,14 @@ function Kpi({ label, value, tone, hint }: {
 function LineTable({ lines, cur }: { lines: LsdLine[]; cur: string }) {
   const [open, setOpen] = useState<number | null>(null);
   const H = ({ children, right }: { children: React.ReactNode; right?: boolean }) => (
-    <th className={cn('px-2 py-2 font-semibold text-[10px] uppercase tracking-wider text-[var(--t2)] whitespace-nowrap',
+    <th className={cn('px-2 py-2 font-semibold text-2xs uppercase tracking-wider text-fg-2 whitespace-nowrap',
       right ? 'text-right' : 'text-left')}>{children}</th>
   );
   return (
     <div className="overflow-x-auto -mx-5 px-5">
-      <table className="w-full text-[11.5px] border-collapse">
+      <table className="w-full text-xs border-collapse">
         <thead>
-          <tr className="border-b-2 border-[var(--line-3)] bg-[var(--s3)]">
+          <tr className="border-b-2 border-line-3 bg-subtle">
             <H>Line</H><H right>Qty</H><H right>Unit std</H><H right>Requested</H>
             <H right>@Target E2E</H><H right>Cap</H><H right>Add. disc</H>
             <H right>Unit net</H><H right>Total net</H><H right>E2E</H><H right>RPI</H>
@@ -398,42 +389,42 @@ function LineTable({ lines, cur }: { lines: LsdLine[]; cur: string }) {
               <React.Fragment key={i}>
                 <tr
                   onClick={() => setOpen(isOpen ? null : i)}
-                  className="border-b border-[var(--line-2)] cursor-pointer hover:bg-[var(--s-hover)] align-top"
+                  className="border-b border-line-2 cursor-pointer hover:bg-hover align-top"
                   style={{
                     background: isOpen ? 'var(--s3)' : s.bg,
-                    boxShadow: `inset 3px 0 0 0 ${s.bar}`,
+                    boxShadow: `inset var(--focus-w) 0 0 0 ${s.bar}`,
                   }}
                 >
-                  <td className="px-2 py-2 max-w-[240px]">
+                  <td className="px-2 py-2 max-w-60">
                     <div className="flex items-start gap-1.5">
-                      <ChevronRight className={cn('w-3 h-3 mt-0.5 shrink-0 transition-transform text-[var(--t3)]',
+                      <ChevronRight className={cn('w-3 h-3 mt-0.5 shrink-0 transition-transform text-fg-3',
                         isOpen && 'rotate-90')} />
                       <div className="min-w-0">
-                        <div className="font-medium text-[var(--t1)] truncate">{l.material}</div>
-                        <div className="text-[10px] text-[var(--t2)] truncate">{l.description || '—'}</div>
-                        <div className="text-[9.5px] text-[var(--t3)] truncate">{l.group || 'no pricing group'}</div>
+                        <div className="font-medium text-fg truncate">{l.material}</div>
+                        <div className="text-2xs text-fg-2 truncate">{l.description || '—'}</div>
+                        <div className="text-2xs text-fg-3 truncate">{l.group || 'no pricing group'}</div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-2 py-2 text-right tabular-nums">{l.qty.toLocaleString()}</td>
-                  <td className="px-2 py-2 text-right tabular-nums text-[var(--t2)]">{num(l.unit_std)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums text-[var(--t2)]">
+                  <td className="px-2 py-2 text-right mono">{l.qty.toLocaleString()}</td>
+                  <td className="px-2 py-2 text-right mono text-fg-2">{num(l.unit_std)}</td>
+                  <td className="px-2 py-2 text-right mono text-fg-2">
                     {num(l.requested)}
-                    <div className="text-[9.5px] text-[var(--t3)]">{pct(l.req_disc)}</div>
+                    <div className="text-2xs text-fg-3">{pct(l.req_disc)}</div>
                   </td>
-                  <td className="px-2 py-2 text-right tabular-nums text-[var(--t2)]">{pct(l.disc_at_target)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums text-[var(--t3)]">20.0%</td>
-                  <td className="px-2 py-2 text-right tabular-nums font-medium text-[var(--t1)]">{pct(l.add_disc)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums font-semibold text-[var(--t1)]">{num(l.unit_net)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums">{money(l.total_net, cur)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums"
+                  <td className="px-2 py-2 text-right mono text-fg-2">{pct(l.disc_at_target)}</td>
+                  <td className="px-2 py-2 text-right mono text-fg-3">20.0%</td>
+                  <td className="px-2 py-2 text-right mono font-medium text-fg">{pct(l.add_disc)}</td>
+                  <td className="px-2 py-2 text-right mono font-semibold text-fg">{num(l.unit_net)}</td>
+                  <td className="px-2 py-2 text-right mono">{money(l.total_net, cur)}</td>
+                  <td className="px-2 py-2 text-right mono"
                       style={{ color: l.target_e2e && l.e2e !== null && l.e2e < l.target_e2e ? 'var(--err)' : 'var(--t2)' }}>
                     {pct(l.e2e)}
-                    <div className="text-[9.5px] text-[var(--t3)]">tgt {pct(l.target_e2e, 0)}</div>
+                    <div className="text-2xs text-fg-3">tgt {pct(l.target_e2e, 0)}</div>
                   </td>
-                  <td className="px-2 py-2 text-right tabular-nums text-[var(--t2)]">{pct(l.rpi_after)}</td>
+                  <td className="px-2 py-2 text-right mono text-fg-2">{pct(l.rpi_after)}</td>
                   <td className="px-2 py-2 whitespace-nowrap">
-                    <span className="text-[10px] font-medium px-1.5 py-0.5 rounded border"
+                    <span className="text-2xs font-medium px-1.5 py-0.5 rounded border"
                           style={{ color: s.color,
                                    borderColor: 'color-mix(in srgb, currentColor 35%, transparent)',
                                    background: 'color-mix(in srgb, currentColor 14%, transparent)' }}>
@@ -442,9 +433,9 @@ function LineTable({ lines, cur }: { lines: LsdLine[]; cur: string }) {
                   </td>
                 </tr>
                 {isOpen && (
-                  <tr className="border-b border-[var(--line-2)] bg-[var(--s3)]">
+                  <tr className="border-b border-line-2 bg-subtle">
                     <td colSpan={12} className="px-4 py-3">
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-[11px]">
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-2 text-xs">
                         {[
                           ['List price', num(l.list)],
                           ['STD discount', pct(l.std_disc)],
@@ -460,15 +451,15 @@ function LineTable({ lines, cur }: { lines: LsdLine[]; cur: string }) {
                           ['Total cost', money(l.total_cost, cur)],
                         ].map(([k, v]) => (
                           <div key={k as string}>
-                            <div className="text-[9.5px] uppercase tracking-wider text-[var(--t3)]">{k}</div>
-                            <div className="tabular-nums text-[var(--t1)]">{v}</div>
+                            <div className="text-2xs uppercase tracking-wider text-fg-3">{k}</div>
+                            <div className="tabular-nums text-fg">{v}</div>
                           </div>
                         ))}
                       </div>
                       {l.flags && (
-                        <div className="mt-3 pt-3 border-t border-[var(--line-2)] flex items-start gap-2">
+                        <div className="mt-3 pt-3 border-t border-line-2 flex items-start gap-2">
                           <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: s.color }} />
-                          <div className="text-[11px] text-[var(--t2)] leading-relaxed">{l.flags}</div>
+                          <div className="text-xs text-fg-2 leading-relaxed">{l.flags}</div>
                         </div>
                       )}
                     </td>
@@ -893,17 +884,17 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
     // on screen. It saves moving 130 lines of archive markup that is otherwise
     // unchanged, and the archive is the one block that never needs to be near
     // the top.
-    <div className="flex flex-col gap-[22px]">
+    <div className="flex flex-col gap-5">
       {/* master model missing — nothing works without it, so say so first */}
       {status && !status.master && (
-        <Card className="border-[var(--err)]">
+        <Card className="border-err-line bg-err-soft">
           <div className="flex items-start gap-2.5">
             <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" style={{ color: 'var(--err)' }} />
-            <div className="text-[12px] text-[var(--t2)] leading-relaxed">
-              <b className="text-[var(--t1)]">No master CPQ model.</b> Put the
-              {' '}<code className="text-[11px]">CPQ Pricing Model LSD … V2</code>{' '}
-              <code className="text-[11px]">.xlsb</code> in
-              {' '}<code className="text-[11px]">{status.masterDir}</code>, or set its full path in
+            <div className="text-sm text-fg-2 leading-relaxed">
+              <b className="text-fg">No master CPQ model.</b> Put the
+              {' '}<code className="text-xs">CPQ Pricing Model LSD … V2</code>{' '}
+              <code className="text-xs">.xlsb</code> in
+              {' '}<code className="text-xs">{status.masterDir}</code>, or set its full path in
               Settings → LSD Pricing. Prices, costs, E2E targets and prior-year averages all come
               from it.
             </div>
@@ -935,35 +926,29 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
           />
 
           <div className={cn(
-            'relative flex-1 min-w-0 h-[36px] rounded-[9px] border flex items-center transition-colors',
-            drag  ? 'border-[var(--accent)] bg-[var(--s3)] border-dashed'
-                  : 'border-[var(--line-2)] bg-[var(--s1)] focus-within:border-[var(--accent-line)]',
+            'relative flex-1 min-w-0 h-9 rounded-panel border flex items-center transition-colors',
+            drag  ? 'border-accent bg-subtle border-dashed'
+                  : 'border-line-2 bg-surface focus-within:border-accent-line',
           )}>
             {file ? (
               /* A staged export owns the field: its name IS what will be priced. */
               <>
                 {busy === 'upload'
-                  ? <Loader2 className="w-4 h-4 animate-spin text-[var(--t3)] shrink-0 ml-2.5" />
+                  ? <Loader2 className="w-4 h-4 animate-spin text-fg-3 shrink-0 ml-2.5" />
                   : <FileSpreadsheet className="w-4 h-4 shrink-0 ml-2.5" style={{ color: 'var(--ok)' }} />}
-                <span className="text-[12px] text-[var(--t1)] truncate ml-2">{file.name}</span>
-                <button onClick={reset} title="Clear"
-                        className="ml-auto mr-1.5 shrink-0 p-1 rounded hover:bg-[var(--s-hover)] text-[var(--t3)]">
-                  <X className="w-3.5 h-3.5" />
-                </button>
+                <span className="text-sm text-fg truncate ml-2">{file.name}</span>
+                <UiIconButton icon={X} label="Clear" className="ml-auto mr-1.5 shrink-0" onClick={reset} />
               </>
             ) : (
               <>
-                <Search className="w-3.5 h-3.5 absolute left-2.5 text-[var(--t3)] pointer-events-none" />
+                <Search className="w-3.5 h-3.5 absolute left-2.5 text-fg-3 pointer-events-none" />
                 <input
                   value={cpqNum}
                   onChange={e => setCpqNum(e.target.value)}
                   onKeyDown={e => { if (e.key === 'Enter' && !runningNow && canRun) advance(); }}
                   placeholder="Transaction #, or drop the export here"
-                  className="w-full h-full pl-8 pr-2.5 bg-transparent rounded-[9px] text-[12px] text-[var(--t1)] focus:outline-none" />
-                <button onClick={() => inputRef.current?.click()} title="Choose a file"
-                        className="mr-1.5 shrink-0 p-1 rounded hover:bg-[var(--s-hover)] text-[var(--t3)]">
-                  <Upload className="w-3.5 h-3.5" />
-                </button>
+                  className="w-full h-full pl-8 pr-2.5 bg-transparent rounded-panel text-sm text-fg focus:outline-none" />
+                <UiIconButton icon={Upload} label="Choose a file" className="mr-1.5 shrink-0" onClick={() => inputRef.current?.click()} />
               </>
             )}
           </div>
@@ -993,13 +978,13 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
 
         {/* Both notes on one muted line — they are the same kind of aside. */}
         {(cpqNote || revNote) && !runningNow && (
-          <p className="text-[10.5px] text-[var(--t3)] mt-2 leading-relaxed flex items-start gap-1.5">
-            <Info className="w-3 h-3 shrink-0 mt-[3px]" />
+          <p className="text-2xs text-fg-3 mt-2 leading-relaxed flex items-start gap-1.5">
+            <Info className="w-3 h-3 shrink-0 mt-0.5" />
             <span>
               {[cpqNote, revNote].filter(Boolean).join('  ·  ')}
               {meta.history_offer && (
                 <button type="button"
-                        className="ml-1.5 underline text-[var(--accent)] hover:opacity-80"
+                        className="ml-1.5 underline text-accent hover:opacity-80"
                         onClick={() => {
                           setMeta(m => ({ ...m, history_offer: '', history_label: '' }));
                           setRevNote(n => `${n} Carry switched off — priced from scratch.`);
@@ -1016,12 +1001,12 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
         {progress.run && (
           <div className="mt-2.5">
             <div className="flex items-baseline gap-2 mb-1">
-              <span className="text-[11px] font-medium text-[var(--t1)]">
+              <span className="text-xs font-medium text-fg">
                 {progress.run.idx >= progress.run.steps.length
                   ? 'Done'
                   : RUN_STEP[progress.run.steps[progress.run.idx]].label}
               </span>
-              <span className="ml-auto text-[10px] tabular-nums text-[var(--t3)]">
+              <span className="ml-auto text-2xs tabular-nums text-fg-3">
                 {(() => {
                   const st = progress.run.steps[progress.run.idx];
                   const slow = st && progress.run.secs > RUN_STEP[st].secs * 1.5;
@@ -1032,9 +1017,9 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 })()}
               </span>
             </div>
-            <div className="h-[3px] rounded-full bg-[var(--s3)] overflow-hidden">
+            <div className="h-0.5 rounded-full bg-subtle overflow-hidden">
               <div
-                className="h-full rounded-full transition-[width] duration-200 ease-out"
+                className="h-full rounded-full transition-[width] duration ease-out"
                 style={{
                   width: `${progress.run.pct}%`,
                   background: progress.run.pct >= 100 ? 'var(--ok)' : 'var(--accent)',
@@ -1044,21 +1029,21 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
         )}
 
         {/* who the deal is for: one readable line, expandable to the real form */}
-        <div className="mt-3 pt-3 border-t border-[var(--line-2)]">
+        <div className="mt-3 pt-3 border-t border-line-2">
           <button type="button" onClick={() => setEditHdr(v => !v)}
                   className="w-full flex items-center gap-2 text-left">
-            <span className="text-[10px] uppercase tracking-wider font-semibold text-[var(--t2)] shrink-0">
+            <span className="text-2xs uppercase tracking-wider font-semibold text-fg-2 shrink-0">
               Deal header
             </span>
-            <span className="text-[11.5px] text-[var(--t1)] truncate">
+            <span className="text-xs text-fg truncate">
               {[meta.transaction, meta.customer && `#${meta.customer}`, meta.customer_name,
                 meta.country, meta.project].filter(Boolean).join(' · ') || 'Nothing filled in yet'}
             </span>
             <span className="ml-auto shrink-0 flex items-center gap-2">
-              <span className="text-[10px] text-[var(--t3)] whitespace-nowrap">
+              <span className="text-2xs text-fg-3 whitespace-nowrap">
                 {meta.half === 'auto' ? 'half auto' : meta.half} · APRC {meta.aprc} · {meta.ledger}
               </span>
-              <ChevronRight className={cn('w-3.5 h-3.5 text-[var(--t3)] transition-transform',
+              <ChevronRight className={cn('w-3.5 h-3.5 text-fg-3 transition-transform',
                                           headerOpen && 'rotate-90')} />
             </span>
           </button>
@@ -1066,7 +1051,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
 
         {headerOpen && (
           <div className="mt-3 space-y-3">
-            <p className="text-[10.5px] text-[var(--t3)]">
+            <p className="text-2xs text-fg-3">
               Customer # drives the prior-year lookup and fills the name and country. Transaction #
               and project name become the case folder name.
             </p>
@@ -1096,7 +1081,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
               </div>
 
               <Field label="Half-year">
-                <Select size="md" value={meta.half} onChange={v => set('half')(v ?? 'auto')}
+                <Select value={meta.half} onChange={v => set('half')(v ?? 'auto')}
                   data={[
                     { value: 'auto', label: 'Auto' },
                     { value: 'H1',   label: 'H1 · 3.5%' },
@@ -1104,7 +1089,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   ]} />
               </Field>
               <Field label="APRC">
-                <Select size="md" value={meta.aprc} onChange={v => set('aprc')(v ?? 'auto')}
+                <Select value={meta.aprc} onChange={v => set('aprc')(v ?? 'auto')}
                   data={[
                     { value: 'auto',    label: 'Auto' },
                     { value: '525',     label: '525 · EUR' },
@@ -1125,8 +1110,8 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 checked={!!meta.baseline}
                 onChange={e => setMeta(m => ({ ...m, baseline: e.currentTarget.checked }))}
                 label={
-                  <span className="text-[10px] text-[var(--t3)] leading-relaxed">
-                    <span className="text-[var(--t2)] font-medium">Keep the first draft ("as pasted")</span> —
+                  <span className="text-2xs text-fg-3 leading-relaxed">
+                    <span className="text-fg-2 font-medium">Keep the first draft ("as pasted")</span> —
                     a second Working File beside the final one, holding the master with nothing but
                     the transaction in it: every column still its own formula, no discount decided,
                     nothing corrected. Open it when a number looks wrong — what it shows is the
@@ -1134,7 +1119,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   </span>
                 }
               />
-              <p className="text-[10px] text-[var(--t3)] leading-relaxed self-end pb-1.5 col-span-2">
+              <p className="text-2xs text-fg-3 leading-relaxed self-end pb-1.5 col-span-2">
                 Auto reads the half-year from the export's date and the APRC from the
                 pricing-group mix — FIRE in USD, EL in EUR. A revision writes into the same
                 case folder with its prefix, and every line the previous revision already
@@ -1145,22 +1130,22 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
             {/* The register's own columns. None of them touch a price — they are
                 what the daily sheet asks for beside the numbers, and this is the
                 only screen where anyone knows them. */}
-            <div className="mt-4 pt-3 border-t border-[var(--line-2)] space-y-3">
+            <div className="mt-4 pt-3 border-t border-line-2 space-y-3">
               <button type="button" onClick={() => setShowReg(v => !v)}
                       className="w-full flex items-center gap-2 text-left group">
-                <ClipboardList className="w-3.5 h-3.5 text-[var(--t2)]" />
-                <span className="text-[10px] uppercase tracking-wider font-semibold text-[var(--t2)]">
+                <ClipboardList className="w-3.5 h-3.5 text-fg-2" />
+                <span className="text-2xs uppercase tracking-wider font-semibold text-fg-2">
                   Daily register
                 </span>
-                <span className="text-[10.5px] text-[var(--t3)] truncate">
+                <span className="text-2xs text-fg-3 truncate">
                   {meta.bu || 'auto'} · {meta.status || 'Priced'}
                   {meta.sales_name ? ` · ${meta.sales_name}` : ''}
                 </span>
-                <ChevronRight className={cn('w-3.5 h-3.5 ml-auto shrink-0 text-[var(--t3)] transition-transform',
+                <ChevronRight className={cn('w-3.5 h-3.5 ml-auto shrink-0 text-fg-3 transition-transform',
                                             showReg && 'rotate-90')} />
               </button>
               {!showReg && (
-                <p className="text-[10px] text-[var(--t3)] leading-relaxed">
+                <p className="text-2xs text-fg-3 leading-relaxed">
                   CPQ fills these. Open only to correct one — building the case writes the row either way.
                 </p>
               )}
@@ -1169,12 +1154,12 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 <Field label="BU">
                   {/* Blank means "let the engine decide", which is a cleared
                       field, not a value — hence clearable + placeholder. */}
-                  <Select size="md" clearable placeholder="Auto"
+                  <Select clearable placeholder="Auto"
                     value={meta.bu || null} onChange={v => set('bu')(v ?? '')}
                     data={['EL', 'FIRE', 'CBS']} />
                 </Field>
                 <Field label="Status">
-                  <Select size="md" data={STATUSES}
+                  <Select data={STATUSES}
                     value={meta.status || 'Priced'} onChange={v => set('status')(v ?? 'Priced')} />
                 </Field>
                 <Field label="CPQ updated">
@@ -1192,9 +1177,9 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   <TextInput value={meta.notes || ''} onChange={e => set('notes')(e.target.value)} />
                 </Field>
               </div>
-              <p className="text-[10px] text-[var(--t3)] leading-relaxed">
+              <p className="text-2xs text-fg-3 leading-relaxed">
                 Creating the case folder also writes one row into
-                {' '}<b className="text-[var(--t2)]">{reg?.name || 'the daily register'}</b>. Building the
+                {' '}<b className="text-fg-2">{reg?.name || 'the daily register'}</b>. Building the
                 same transaction again updates that row rather than adding a second one.
               </p>
               </>}
@@ -1213,27 +1198,27 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
             <div className="flex items-center gap-2">
               <button type="button" onClick={() => setShowCases(v => !v)}
                       className="flex-1 min-w-0 flex items-center gap-2 text-left">
-                <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-[var(--t3)] transition-transform',
+                <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-fg-3 transition-transform',
                                             showCases && 'rotate-90')} />
-                <span className="text-[12.5px] font-semibold text-[var(--t1)] shrink-0">Case folders</span>
-                <span className="text-[10.5px] text-[var(--t3)] truncate">
+                <span className="text-sm font-semibold text-fg shrink-0">Case folders</span>
+                <span className="text-2xs text-fg-3 truncate">
                   {cases.length ? `${plural(cases.length, 'case')} · ${status?.casesRoot || ''}` : status?.casesRoot}
                 </span>
               </button>
               <Button tone="ghost" size="sm" Icon={RefreshCw} onClick={loadCases} />
             </div>
             {showCases && (cases.length === 0 ? (
-              <p className="text-[11.5px] text-[var(--t3)] mt-2">Nothing here yet.</p>
+              <p className="text-xs text-fg-3 mt-2">Nothing here yet.</p>
             ) : (
-              <div className="space-y-1 max-h-[280px] overflow-y-auto vec-scroll -mx-1 px-1 mt-2">
+              <div className="space-y-1 max-h-72 overflow-y-auto vec-scroll -mx-1 px-1 mt-2">
                 {cases.map(c => (
                   <button key={c.path} onClick={() => reveal(c.path)}
-                    className="w-full text-left px-2.5 py-2 rounded-[9px] hover:bg-[var(--s-hover)] transition-colors group">
+                    className="w-full text-left px-2.5 py-2 rounded-panel hover:bg-hover transition-colors group">
                     <div className="flex items-center gap-2">
-                      <FolderOpen className="w-3.5 h-3.5 shrink-0 text-[var(--t3)] group-hover:text-[var(--accent)]" />
+                      <FolderOpen className="w-3.5 h-3.5 shrink-0 text-fg-3 group-hover:text-accent" />
                       <div className="min-w-0 flex-1">
-                        <div className="text-[11.5px] text-[var(--t1)] truncate">{c.name}</div>
-                        <div className="text-[10px] text-[var(--t3)]">
+                        <div className="text-xs text-fg truncate">{c.name}</div>
+                        <div className="text-2xs text-fg-3">
                           {plural(c.files.length, 'file')} · {relTime(new Date(c.mtime).toISOString())}
                         </div>
                       </div>
@@ -1250,10 +1235,10 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
             <div className="flex items-center gap-2">
               <button type="button" onClick={() => setShowRegCard(v => !v)}
                       className="flex-1 min-w-0 flex items-center gap-2 text-left">
-                <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-[var(--t3)] transition-transform',
+                <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-fg-3 transition-transform',
                                             showRegCard && 'rotate-90')} />
-                <span className="text-[12.5px] font-semibold text-[var(--t1)] shrink-0">Daily register</span>
-                <span className="text-[10.5px] text-[var(--t3)] truncate">
+                <span className="text-sm font-semibold text-fg shrink-0">Daily register</span>
+                <span className="text-2xs text-fg-3 truncate">
                   {reg?.exists
                     ? `${plural(reg.total || 0, 'transaction')} · ${reg.name}`
                     : 'Nothing registered yet'}
@@ -1264,13 +1249,13 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
             </div>
             {showRegCard && <div className="mt-2">
             {reg?.error && (
-              <p className="text-[11px] mb-2" style={{ color: 'var(--err)' }}>{reg.error}</p>
+              <p className="text-xs mb-2" style={{ color: 'var(--err)' }}>{reg.error}</p>
             )}
             {reg?.rows && reg.rows.length > 0 && (
               <div className="overflow-x-auto -mx-1 px-1 mb-3">
-                <table className="w-full text-[11px] border-collapse">
+                <table className="w-full text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-[var(--line-2)] text-[9.5px] uppercase tracking-wider text-[var(--t3)]">
+                    <tr className="border-b border-line-2 text-2xs uppercase tracking-wider text-fg-3">
                       <th className="text-left py-1.5 pr-2 font-semibold">Transaction</th>
                       <th className="text-left py-1.5 pr-2 font-semibold">Status</th>
                       <th className="text-right py-1.5 pr-2 font-semibold">Total</th>
@@ -1279,18 +1264,18 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   </thead>
                   <tbody>
                     {[...reg.rows].reverse().slice(0, 8).map(r => (
-                      <tr key={r._row} className="border-b border-[var(--line-2)]">
-                        <td className="py-1.5 pr-2 max-w-[150px]">
-                          <div className="text-[var(--t1)] truncate">{r.transaction || '—'}</div>
-                          <div className="text-[9.5px] text-[var(--t3)] truncate">{r.transaction_name || ''}</div>
+                      <tr key={r._row} className="border-b border-line-2">
+                        <td className="py-1.5 pr-2 max-w-36">
+                          <div className="text-fg truncate">{r.transaction || '—'}</div>
+                          <div className="text-2xs text-fg-3 truncate">{r.transaction_name || ''}</div>
                         </td>
-                        <td className="py-1.5 pr-2 text-[var(--t2)] whitespace-nowrap">{r.status || '—'}</td>
-                        <td className="py-1.5 pr-2 text-right tabular-nums text-[var(--t2)] whitespace-nowrap">
+                        <td className="py-1.5 pr-2 text-fg-2 whitespace-nowrap">{r.status || '—'}</td>
+                        <td className="py-1.5 pr-2 text-right mono text-fg-2 whitespace-nowrap">
                           {typeof r.total_value === 'number'
                             ? r.total_value.toLocaleString(undefined, { maximumFractionDigits: 0 })
                             : '—'}
                         </td>
-                        <td className="py-1.5 text-right text-[10px] text-[var(--t3)] whitespace-nowrap">{r.out_date || '—'}</td>
+                        <td className="py-1.5 text-right text-2xs text-fg-3 whitespace-nowrap">{r.out_date || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1314,7 +1299,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   <Button tone="ghost" size="sm" Icon={FolderOpen}
                           onClick={() => reveal(reg.register)}>Open</Button>
                   <a href={api.lsdRegisterFileUrl()} download
-                     className="shrink-0 p-1.5 rounded-md hover:bg-[var(--s-hover)] text-[var(--t3)] hover:text-[var(--accent)]"
+                     className="shrink-0 p-1.5 rounded-md hover:bg-hover text-fg-3 hover:text-accent"
                      title="Download the register">
                     <Download className="w-3.5 h-3.5" />
                   </a>
@@ -1323,27 +1308,27 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
             </div>
 
             {!reg?.connected && (
-              <p className="text-[10px] text-[var(--t3)] mt-2 leading-relaxed">
+              <p className="text-2xs text-fg-3 mt-2 leading-relaxed">
                 Not connected to SharePoint — run Connect to JOE and the upload button lights up.
               </p>
             )}
-            <p className="text-[10px] text-[var(--t3)] mt-2 leading-relaxed">
+            <p className="text-2xs text-fg-3 mt-2 leading-relaxed">
               The workbook stays on this machine. Upload posts each transaction as an item in
-              {' '}<b className="text-[var(--t3)]">{reg?.sp?.list || 'Quotations List'}</b> — the same
+              {' '}<b className="text-fg-3">{reg?.sp?.list || 'Quotations List'}</b> — the same
               list the quotes go to — as {reg?.sp?.requestType || 'Standard CTO'}. A transaction
               already in the list is updated, not duplicated.
             </p>
             {pushed && (
-              <div className="mt-2 rounded-[9px] border border-[var(--line-2)] bg-[var(--s1)] p-2.5">
+              <div className="mt-2 rounded-panel border border-line-2 bg-surface p-2.5">
                 <div className="flex items-center justify-between gap-2 mb-1">
-                  <span className="text-[11px] text-[var(--t2)]">
+                  <span className="text-xs text-fg-2">
                     {pushed.added || 0} added · {pushed.updated || 0} updated
                     {pushed.skipped ? ` · ${pushed.skipped} skipped` : ''}
                     {pushed.failed ? ` · ${pushed.failed} failed` : ''}
                   </span>
                   {pushed.site && (
                     <button onClick={() => void openExternal(pushed.site!)}
-                      className="inline-flex items-center gap-1 text-[10.5px] text-[var(--accent)] hover:underline">
+                      className="inline-flex items-center gap-1 text-2xs text-accent hover:underline">
                       <ExternalLink className="w-3 h-3" />Open the list
                     </button>
                   )}
@@ -1351,8 +1336,8 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 {/* Only the rows that did not land — a clean run says nothing. */}
                 {(pushed.results || []).filter(x => x.action === 'skipped' || x.action === 'failed')
                   .slice(0, 6).map(x => (
-                    <div key={x.transaction} className="text-[10px] text-[var(--t3)] leading-relaxed">
-                      <b className="text-[var(--t2)]">{x.transaction || '—'}</b>: {x.reason}
+                    <div key={x.transaction} className="text-2xs text-fg-3 leading-relaxed">
+                      <b className="text-fg-2">{x.transaction || '—'}</b>: {x.reason}
                     </div>
                   ))}
               </div>
@@ -1365,24 +1350,21 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
           the widest thing on this page and was the one thing boxed in. ── */}
       <div className="order-2 space-y-3">
           {!result && (
-            <Card className="py-10">
-              <div className="text-center">
-                <Tags className="w-8 h-8 mx-auto mb-3 text-[var(--t3)]" />
-                <p className="text-[13px] text-[var(--t1)]">Drop a transaction and press Price it.</p>
-                <p className="text-[11.5px] text-[var(--t2)] mt-2 max-w-md mx-auto leading-relaxed">
-                  Every line takes the <b>requested discount as asked</b>, then lifts to the
+            <div className="rounded-panel border border-dashed border-line-2">
+              <EmptyState icon={Tags} title="Drop a transaction and press Price it."
+                description={<>
+                  Every line takes the <b className="text-fg-2 font-medium">requested discount as asked</b>, then lifts to the
                   prior-year average × the half-year RPI gate if it prices under it. A margin
                   below its target E2E is flagged for approval, never priced away. Nothing is rounded.
-                </p>
-              </div>
-            </Card>
+                </>} />
+            </div>
           )}
 
           {result && !result.ok && (
-            <Card className="border-[var(--err)]">
+            <Card className="border-err-line bg-err-soft">
               <div className="flex items-start gap-2.5">
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" style={{ color: 'var(--err)' }} />
-                <div className="text-[12px] text-[var(--t2)] leading-relaxed">{result.error}</div>
+                <div className="text-sm text-fg-2 leading-relaxed">{result.error}</div>
               </div>
             </Card>
           )}
@@ -1400,8 +1382,8 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
               />
               {/* The one-liner first: what this transaction is, before any table. */}
               {s.headline && (
-                <div className="mb-3 px-3 py-2.5 rounded-[10px] border border-[var(--line-2)] bg-[var(--s3)]
-                                text-[12.5px] text-[var(--t1)] leading-relaxed">
+                <div className="mb-3 px-3 py-2.5 rounded-panel border border-line-2 bg-subtle
+                                text-sm text-fg leading-relaxed">
                   {s.headline}
                 </div>
               )}
@@ -1444,8 +1426,8 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   It is the first thing an approver queries, so it sits above the
                   table rather than inside a line's flags. */}
               {s.rpi_exception && (
-                <div className="mt-3 flex items-start gap-2 rounded-[10px] border border-[var(--warn)]/40
-                                bg-[var(--warn)]/[0.07] px-3 py-2.5 text-[11.5px] text-[var(--t1)] leading-relaxed">
+                <div className="mt-3 flex items-start gap-2 rounded-panel border border-warn
+                                bg-[var(--warn)]/[0.07] px-3 py-2.5 text-xs text-fg leading-relaxed">
                   <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: 'var(--warn)' }} />
                   <span>
                     <b>{s.rpi_exception.label}</b> — priced on last year's price{' '}
@@ -1457,7 +1439,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
               )}
 
               {s.no_py > 0 && (
-                <div className="mt-3 flex items-start gap-2 text-[11px] text-[var(--t3)] leading-relaxed">
+                <div className="mt-3 flex items-start gap-2 text-xs text-fg-3 leading-relaxed">
                   <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
                   <span>
                     {plural(s.no_py, 'line')} have no prior-year reference — new items, so there is
@@ -1468,7 +1450,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
               )}
 
               {showLog && result?.log && (
-                <div className="mt-3 rounded-[10px] border border-[var(--line-2)] bg-[var(--s1)] p-3 max-h-[240px] overflow-y-auto vec-scroll font-mono text-[10.5px] leading-relaxed">
+                <div className="mt-3 rounded-panel border border-line-2 bg-surface p-3 max-h-60 overflow-y-auto vec-scroll mono text-2xs leading-relaxed">
                   {result.log.map((l, i) => (
                     <div key={i} style={{
                       color: l.kind === 'error' ? 'var(--err)' : l.kind === 'warn' ? 'var(--warn)'
@@ -1494,30 +1476,30 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 </div>}
               />
               {built.checks && (
-                <div className="flex items-center gap-2 mb-3 text-[11.5px]">
+                <div className="flex items-center gap-2 mb-3 text-xs">
                   {built.checks.agree
                     ? <><CheckCircle2 className="w-3.5 h-3.5" style={{ color: 'var(--ok)' }} />
-                        <span className="text-[var(--t2)]">
+                        <span className="text-fg-2">
                           Three-way total check passed — ledger, Feedback sheet and engine all read {money(built.checks.python, cur)}.
                         </span></>
                     : <><AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--warn)' }} />
-                        <span className="text-[var(--t2)]">
+                        <span className="text-fg-2">
                           Totals disagree — ledger {money(built.checks.ledger_T11, cur)}, Feedback {money(built.checks.feedback_L10, cur)}, engine {money(built.checks.python, cur)}.
                         </span></>}
                 </div>
               )}
               {built.register && (
-                <div className="flex items-center gap-2 mb-3 text-[11.5px]">
+                <div className="flex items-center gap-2 mb-3 text-xs">
                   {built.register.ok
                     ? <><ClipboardList className="w-3.5 h-3.5" style={{ color: 'var(--ok)' }} />
-                        <span className="text-[var(--t2)]">
+                        <span className="text-fg-2">
                           Register row {built.register.action === 'updated' ? 'updated' : 'added'} in{' '}
                           {built.register.path.split(/[\/]/).pop()}
                           {built.register.skipped.length > 0
                             && ` · ${plural(built.register.skipped.length, 'column')} not in that sheet`}
                         </span></>
                     : <><AlertTriangle className="w-3.5 h-3.5" style={{ color: 'var(--warn)' }} />
-                        <span className="text-[var(--t2)]">
+                        <span className="text-fg-2">
                           Not registered — {built.register.error}. Press <b>Register this one</b> to retry.
                         </span></>}
                 </div>
@@ -1527,11 +1509,11 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   target floor lifted off the customer's own ask (that COUNTER is
                   somebody's decision, and the concession band is what they grant). */}
               {!!(built.summary?.below_target || built.summary?.floored) && (
-                <div className="mb-3 p-3 rounded-[10px] border border-[var(--line-2)]"
+                <div className="mb-3 p-3 rounded-panel border border-line-2"
                      style={{ background: 'color-mix(in srgb, var(--warn) 7%, transparent)' }}>
                   <div className="flex items-start gap-2 mb-2">
                     <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--warn)' }} />
-                    <div className="text-[11.5px] text-[var(--t2)] leading-relaxed">
+                    <div className="text-xs text-fg-2 leading-relaxed">
                       {built.summary.below_target ? <>
                         {plural(built.summary.below_target, 'line')} price under target —{' '}
                         <b>E2E {pct(built.summary.overall_e2e)}</b> against a{' '}
@@ -1559,7 +1541,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                     {mailBusy ? 'Drafting…' : 'Draft the approval mail'}
                   </Button>
                   {mailNote && (
-                    <div className="mt-2 text-[10.5px] text-[var(--t3)] leading-relaxed">{mailNote}</div>
+                    <div className="mt-2 text-2xs text-fg-3 leading-relaxed">{mailNote}</div>
                   )}
                 </div>
               )}
@@ -1571,14 +1553,14 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   ['Working file', built.working, 'the master model, filled'],
                   ['First draft', built.baseline, 'BOM pasted, nothing else touched'],
                 ] as const).map(([label, p, hint]) => p && (
-                  <div key={label} className="flex items-center gap-2.5 px-3 py-2 rounded-[10px] border border-[var(--line-2)] bg-[var(--s1)]">
-                    <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-[var(--t3)]" />
+                  <div key={label} className="flex items-center gap-2.5 px-3 py-2 rounded-panel border border-line-2 bg-surface">
+                    <FileSpreadsheet className="w-3.5 h-3.5 shrink-0 text-fg-3" />
                     <div className="min-w-0 flex-1">
-                      <div className="text-[11.5px] text-[var(--t1)] truncate">{p.split(/[\\/]/).pop()}</div>
-                      <div className="text-[10px] text-[var(--t3)]">{label} · {hint}</div>
+                      <div className="text-xs text-fg truncate">{p.split(/[\\/]/).pop()}</div>
+                      <div className="text-2xs text-fg-3">{label} · {hint}</div>
                     </div>
                     <a href={api.lsdFileUrl(p)} download
-                       className="shrink-0 p-1.5 rounded-md hover:bg-[var(--s-hover)] text-[var(--t3)] hover:text-[var(--accent)]"
+                       className="shrink-0 p-1.5 rounded-md hover:bg-hover text-fg-3 hover:text-accent"
                        title="Download">
                       <Download className="w-3.5 h-3.5" />
                     </a>
@@ -1612,38 +1594,38 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
               </div>
               <div className="space-y-1">
                 {result.diff.added.map(a => (
-                  <div key={`a-${a.material}`} className="flex items-center gap-2 text-[11.5px] px-2.5 py-1.5 rounded-[8px]"
+                  <div key={`a-${a.material}`} className="flex items-center gap-2 text-xs px-2.5 py-1.5 rounded-panel"
                        style={{ background: 'color-mix(in srgb, var(--warn) 14%, transparent)' }}>
                     <Plus className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--warn)' }} />
-                    <b className="text-[var(--t1)]">{a.material}</b>
-                    <span className="text-[var(--t2)] truncate">{a.description}</span>
-                    <span className="ml-auto shrink-0 tabular-nums text-[var(--t2)]">×{a.qty.toLocaleString()}</span>
-                    <span className="shrink-0 text-[10px] text-[var(--t3)]">new — priced by the rule</span>
+                    <b className="text-fg">{a.material}</b>
+                    <span className="text-fg-2 truncate">{a.description}</span>
+                    <span className="ml-auto shrink-0 tabular-nums text-fg-2">×{a.qty.toLocaleString()}</span>
+                    <span className="shrink-0 text-2xs text-fg-3">new — priced by the rule</span>
                   </div>
                 ))}
                 {result.diff.qty_changed.map(c => (
-                  <div key={`q-${c.material}`} className="flex items-center gap-2 text-[11.5px] px-2.5 py-1.5 rounded-[8px] border border-[var(--line-2)]">
-                    <ArrowRight className="w-3.5 h-3.5 shrink-0 text-[var(--t3)]" />
-                    <b className="text-[var(--t1)]">{c.material}</b>
-                    <span className="text-[var(--t2)] truncate">{c.description}</span>
-                    <span className="ml-auto shrink-0 tabular-nums text-[var(--t2)]">
+                  <div key={`q-${c.material}`} className="flex items-center gap-2 text-xs px-2.5 py-1.5 rounded-panel border border-line-2">
+                    <ArrowRight className="w-3.5 h-3.5 shrink-0 text-fg-3" />
+                    <b className="text-fg">{c.material}</b>
+                    <span className="text-fg-2 truncate">{c.description}</span>
+                    <span className="ml-auto shrink-0 tabular-nums text-fg-2">
                       {c.old_qty?.toLocaleString()} → {c.new_qty.toLocaleString()}
                     </span>
-                    <span className="shrink-0 tabular-nums text-[10px]"
+                    <span className="shrink-0 tabular-nums text-2xs"
                           style={{ color: c.delta > 0 ? 'var(--ok)' : 'var(--err)' }}>
                       {c.delta > 0 ? '+' : ''}{c.delta.toLocaleString()}
                     </span>
                     {c.unit_net != null && (
-                      <span className="shrink-0 text-[10px] text-[var(--t3)]">held at {num(c.unit_net)}</span>
+                      <span className="shrink-0 text-2xs text-fg-3">held at {num(c.unit_net)}</span>
                     )}
                   </div>
                 ))}
                 {result.diff.removed.map(r => (
-                  <div key={`r-${r.material}`} className="flex items-center gap-2 text-[11.5px] px-2.5 py-1.5 rounded-[8px] border border-[var(--line-2)]">
+                  <div key={`r-${r.material}`} className="flex items-center gap-2 text-xs px-2.5 py-1.5 rounded-panel border border-line-2">
                     <Minus className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--err)' }} />
-                    <b className="text-[var(--t1)]">{r.material}</b>
-                    <span className="ml-auto shrink-0 tabular-nums text-[var(--t3)]">was ×{r.qty.toLocaleString()}</span>
-                    <span className="shrink-0 text-[10px] text-[var(--t3)]">dropped</span>
+                    <b className="text-fg">{r.material}</b>
+                    <span className="ml-auto shrink-0 tabular-nums text-fg-3">was ×{r.qty.toLocaleString()}</span>
+                    <span className="shrink-0 text-2xs text-fg-3">dropped</span>
                   </div>
                 ))}
               </div>

@@ -16,16 +16,18 @@ import { failed, plural } from '../lib/errors';
 import { exportJobReport, type ReportFormat } from '../lib/export';
 import type { JobsReport, JobsReportStatus, JobThread } from '../types';
 import type { ToastFn } from '../App';
+import { Button as UiButton } from '../ui';
 
 // Stable colour per category slot — the taxonomy is user-editable, so colours are
 // assigned by position rather than hard-coded to a name.
 const CAT_COLORS = [
   'var(--accent)', 'var(--ok)', 'var(--violet)', 'var(--warn)',
-  '#e0629b', '#3fb8b0', '#8b7bd8', '#d98a3f', '#5aa9e6', '#9aa2b1',
+  'var(--cat-7)', 'var(--cat-9)', 'var(--cat-5)', 'var(--cat-12)', 'var(--cat-8)', 'var(--t3)',
 ];
 
-// The same slots, frozen to the light-theme hex. Exported documents are printed on
-// white whatever theme the app is wearing, and a CSS var means nothing to Python.
+// The same slots, frozen to hex. Exported documents are printed on white whatever
+// theme the app is wearing, and a CSS var means nothing to Python — this is the one
+// sanctioned place for literal colours outside index.css (with lib/export.ts).
 const CAT_HEX = [
   '#5b8cff', '#059669', '#7c3aed', '#b45309',
   '#e0629b', '#3fb8b0', '#8b7bd8', '#d98a3f', '#5aa9e6', '#9aa2b1',
@@ -200,7 +202,7 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
   const maxDaily = Math.max(1, ...(report?.daily ?? []).map(d => d.count));
 
   return (
-    <div className="space-y-[22px]">
+    <div className="space-y-5">
       {/* ── Range + run ─────────────────────────────────────────────────────── */}
       <Card>
         <CardTitle
@@ -215,27 +217,25 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
 
         <div className="flex flex-wrap items-end gap-3">
           <div>
-            <label className="block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-[var(--t3)] mb-1.5">From</label>
+            <label className="block text-2xs font-semibold uppercase tracking-[0.05em] text-fg-3 mb-1.5">From</label>
             <DateBox value={from} onChange={setFrom} />
           </div>
           <div>
-            <label className="block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-[var(--t3)] mb-1.5">To</label>
+            <label className="block text-2xs font-semibold uppercase tracking-[0.05em] text-fg-3 mb-1.5">To</label>
             <DateBox value={to} onChange={setTo} />
           </div>
           <div className="flex gap-1.5">
             {quickRanges.map(r => (
-              <button key={r.label}
-                onClick={() => { setFrom(fmtD(new Date(Date.now() - r.days * 864e5))); setTo(fmtD(new Date())); }}
-                className="h-[34px] px-2.5 rounded-[8px] text-[11px] font-medium bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t2)] hover:border-[var(--accent-line)]">
+              <UiButton tone="secondary" size="md" key={r.label} onClick={() => { setFrom(fmtD(new Date(Date.now() - r.days * 864e5))); setTo(fmtD(new Date())); }}>
                 {r.label}
-              </button>
+              </UiButton>
             ))}
           </div>
           <button onClick={runScan} disabled={running || !isValidRange(from, to)}
             style={running || !isValidRange(from, to)
-              ? { background: 'var(--s2)', color: 'var(--t3)', border: '1px solid var(--line-2)' }
+              ? { background: 'var(--s2)', color: 'var(--t3)', border: 'var(--hairline) solid var(--line-2)' }
               : { background: 'var(--accent)', color: 'var(--accent-ink)', boxShadow: 'var(--glow)' }}
-            className="h-[34px] px-4 rounded-[9px] text-[12px] font-semibold inline-flex items-center gap-1.5 disabled:cursor-not-allowed">
+            className="h-8 px-4 rounded-panel text-sm font-semibold inline-flex items-center gap-1.5 disabled:cursor-not-allowed">
             {running
               ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Scanning…</>
               : <><Play className="w-3.5 h-3.5" fill="currentColor" stroke="none" /> Build report</>}
@@ -243,41 +243,41 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
         </div>
 
         {running && status && (
-          <div className="mt-3.5 px-3.5 py-2.5 rounded-[10px]" style={{ background: 'var(--accent-soft)', border: '1px solid var(--accent-line)' }}>
-            <div className="flex items-center gap-2 text-[11.5px] font-medium" style={{ color: 'var(--accent-text)' }}>
+          <div className="mt-3.5 px-3.5 py-2.5 rounded-panel" style={{ background: 'var(--accent-soft)', border: 'var(--hairline) solid var(--accent-line)' }}>
+            <div className="flex items-center gap-2 text-xs font-medium" style={{ color: 'var(--accent-text)' }}>
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
               {status.message || 'Working…'}
             </div>
-            <div className="flex gap-4 mt-1.5 text-[10.5px] text-[var(--t3)]">
-              <span><b className="num text-[var(--t1)]">{status.messages}</b> messages read</span>
-              <span><b className="num text-[var(--t1)]">{status.threads}</b> jobs found</span>
+            <div className="flex gap-4 mt-1.5 text-2xs text-fg-3">
+              <span><b className="num text-fg">{status.messages}</b> messages read</span>
+              <span><b className="num text-fg">{status.threads}</b> jobs found</span>
               {status.toClassify > 0 && (
-                <span><b className="num text-[var(--t1)]">{status.classified}</b>/{status.toClassify} categorised</span>
+                <span><b className="num text-fg">{status.classified}</b>/{status.toClassify} categorised</span>
               )}
             </div>
-            <p className="text-[10px] text-[var(--t3)] mt-1.5">
+            <p className="text-2xs text-fg-3 mt-1.5">
               Outlook must stay open. A 90-day sweep of a busy mailbox can take several minutes.
             </p>
           </div>
         )}
 
         {status?.phase === 'error' && !running && (
-          <div className="mt-3.5 flex items-start gap-2 px-3.5 py-2.5 rounded-[10px] text-[11.5px]"
-               style={{ background: 'var(--err-soft)', border: '1px solid color-mix(in oklab, var(--err) 35%, transparent)' }}>
+          <div className="mt-3.5 flex items-start gap-2 px-3.5 py-2.5 rounded-panel text-xs"
+               style={{ background: 'var(--err-soft)', border: 'var(--hairline) solid color-mix(in oklab, var(--err) 35%, transparent)' }}>
             <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" style={{ color: 'var(--err)' }} />
-            <span className="text-[var(--t2)]">{status.error}</span>
+            <span className="text-fg-2">{status.error}</span>
           </div>
         )}
       </Card>
 
       {loading ? (
-        <div className="flex justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" /></div>
+        <div className="flex justify-center py-16"><Loader2 className="w-5 h-5 animate-spin text-fg-4" /></div>
       ) : !report ? (
         <Card>
           <div className="flex flex-col items-center gap-2.5 py-12 text-center">
-            <ClipboardList className="w-9 h-9 text-[var(--t4)]" />
-            <p className="text-[13px] font-medium text-[var(--t1)]">No report yet</p>
-            <p className="text-[11.5px] text-[var(--t3)] max-w-sm">
+            <ClipboardList className="w-9 h-9 text-fg-4" />
+            <p className="text-base font-medium text-fg">No report yet</p>
+            <p className="text-xs text-fg-3 max-w-sm">
               Pick a period and hit <b>Build report</b>. Vector reads every mail folder, groups
               each conversation into one job, and sorts them into categories.
             </p>
@@ -286,17 +286,17 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
       ) : (
         <>
           {report.truncated && (
-            <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-[12px] text-[11.5px]"
-                 style={{ background: 'var(--warn-soft)', border: '1px solid color-mix(in oklab, var(--warn) 35%, transparent)' }}>
+            <div className="flex items-start gap-2 px-3.5 py-2.5 rounded-panel text-xs"
+                 style={{ background: 'var(--warn-soft)', border: 'var(--hairline) solid color-mix(in oklab, var(--warn) 35%, transparent)' }}>
               <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-px" style={{ color: 'var(--warn)' }} />
-              <span className="text-[var(--t2)]">
+              <span className="text-fg-2">
                 The scan hit its message cap, so this period is only partly covered. Narrow the date range for a complete picture.
               </span>
             </div>
           )}
 
           {/* Separate cards, not a band — that is how the canvas draws this row. */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-[17px]">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <KpiTile boxed icon={ClipboardList} label="Jobs done"    value={report.totals.threads}        sub={`${report.range.from} → ${report.range.to}`} accent="brand" />
             <KpiTile boxed icon={Reply}         label="Replies sent" value={report.totals.replies}        sub="messages you wrote" accent="ok" />
             <KpiTile boxed icon={Mail}          label="Mail handled" value={report.totals.messages}       sub={`${report.totals.scanned} scanned`} accent="violet" />
@@ -308,12 +308,12 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
             <CardTitle title="Work by category"
                        sub="One job = one email conversation you replied to or filed as done"
                        right={catFilter && (
-                         <button onClick={() => setCatFilter(null)} className="text-[11px] font-medium" style={{ color: 'var(--accent-text)' }}>
+                         <button onClick={() => setCatFilter(null)} className="text-xs font-medium" style={{ color: 'var(--accent-text)' }}>
                            Clear filter
                          </button>
                        )} />
             {report.byCategory.length === 0 ? (
-              <p className="text-[11.5px] text-[var(--t3)]">No jobs found in this period.</p>
+              <p className="text-xs text-fg-3">No jobs found in this period.</p>
             ) : (
               <div className="space-y-2.5">
                 {report.byCategory.map(c => {
@@ -322,18 +322,18 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
                     <button key={c.category}
                       onClick={() => setCatFilter(on ? null : c.category)}
                       className={cn(
-                        'w-full text-left rounded-[10px] px-3 py-2 transition-colors',
-                        on ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--s3)]',
+                        'w-full text-left rounded-panel px-3 py-2 transition-colors',
+                        on ? 'bg-accent-soft' : 'hover:bg-subtle',
                       )}>
                       <div className="flex items-center gap-2.5 mb-1.5">
                         <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: colorFor(c.category) }} />
-                        <span className="text-[12px] font-medium text-[var(--t1)] flex-1 truncate">{c.category}</span>
-                        <span className="text-[11px] text-[var(--t2)] num shrink-0">
-                          <b className="text-[var(--t1)]">{c.threads}</b> job{c.threads !== 1 ? 's' : ''}
+                        <span className="text-sm font-medium text-fg flex-1 truncate">{c.category}</span>
+                        <span className="text-xs text-fg-2 num shrink-0">
+                          <b className="text-fg">{c.threads}</b> job{c.threads !== 1 ? 's' : ''}
                         </span>
-                        <span className="text-[10.5px] text-[var(--t3)] num shrink-0 w-9 text-right">{c.pct}%</span>
+                        <span className="text-2xs text-fg-3 mono shrink-0 w-9 text-right">{c.pct}%</span>
                       </div>
-                      <div className="h-[6px] rounded-full overflow-hidden" style={{ background: 'var(--s3)' }}>
+                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--s3)' }}>
                         <div className="h-full rounded-full transition-all"
                              style={{ width: `${c.pct}%`, background: colorFor(c.category) }} />
                       </div>
@@ -348,14 +348,14 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
           {report.daily.length > 1 && (
             <Card>
               <CardTitle title="Jobs closed per day" sub="Dated by the last message in each conversation" />
-              <div className="flex items-end gap-[3px] h-24">
+              <div className="flex items-end gap-0.5 h-24">
                 {report.daily.map(d => (
-                  <div key={d.date} className="flex-1 min-w-[3px] rounded-t-[3px] transition-all hover:opacity-80"
+                  <div key={d.date} className="flex-1 min-w-0.5 rounded-t-control transition-all hover:opacity-80"
                        style={{ height: `${Math.max(4, (d.count / maxDaily) * 100)}%`, background: 'var(--accent)' }}
                        title={`${d.date}: ${d.count} job${d.count !== 1 ? 's' : ''}`} />
                 ))}
               </div>
-              <div className="flex justify-between mt-1.5 text-[10px] text-[var(--t3)] num">
+              <div className="flex justify-between mt-1.5 text-2xs text-fg-3 num">
                 <span>{report.daily[0]?.date}</span>
                 <span>{report.daily[report.daily.length - 1]?.date}</span>
               </div>
@@ -364,50 +364,49 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
 
           {/* ── The jobs ──────────────────────────────────────────────────────── */}
           <Card padded={false}>
-            <div className="px-5 py-4 border-b border-[var(--line)] flex items-center gap-3">
+            <div className="px-5 py-4 border-b border-line flex items-center gap-3">
               <div className="min-w-0 flex-1">
-                <h3 className="text-[13px] font-semibold tracking-tight">
+                <h3 className="text-base font-semibold tracking-tight">
                   {catFilter || 'All jobs'}
-                  <span className="ml-2 text-[11px] font-normal text-[var(--t3)] num">{visible.length}</span>
+                  <span className="ml-2 text-xs font-normal text-fg-3 num">{visible.length}</span>
                 </h3>
               </div>
               <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[var(--t3)]" />
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-fg-3" />
                 <input value={filter} onChange={e => setFilter(e.target.value)} placeholder="Filter jobs…"
-                  className="h-[30px] w-44 pl-7 pr-2.5 rounded-[8px] text-[11.5px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none" />
+                  className="h-7 w-44 pl-7 pr-2.5 rounded-panel text-xs bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none" />
               </div>
               <div className="relative shrink-0">
-                <button onClick={() => setExportOpen(o => !o)} disabled={!visible.length}
-                  className="h-[30px] px-3 rounded-[8px] text-[11px] font-semibold inline-flex items-center gap-1.5 text-[var(--t1)] border border-[var(--line-2)] bg-[var(--s2)] hover:bg-[var(--s-hover)] disabled:opacity-50">
+                <UiButton tone="secondary" onClick={() => setExportOpen(o => !o)} disabled={!visible.length}>
                   {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
                   Export
-                  <ChevronDown className={cn('w-3 h-3 text-[var(--t3)] transition-transform', exportOpen && 'rotate-180')} />
-                </button>
+                  <ChevronDown className={cn('w-3 h-3 text-fg-3 transition-transform', exportOpen && 'rotate-180')} />
+                </UiButton>
                 {exportOpen && (
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => !exporting && setExportOpen(false)} />
-                    <div className="absolute right-0 top-full mt-1.5 z-50 w-[248px] rounded-[12px] overflow-hidden py-1"
-                         style={{ background: 'var(--s1)', border: '1px solid var(--line-2)', boxShadow: 'var(--pop-sh)' }}>
-                      <p className="px-3 pt-1.5 pb-2 text-[10px] uppercase tracking-[0.05em] text-[var(--t3)]">
+                    <div className="absolute right-0 top-full mt-1.5 z-50 w-60 rounded-panel overflow-hidden py-1"
+                         style={{ background: 'var(--s1)', border: 'var(--hairline) solid var(--line-2)', boxShadow: 'var(--pop-sh)' }}>
+                      <p className="px-3 pt-1.5 pb-2 text-2xs uppercase tracking-[0.05em] text-fg-3">
                         {visible.length} job{visible.length !== 1 ? 's' : ''}
                         {(catFilter || filter.trim()) && ' — filtered'}
                       </p>
                       {EXPORT_CHOICES.map(c => (
                         <button key={c.id} disabled={!!exporting}
                           onClick={() => (c.id === 'csv' ? (exportCsv(), setExportOpen(false)) : exportDoc(c.id))}
-                          className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-[var(--s3)] disabled:opacity-50 transition-colors">
+                          className="w-full flex items-start gap-2.5 px-3 py-2 text-left hover:bg-subtle disabled:opacity-50 transition-colors">
                           {exporting === c.id
                             ? <Loader2 className="w-3.5 h-3.5 mt-px shrink-0 animate-spin" style={{ color: 'var(--accent)' }} />
                             : <c.icon className="w-3.5 h-3.5 mt-px shrink-0" style={{ color: c.tint }} />}
                           <span className="min-w-0 flex-1">
-                            <span className="block text-[12px] font-medium text-[var(--t1)]">{c.label}</span>
-                            <span className="block text-[10.5px] text-[var(--t3)] leading-snug">{c.hint}</span>
+                            <span className="block text-sm font-medium text-fg">{c.label}</span>
+                            <span className="block text-2xs text-fg-3 leading-snug">{c.hint}</span>
                           </span>
-                          <span className="text-[10px] text-[var(--t4)] mono mt-px">.{c.ext}</span>
+                          <span className="text-2xs text-fg-4 mono mt-px">.{c.ext}</span>
                         </button>
                       ))}
                       {exporting && (
-                        <p className="px-3 pt-1 pb-1.5 text-[10px] text-[var(--t3)]">
+                        <p className="px-3 pt-1 pb-1.5 text-2xs text-fg-3">
                           Laying out the document…
                         </p>
                       )}
@@ -418,40 +417,40 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
             </div>
 
             {visible.length === 0 ? (
-              <p className="px-5 py-10 text-center text-[11.5px] text-[var(--t3)]">No jobs match.</p>
+              <p className="px-5 py-10 text-center text-xs text-fg-3">No jobs match.</p>
             ) : (
-              <div className="max-h-[560px] overflow-y-auto vec-scroll">
+              <div className="max-h-140 overflow-y-auto vec-scroll">
                 {visible.map(t => {
                   const open = expanded.has(t.conv);
                   return (
-                    <div key={t.conv} className="border-b border-[var(--line)] last:border-0">
+                    <div key={t.conv} className="border-b border-line last:border-0">
                       <button onClick={() => toggleRow(t.conv)}
-                        className="w-full text-left px-5 py-2.5 flex items-start gap-2.5 hover:bg-[var(--s3)] transition-colors">
-                        {open ? <ChevronDown className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[var(--t3)]" />
-                              : <ChevronRight className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[var(--t3)]" />}
+                        className="w-full text-left px-5 py-2.5 flex items-start gap-2.5 hover:bg-subtle transition-colors">
+                        {open ? <ChevronDown className="w-3.5 h-3.5 shrink-0 mt-0.5 text-fg-3" />
+                              : <ChevronRight className="w-3.5 h-3.5 shrink-0 mt-0.5 text-fg-3" />}
                         <span className="w-2 h-2 rounded-sm shrink-0 mt-1.5" style={{ background: colorFor(t.category) }} />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="text-[12px] font-medium text-[var(--t1)] truncate">{t.topic}</span>
+                            <span className="text-sm font-medium text-fg truncate">{t.topic}</span>
                             {t.completed && <CheckCircle2 className="w-3 h-3 shrink-0" style={{ color: 'var(--ok)' }} />}
                           </div>
-                          <p className="text-[11px] text-[var(--t3)] truncate mt-0.5">
+                          <p className="text-xs text-fg-3 truncate mt-0.5">
                             {t.summary || t.category}
                           </p>
                         </div>
                         <div className="shrink-0 text-right">
-                          <p className="text-[10.5px] text-[var(--t3)] num">{(t.last || '').slice(0, 10)}</p>
-                          <p className="text-[10px] text-[var(--t4)] num">{t.msgs} msg · {t.sent} sent</p>
+                          <p className="text-2xs text-fg-3 num">{(t.last || '').slice(0, 10)}</p>
+                          <p className="text-2xs text-fg-4 num">{t.msgs} msg · {t.sent} sent</p>
                         </div>
                       </button>
                       {open && (
-                        <div className="px-5 pb-3 pl-[52px] space-y-1 text-[11px] text-[var(--t2)]">
-                          <p><span className="text-[var(--t3)]">Category:</span> {t.category}</p>
-                          {t.counterpart && <p><span className="text-[var(--t3)]">With:</span> {t.counterpart}</p>}
-                          <p><span className="text-[var(--t3)]">Period:</span>{' '}
+                        <div className="px-5 pb-3 pl-12 space-y-1 text-xs text-fg-2">
+                          <p><span className="text-fg-3">Category:</span> {t.category}</p>
+                          {t.counterpart && <p><span className="text-fg-3">With:</span> {t.counterpart}</p>}
+                          <p><span className="text-fg-3">Period:</span>{' '}
                             <span className="num">{(t.first || '').slice(0, 10)} → {(t.last || '').slice(0, 10)}</span></p>
                           <p className="flex items-start gap-1.5">
-                            <FolderOpen className="w-3 h-3 shrink-0 mt-0.5 text-[var(--t3)]" />
+                            <FolderOpen className="w-3 h-3 shrink-0 mt-0.5 text-fg-3" />
                             <span>{t.folders.join(' · ') || '—'}</span>
                           </p>
                         </div>
@@ -485,12 +484,12 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
                       const box  = f.folder.split('\\')[0].replace(/@.*$/, '');
                       return (
                         <span key={f.folder}
-                          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-[8px] text-[10.5px] bg-[var(--s3)] border border-[var(--line)] text-[var(--t2)]"
+                          className="inline-flex items-center gap-1.5 px-2 py-1 rounded-panel text-2xs bg-subtle border border-line text-fg-2"
                           title={f.folder}>
-                          <FolderOpen className="w-2.5 h-2.5 text-[var(--t3)]" />
-                          {seen[leaf] > 1 && <span className="text-[var(--t4)]">{box} ›</span>}
+                          <FolderOpen className="w-2.5 h-2.5 text-fg-3" />
+                          {seen[leaf] > 1 && <span className="text-fg-4">{box} ›</span>}
                           {leaf}
-                          <span className="num text-[var(--t3)]">{f.count}</span>
+                          <span className="num text-fg-3">{f.count}</span>
                         </span>
                       );
                     });
@@ -508,7 +507,7 @@ export function ReportPage({ toast }: { toast: ToastFn }) {
 function DateBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <div className="relative">
-      <Calendar className="absolute left-[11px] top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[var(--t3)]" />
+      <Calendar className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-3" />
       <input type="text" placeholder="DD/MM/YYYY" value={value} maxLength={10}
         onChange={e => {
           let v = e.target.value.replace(/[^\d/]/g, '');
@@ -516,7 +515,7 @@ function DateBox({ value, onChange }: { value: string; onChange: (v: string) => 
           if (v.length === 5 && v.split('/').length === 2) v = v + '/';
           onChange(v);
         }}
-        className="w-[140px] h-[34px] pl-[34px] pr-2.5 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none num"
+        className="w-36 h-8 pl-8 pr-2.5 rounded-panel text-sm bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none num"
       />
     </div>
   );

@@ -62,33 +62,33 @@ export function StackedAreaChart({
         {yTicks.map((t, i) => (
           <g key={i}>
             <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)}
-                  stroke="currentColor" className="text-[var(--line)]" strokeDasharray="2 4" />
+                  stroke="currentColor" className="text-line" strokeDasharray="2 4" />
             <text x={padL - 8} y={y(t) + 3} textAnchor="end"
-                  className="fill-[var(--t3)]" fontSize="10">{t}</text>
+                  className="fill-fg-3" style={{ fontSize: 'var(--fs-2xs)' }}>{t}</text>
           </g>
         ))}
-        <path d={okPath}   fill="#5b8cff" fillOpacity="0.85" />
-        <path d={errPath}  fill="#dc2626" fillOpacity="0.85" />
-        <path d={warnPath} fill="#f59e0b" fillOpacity="0.85" />
-        <path d={linePath} stroke="#5b8cff" strokeWidth="1.5" fill="none" />
+        <path d={okPath}   style={{ fill: 'var(--chart-1)' }} fillOpacity="0.85" />
+        <path d={errPath}  style={{ fill: 'var(--err)' }} fillOpacity="0.85" />
+        <path d={warnPath} style={{ fill: 'var(--warn)' }} fillOpacity="0.85" />
+        <path d={linePath} style={{ stroke: 'var(--chart-1)' }} strokeWidth="1.25" fill="none" />
 
         {days.map((d, i) => (
           i % labelEvery === 0 ? (
             <text key={i} x={x(i)} y={H - 8} textAnchor="middle"
-                  className="fill-[var(--t3)]" fontSize="10">{d.label}</text>
+                  className="fill-fg-3" style={{ fontSize: 'var(--fs-2xs)' }}>{d.label}</text>
           ) : null
         ))}
 
         {hover !== null && (
           <g>
             <line x1={x(hover)} x2={x(hover)} y1={padT} y2={H - padB}
-                  stroke="currentColor" className="text-[var(--t4)]" strokeWidth="1" />
+                  stroke="currentColor" className="text-fg-4" strokeWidth="1" />
             {[
-              { v: days[hover].ok,                                   c: '#5b8cff' },
-              { v: days[hover].ok + days[hover].err,                 c: '#dc2626' },
-              { v: days[hover].ok + days[hover].err + days[hover].warn, c: '#f59e0b' },
+              { v: days[hover].ok,                                   c: 'var(--chart-1)' },
+              { v: days[hover].ok + days[hover].err,                 c: 'var(--err)' },
+              { v: days[hover].ok + days[hover].err + days[hover].warn, c: 'var(--warn)' },
             ].map((p, i) => (
-              <circle key={i} cx={x(hover)} cy={y(p.v)} r="3.5" fill={p.c} stroke="white" strokeWidth="1.5" />
+              <circle key={i} cx={x(hover)} cy={y(p.v)} r="3" style={{ fill: p.c, stroke: 'var(--s1)' }} strokeWidth="1.5" />
             ))}
           </g>
         )}
@@ -98,12 +98,11 @@ export function StackedAreaChart({
         const d = days[hover];
         const total = d.ok + d.err + d.warn;
         return (
-          <div className="absolute top-3 left-12 px-3 py-2 rounded-[10px] v3-card pointer-events-none num"
-               style={{ fontSize: 11 }}>
-            <p className="text-[10px] text-[var(--t3)] uppercase tracking-wide">{d.label}</p>
-            <p className="font-semibold mt-1 text-[var(--t1)]">{total} jobs</p>
-            <div className="flex gap-3 mt-1.5 text-[10.5px]">
-              <span className="flex items-center gap-1"><i className="inline-block w-2 h-2 rounded-sm" style={{ background: 'var(--accent)' }}/>{d.ok}</span>
+          <div className="absolute top-3 left-12 px-3 py-2 rounded-panel border border-line-2 bg-raised shadow-float pointer-events-none mono text-xs">
+            <p className="text-2xs text-fg-3 uppercase tracking-wide">{d.label}</p>
+            <p className="font-semibold mt-1 text-fg">{total} jobs</p>
+            <div className="flex gap-3 mt-1.5 text-2xs">
+              <span className="flex items-center gap-1"><i className="inline-block w-2 h-2 rounded-sm" style={{ background: 'var(--chart-1)' }}/>{d.ok}</span>
               <span className="flex items-center gap-1"><i className="inline-block w-2 h-2 rounded-sm" style={{ background: 'var(--warn)' }}/>{d.warn}</span>
               <span className="flex items-center gap-1"><i className="inline-block w-2 h-2 rounded-sm" style={{ background: 'var(--err)' }}/>{d.err}</span>
             </div>
@@ -143,11 +142,11 @@ export function Donut({
   return (
     <div className="flex items-center gap-5">
       <svg className="chart shrink-0" width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
-        {paths.map((p, i) => (<path key={i} d={p.d} fill={p.color} />))}
+        {paths.map((p, i) => (<path key={i} d={p.d} style={{ fill: p.color }} />))}
         {centerLabel && (
           <g textAnchor="middle">
-            <text x={cx} y={cy - 2} fill="var(--t1)" fontSize="20" fontWeight="700">{centerLabel}</text>
-            {centerSub && <text x={cx} y={cy + 14} fill="var(--t3)" fontSize="10">{centerSub}</text>}
+            <text x={cx} y={cy - 2} style={{ fill: 'var(--t1)', fontSize: 'var(--fs-2xl)', fontFamily: 'var(--font-mono)' }} fontWeight="500">{centerLabel}</text>
+            {centerSub && <text x={cx} y={cy + 14} style={{ fill: 'var(--t3)', fontSize: 'var(--fs-2xs)' }}>{centerSub}</text>}
           </g>
         )}
       </svg>
@@ -155,11 +154,11 @@ export function Donut({
         {slices.map((s, i) => {
           const pct = ((s.value / total) * 100).toFixed(1);
           return (
-            <div key={i} className="flex items-center gap-2 text-[11.5px]">
+            <div key={i} className="flex items-center gap-2 text-xs">
               <span className="w-2 h-2 rounded-sm shrink-0" style={{ background: s.color }} />
-              <span className="text-[var(--t2)] font-medium truncate">{s.label}</span>
-              <span className="num text-[var(--t3)] ml-auto pl-2">{pct}%</span>
-              <span className="num text-[var(--t1)] font-semibold w-9 text-right">{s.value}</span>
+              <span className="text-fg-2 font-medium truncate">{s.label}</span>
+              <span className="num text-fg-3 ml-auto pl-2">{pct}%</span>
+              <span className="mono text-fg w-9 text-right">{s.value}</span>
             </div>
           );
         })}
@@ -175,7 +174,7 @@ export function HorizontalBars({
   items: Array<{ label: string; color: string; ok: number; err: number; warn: number; total: number }>;
 }) {
   if (items.length === 0) {
-    return <p className="text-[12px] text-[var(--t3)]">No product data yet.</p>;
+    return <p className="text-sm text-fg-3">No product data yet.</p>;
   }
   const max = Math.max(1, ...items.map(i => i.total));
   return (
@@ -190,14 +189,14 @@ export function HorizontalBars({
             <div className="flex items-baseline justify-between mb-1">
               <div className="flex items-center gap-2">
                 <span className="w-1.5 h-1.5 rounded-sm" style={{ background: it.color }} />
-                <span className="text-[11.5px] font-medium text-[var(--t1)]">{it.label}</span>
+                <span className="text-xs font-medium text-fg">{it.label}</span>
               </div>
-              <span className="text-[11px] text-[var(--t3)] num">
-                {it.total} <span className="text-[var(--t4)]">·</span> {successRate.toFixed(0)}% ok
+              <span className="text-xs text-fg-3 mono">
+                {it.total} <span className="text-fg-4">·</span> {successRate.toFixed(0)}% ok
               </span>
             </div>
-            <div className="relative h-2 rounded-full bg-[var(--s3)] overflow-hidden">
-              <div className="absolute inset-y-0 left-0" style={{ width: `${okPct}%`, background: 'var(--accent)' }} />
+            <div className="relative h-1 rounded-full bg-line overflow-hidden">
+              <div className="absolute inset-y-0 left-0" style={{ width: `${okPct}%`, background: 'var(--chart-1)' }} />
               <div className="absolute inset-y-0" style={{ left: `${okPct}%`, width: `${warnPct}%`, background: 'var(--warn)' }} />
               <div className="absolute inset-y-0" style={{ left: `${okPct + warnPct}%`, width: `${errPct}%`, background: 'var(--err)' }} />
             </div>
@@ -224,12 +223,12 @@ export function Heatmap({
     <svg className="chart block" width={w + 30} height={h + 22} viewBox={`0 0 ${w + 30} ${h + 22}`}>
       {hours.map((hr, i) => (
         (i % 3 === 0) && <text key={hr} x={30 + i * (cell + gap) + cell / 2} y={10}
-                                textAnchor="middle" className="fill-[var(--t3)]" fontSize="9">{hr}</text>
+                                textAnchor="middle" className="fill-fg-3" style={{ fontSize: 'var(--fs-2xs)' }}>{hr}</text>
       ))}
       {days.map((day, di) => (
         <g key={day}>
           <text x={26} y={18 + di * (cell + gap) + cell / 2 + 3}
-                textAnchor="end" className="fill-[var(--t3)]" fontSize="9.5">{day}</text>
+                textAnchor="end" className="fill-fg-3" style={{ fontSize: 'var(--fs-2xs)' }}>{day}</text>
           {hours.map((hr, hi) => {
             const v = grid[di]?.[hi] || 0;
             const opacity = v === 0 ? 0.08 : Math.max(0.12, v / max);
@@ -237,7 +236,7 @@ export function Heatmap({
               <rect key={hr}
                     x={30 + hi * (cell + gap)} y={18 + di * (cell + gap)}
                     width={cell} height={cell} rx={3}
-                    fill="#5b8cff" fillOpacity={opacity}>
+                    style={{ fill: 'var(--chart-1)' }} fillOpacity={opacity}>
                 <title>{day} {hr}:00 — {v} jobs</title>
               </rect>
             );
@@ -255,12 +254,12 @@ export function MiniStackedBars({ days }: { days: DailyPoint[] }) {
     <div className="flex items-stretch gap-1.5 h-24">
       {days.map((d, i) => (
         <div key={i} className="flex-1 flex flex-col items-center gap-1.5 group h-full">
-          <div className="w-full flex-1 flex flex-col-reverse rounded-md overflow-hidden bg-[var(--s3)]" style={{ minHeight: 4 }}>
-            <div className="w-full" style={{ height: `${(d.ok / max) * 100}%`, background: 'var(--accent)' }} />
+          <div className="w-full flex-1 flex flex-col-reverse rounded-t-control overflow-hidden border-b border-line-2">
+            <div className="w-full" style={{ height: `${(d.ok / max) * 100}%`, background: 'var(--chart-1)' }} />
             <div className="w-full" style={{ height: `${(d.warn / max) * 100}%`, background: 'var(--warn)' }} />
             <div className="w-full" style={{ height: `${(d.err / max) * 100}%`, background: 'var(--err)' }} />
           </div>
-          <span className="text-[9px] text-[var(--t3)] num">{d.label}</span>
+          <span className="text-2xs text-fg-3 mono">{d.label}</span>
         </div>
       ))}
     </div>
@@ -268,18 +267,18 @@ export function MiniStackedBars({ days }: { days: DailyPoint[] }) {
 }
 
 // ─── Mini bar chart (single series, for Dashboard) ───────────────────────────
-export function MiniBars({ data, color = '#5b8cff' }: { data: { label: string; value: number }[]; color?: string }) {
+export function MiniBars({ data, color = 'var(--chart-1)' }: { data: { label: string; value: number }[]; color?: string }) {
   const max = Math.max(1, ...data.map(d => d.value));
   return (
     <div className="flex items-stretch gap-2 h-32 px-1">
       {data.map((d, i) => (
         <div key={i} className="flex-1 flex flex-col items-center gap-1.5 group h-full">
           <div className="w-full flex-1 flex items-end relative">
-            <div className="w-full rounded-md transition-colors group-hover:opacity-90"
+            <div className="w-full rounded-t-control transition-colors group-hover:opacity-90"
                  style={{ height: `${(d.value / max) * 100}%`, minHeight: 2, background: color }} />
-            <span className="opacity-0 group-hover:opacity-100 absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-semibold num text-[var(--t2)]">{d.value}</span>
+            <span className="opacity-0 group-hover:opacity-100 absolute -top-5 left-1/2 -translate-x-1/2 text-2xs font-semibold num text-fg-2">{d.value}</span>
           </div>
-          <span className="text-[9.5px] text-[var(--t3)] num truncate w-full text-center">{d.label}</span>
+          <span className="text-2xs text-fg-3 mono truncate w-full text-center">{d.label}</span>
         </div>
       ))}
     </div>
@@ -288,16 +287,16 @@ export function MiniBars({ data, color = '#5b8cff' }: { data: { label: string; v
 
 // ─── Product colour map (matches server.ts) ──────────────────────────────────
 export const PRODUCT_COLORS: Record<string, string> = {
-  'PDC':              '#5b8cff',
-  'ICP':              '#3f63f0',
-  'EL':               '#6366f1',
-  'FIRE':             '#dc2626',
-  'MV-COMBINATION':   '#7c3aed',
-  'MV-SWITCHGEAR':    '#a855f7',
-  'MV-TRANSFORMER':   '#c026d3',
-  'DPQ':              '#0891b2',
-  'CPS':              '#0d9488',
-  'EVCI':             '#059669',
-  'ENERGY STORAGE':   '#65a30d',
-  'EL & FIRE':        '#ca8a04',
+  'PDC':              'var(--cat-1)',
+  'ICP':              'var(--cat-2)',
+  'EL':               'var(--cat-3)',
+  'FIRE':             'var(--cat-4)',
+  'MV-COMBINATION':   'var(--cat-5)',
+  'MV-SWITCHGEAR':    'var(--cat-6)',
+  'MV-TRANSFORMER':   'var(--cat-7)',
+  'DPQ':              'var(--cat-8)',
+  'CPS':              'var(--cat-9)',
+  'EVCI':             'var(--cat-10)',
+  'ENERGY STORAGE':   'var(--cat-11)',
+  'EL & FIRE':        'var(--cat-12)',
 };

@@ -38,6 +38,10 @@ import {
   InlineCBUGenerator, InlineELPricer, ComposeModal, EmailDetailPanel, avatarColor, avatarInitials,
 } from './Inbox';
 import type { Mailbox, AttachmentInfo, EmailSummary, EmailDetail, FilterState } from './Inbox';
+import {
+  Button as UiButton, IconButton as UiIconButton,
+  AiMessage, UserMessage, AiThinking, AiComposer, AiPanelHeader, AiFileChip, CopyAction,
+} from '../ui';
 
 type InboxProps = { toast: ToastFn; setTab: (t: string) => void; onUnreadCount?: (n: number) => void };
 
@@ -165,21 +169,21 @@ function RBtn({ icon: Icon, label, onClick, active, disabled, title, danger, loc
   return (
     <button onClick={onClick} disabled={disabled} title={title || label} aria-pressed={active}
       className={cn(
-        'shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[12.5px] whitespace-nowrap transition-colors',
+        'shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-sm whitespace-nowrap transition-colors',
         'disabled:opacity-35 disabled:pointer-events-none',
-        active ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] font-medium'
-          : danger ? 'text-[var(--t1)] hover:bg-[var(--err-soft)] hover:text-[var(--err)]'
-          : 'text-[var(--t1)] hover:bg-[var(--s-hover)]',
+        active ? 'bg-accent-soft text-accent-text font-medium'
+          : danger ? 'text-fg hover:bg-err-soft hover:text-err'
+          : 'text-fg hover:bg-hover',
         locked && 'opacity-55',
       )}>
-      <Icon className={cn('w-4 h-4 shrink-0', !active && 'text-[var(--t2)]')} />
+      <Icon className={cn('w-4 h-4 shrink-0', !active && 'text-fg-2')} />
       {label}
-      {caret && <ChevronDown className="w-3 h-3 text-[var(--t3)]" />}
-      {locked && <Lock className="w-3 h-3 text-[var(--t3)]" />}
+      {caret && <ChevronDown className="w-3 h-3 text-fg-3" />}
+      {locked && <Lock className="w-3 h-3 text-fg-3" />}
     </button>
   );
 }
-const RSep = () => <span className="shrink-0 w-px h-6 bg-[var(--line-2)] mx-1.5" />;
+const RSep = () => <span className="shrink-0 w-px h-6 bg-line-2 mx-1.5" />;
 
 function IconBtn({ icon: Icon, title, onClick, active, className }: {
   icon: IconT; title: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; active?: boolean; className?: string;
@@ -187,7 +191,7 @@ function IconBtn({ icon: Icon, title, onClick, active, className }: {
   return (
     <button aria-label={title} title={title} onClick={onClick}
       className={cn('shrink-0 w-8 h-8 rounded-md flex items-center justify-center transition-colors',
-        active ? 'bg-[var(--accent-soft)] text-[var(--accent-text)]' : 'text-[var(--t2)] hover:bg-[var(--s-hover)] hover:text-[var(--t1)]', className)}>
+        active ? 'bg-accent-soft text-accent-text' : 'text-fg-2 hover:bg-hover hover:text-fg', className)}>
       <Icon className="w-4 h-4" />
     </button>
   );
@@ -216,9 +220,9 @@ function FloatingMenu({ x, y, onClose, children, minWidth = 220 }: {
   }, [onClose]);
   return (
     <>
-      <div className="fixed inset-0 z-[9990]" onClick={onClose} onContextMenu={e => { e.preventDefault(); onClose(); }} />
+      <div className="fixed inset-0 z-modal" onClick={onClose} onContextMenu={e => { e.preventDefault(); onClose(); }} />
       <div ref={ref} role="menu"
-        className="fixed z-[9991] py-1 rounded-lg bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] text-[12.5px] max-h-[80vh] overflow-y-auto"
+        className="fixed z-modal py-1 rounded-lg bg-surface ring-1 ring-inset ring-line-2 text-sm max-h-[80vh] overflow-y-auto"
         style={{ ...pos, minWidth, boxShadow: 'var(--pop-sh)' }}>
         {children}
       </div>
@@ -232,22 +236,22 @@ function MenuItem({ icon: Icon, label, onClick, danger, disabled, hint, checked 
   return (
     <button role="menuitem" disabled={disabled} onClick={onClick}
       className={cn('w-full flex items-center gap-2.5 h-8 px-3 text-left transition-colors disabled:opacity-35',
-        danger ? 'text-[var(--err)] hover:bg-[var(--err-soft)]' : 'text-[var(--t1)] hover:bg-[var(--s-hover)]')}>
+        danger ? 'text-err hover:bg-err-soft' : 'text-fg hover:bg-hover')}>
       {checked !== undefined
-        ? <Check className={cn('w-4 h-4 shrink-0', checked ? 'text-[var(--accent-text)]' : 'opacity-0')} />
-        : Icon ? <Icon className={cn('w-4 h-4 shrink-0', !danger && 'text-[var(--t2)]')} /> : <span className="w-4 shrink-0" />}
+        ? <Check className={cn('w-4 h-4 shrink-0', checked ? 'text-accent-text' : 'opacity-0')} />
+        : Icon ? <Icon className={cn('w-4 h-4 shrink-0', !danger && 'text-fg-2')} /> : <span className="w-4 shrink-0" />}
       <span className="flex-1 truncate">{label}</span>
-      {hint && <span className="text-[11px] text-[var(--t4)] pl-4">{hint}</span>}
+      {hint && <span className="text-xs text-fg-4 pl-4">{hint}</span>}
     </button>
   );
 }
-const MenuSep = () => <div className="my-1 h-px bg-[var(--line)]" />;
+const MenuSep = () => <div className="my-1 h-px bg-line" />;
 const MenuLabel = ({ children }: { children: React.ReactNode }) =>
-  <p className="px-3 pt-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--t4)]">{children}</p>;
+  <p className="px-3 pt-2 pb-1 text-2xs font-semibold uppercase tracking-wide text-fg-4">{children}</p>;
 
 function Avatar({ name, seed, size = 32 }: { name: string; seed: string; size?: number }) {
   return (
-    <span className="shrink-0 rounded-full flex items-center justify-center font-semibold text-white select-none"
+    <span className="shrink-0 rounded-full flex items-center justify-center font-semibold text-on-accent select-none"
       style={{ width: size, height: size, fontSize: Math.round(size * 0.36), background: avatarColor(seed || name) }}>
       {avatarInitials(name)}
     </span>
@@ -255,10 +259,10 @@ function Avatar({ name, seed, size = 32 }: { name: string; seed: string; size?: 
 }
 
 function attKind(a: AttachmentInfo): { Icon: IconT; tone: string } {
-  if (a.isPdf) return { Icon: FileText, tone: 'bg-red-500/10 text-red-600 dark:text-red-400' };
-  if (a.isImage || isImageFile(a.name)) return { Icon: ImageIcon, tone: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' };
-  if (isExcelFile(a.name)) return { Icon: FileSpreadsheet, tone: 'bg-green-600/10 text-green-700 dark:text-green-400' };
-  return { Icon: Paperclip, tone: 'bg-[var(--s3)] text-[var(--t2)]' };
+  if (a.isPdf) return { Icon: FileText, tone: 'bg-err-soft text-err ' };
+  if (a.isImage || isImageFile(a.name)) return { Icon: ImageIcon, tone: 'bg-ok-soft text-ok ' };
+  if (isExcelFile(a.name)) return { Icon: FileSpreadsheet, tone: 'bg-ok-soft text-ok ' };
+  return { Icon: Paperclip, tone: 'bg-subtle text-fg-2' };
 }
 
 // ─── Inline compose (reply / forward) ─────────────────────────────────────────
@@ -351,12 +355,11 @@ function InlineCompose({ detail, mode, onClose, toast, zoom }: {
   }
 
   return (
-    <div className="mx-6 mb-4 rounded-lg ring-1 ring-inset ring-[var(--line-2)] bg-[var(--s1)] overflow-hidden" style={{ boxShadow: 'var(--card-sh)' }}>
-      <div className="flex items-center gap-1 px-2 h-11 border-b border-[var(--line)] bg-[var(--s3)] overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
-        <button onClick={send} disabled={sending || !text.trim()} title="Send (Ctrl+Enter)"
-          className="shrink-0 inline-flex items-center gap-1.5 h-8 px-3.5 rounded-md text-[12.5px] font-semibold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-45 transition-colors">
+    <div className="mx-6 mb-4 rounded-lg ring-1 ring-inset ring-line-2 bg-surface overflow-hidden" style={{ boxShadow: 'var(--card-sh)' }}>
+      <div className="flex items-center gap-1 px-2 h-11 border-b border-line bg-subtle overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+        <UiButton tone="primary" size="md" className="shrink-0" onClick={send} disabled={sending || !text.trim()} hint="Send (Ctrl+Enter)">
           {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}Send
-        </button>
+        </UiButton>
         <RBtn icon={Trash2} label="Discard" onClick={onClose} />
         <RSep />
         <RBtn icon={WandSparkles} label={busy ? 'Working…' : 'AI'} caret locked={STRIPPED}
@@ -367,32 +370,32 @@ function InlineCompose({ detail, mode, onClose, toast, zoom }: {
           }} />
         {undo !== null && <RBtn icon={Undo2} label="Undo AI" onClick={() => { setText(undo); setUndo(null); }} />}
         <span className="flex-1" />
-        <span className="shrink-0 pr-2 text-[11.5px] text-[var(--t3)]">{mode === 'reply' ? 'Reply' : 'Forward'} · plain text</span>
+        <span className="shrink-0 pr-2 text-xs text-fg-3">{mode === 'reply' ? 'Reply' : 'Forward'} · plain text</span>
       </div>
-      <div className="flex items-center gap-3 px-4 min-h-10 py-1.5 border-b border-[var(--line)] text-[13px]">
-        <span className="w-12 shrink-0 text-[var(--t3)]">To</span>
+      <div className="flex items-center gap-3 px-4 min-h-10 py-1.5 border-b border-line text-base">
+        <span className="w-12 shrink-0 text-fg-3">To</span>
         {mode === 'reply' ? (
-          <span className="inline-flex items-center gap-2 h-7 pl-1 pr-2.5 rounded-full bg-[var(--s3)] text-[var(--t1)] min-w-0">
+          <span className="inline-flex items-center gap-2 h-7 pl-1 pr-2.5 rounded-full bg-subtle text-fg min-w-0">
             <Avatar name={detail.sender} seed={detail.senderEmail} size={22} />
             <span className="truncate">{detail.sender}</span>
-            <span className="text-[var(--t3)] truncate">{detail.senderEmail}</span>
+            <span className="text-fg-3 truncate">{detail.senderEmail}</span>
           </span>
         ) : (
           <>
             <input value={to} onChange={e => setTo(e.target.value)} list="ol-roster" placeholder="Name or email address"
-              className="flex-1 min-w-0 h-7 bg-transparent outline-none text-[var(--t1)] placeholder:text-[var(--t4)]" />
+              className="flex-1 min-w-0 h-7 bg-transparent outline-none text-fg placeholder:text-fg-4" />
             <datalist id="ol-roster">{roster.slice(0, 300).map((c, i) => <option key={i} value={c.email}>{c.name}</option>)}</datalist>
           </>
         )}
       </div>
-      <div className="flex items-center gap-3 px-4 h-10 border-b border-[var(--line)] text-[13px]">
-        <span className="w-12 shrink-0 text-[var(--t3)]">Subject</span>
-        <span className="truncate text-[var(--t2)]">{mode === 'reply' ? 'RE: ' : 'FW: '}{detail.subject}</span>
+      <div className="flex items-center gap-3 px-4 h-10 border-b border-line text-base">
+        <span className="w-12 shrink-0 text-fg-3">Subject</span>
+        <span className="truncate text-fg-2">{mode === 'reply' ? 'RE: ' : 'FW: '}{detail.subject}</span>
       </div>
       <textarea ref={taRef} value={text} onChange={e => setText(e.target.value)} rows={8}
         onKeyDown={e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); void send(); } }}
         placeholder={mode === 'reply' ? 'Write your reply…' : 'Add a message (optional)…'}
-        className="block w-full px-4 py-3 bg-transparent resize-y outline-none leading-relaxed text-[var(--t1)] placeholder:text-[var(--t4)] font-sans"
+        className="block w-full px-4 py-3 bg-transparent resize-y outline-none leading-relaxed text-fg placeholder:text-fg-4 font-sans"
         style={{ fontSize: 14 * Math.min(zoom, 1.3), minHeight: 160 }} />
       {menu && (
         <FloatingMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
@@ -505,114 +508,85 @@ function VectorSummary({ detail, toast, setAppTab }: { detail: EmailDetail; toas
 
   return (
     <div className="flex flex-col min-h-full">
-      <div className="flex-1 px-4 py-4 space-y-4">
+      <div className="flex-1 px-4 py-4 flex flex-col gap-5">
         {!analysis && (
-          <div className="rounded-lg bg-[var(--s3)] p-4">
-            <p className="text-[13px] font-medium text-[var(--t1)]">Summarize this email</p>
-            <p className="mt-1 text-[12px] text-[var(--t3)] leading-relaxed">
-              Reads the text only. Tick a picture or PDF below if the AI needs to see it.
-            </p>
-            <button onClick={() => summarize()} disabled={busy}
-              className="mt-3 inline-flex items-center gap-1.5 h-8 px-3.5 rounded-md text-[12.5px] font-semibold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-60">
-              {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
-              {busy ? 'Reading…' : 'Summarize'}
-            </button>
-          </div>
+          <section className="rounded-panel border border-line bg-surface overflow-hidden">
+            <AiPanelHeader title="Summarize this email"
+              sub="Reads the text only. Tick a picture or PDF below if Vector needs to see it." />
+            <div className="p-3">
+              <UiButton tone="primary" size="md" onClick={() => summarize()} disabled={busy}>
+                {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                {busy ? 'Reading…' : 'Summarize'}
+              </UiButton>
+            </div>
+          </section>
         )}
 
         {analysis && (
-          <section>
-            <div className="flex items-center gap-1 mb-2">
-              <p className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--t3)]">Summary</p>
-              {busy && <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--t3)]" />}
-              <IconBtn icon={ThumbsUp} title="Helpful" onClick={() => feedback('up')} active={liked === 'up'} className="w-7 h-7" />
-              <IconBtn icon={ThumbsDown} title="Not helpful" onClick={() => feedback('down')} active={liked === 'down'} className="w-7 h-7" />
-              <IconBtn icon={RefreshCw} title="Summarize again" onClick={() => summarize(true)} className="w-7 h-7" />
-            </div>
-            <div className="text-[13px]"><Md text={analysis} /></div>
-          </section>
+          <AiMessage badge={busy ? <Loader2 className="w-3.5 h-3.5 animate-spin text-fg-3" /> : undefined}
+            actions={<>
+              <CopyAction text={analysis} />
+              <UiIconButton size="xs" icon={ThumbsUp} label="Helpful" onClick={() => feedback('up')} disabled={!!liked && liked !== 'up'} />
+              <UiIconButton size="xs" icon={ThumbsDown} label="Not helpful" onClick={() => feedback('down')} disabled={!!liked && liked !== 'down'} />
+              <UiIconButton size="xs" icon={RefreshCw} label="Summarize again" onClick={() => summarize(true)} disabled={busy} />
+            </>}>
+            <Md text={analysis} />
+          </AiMessage>
         )}
 
         {readable.length > 0 && (
           <section>
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--t3)] mb-2">Let the AI read</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-fg-3 mb-2">Let Vector read</p>
             <div className="flex flex-wrap gap-1.5">
-              {readable.map(a => {
-                const on = included.has(a.index);
-                return (
-                  <button key={a.index} title={on ? 'The AI reads this — click to exclude' : 'Click so the AI reads this'}
-                    onClick={() => setIncluded(prev => { const n = new Set(prev); n.has(a.index) ? n.delete(a.index) : n.add(a.index); return n; })}
-                    className={cn('inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[12px] ring-1 ring-inset max-w-full transition-colors',
-                      on ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] ring-[var(--accent-line)]'
-                         : 'text-[var(--t2)] ring-[var(--line-2)] hover:bg-[var(--s-hover)]')}>
-                    {on ? <Check className="w-3.5 h-3.5 shrink-0" /> : a.isPdf ? <FileText className="w-3.5 h-3.5 shrink-0" /> : <ImageIcon className="w-3.5 h-3.5 shrink-0" />}
-                    <span className="truncate max-w-[180px]">{a.name}</span>
-                  </button>
-                );
-              })}
+              {readable.map(a => (
+                <AiFileChip key={a.index} name={a.name} on={included.has(a.index)}
+                  kind={a.isPdf ? 'file' : 'image'}
+                  onToggle={() => setIncluded(prev => { const n = new Set(prev); n.has(a.index) ? n.delete(a.index) : n.add(a.index); return n; })} />
+              ))}
             </div>
             {analysis && included.size > 0 && (
-              <button onClick={() => summarize(true)} disabled={busy}
-                className="mt-2 text-[12px] font-medium text-[var(--accent-text)] hover:underline">
-                Summarize again with {plural(included.size, 'file')}
-              </button>
+              <UiButton tone="ghost" size="xs" className="mt-2" onClick={() => summarize(true)} disabled={busy}>
+                <RefreshCw className="w-3 h-3" />Summarize again with {plural(included.size, 'file')}
+              </UiButton>
             )}
           </section>
         )}
 
         {analysis && (
-          <section className="pt-3 border-t border-[var(--line)]">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--t3)] mb-2">To-Do board</p>
+          <section className="pt-3 border-t border-line">
+            <p className="text-xs font-semibold uppercase tracking-wide text-fg-3 mb-2">To-Do board</p>
             {todo ? (
-              <div className="flex items-center gap-2 text-[12.5px] text-[var(--t2)]">
-                <CheckCircle2 className="w-4 h-4 text-[var(--ok)] shrink-0" />
+              <div className="flex items-center gap-2 text-sm text-fg-2">
+                <CheckCircle2 className="w-4 h-4 text-ok shrink-0" />
                 <span className="flex-1">Added as {todo === 'direct' ? 'yours to finish' : todo === 'needs_info' ? 'waiting on info' : 'one for the team'}</span>
-                <button onClick={() => setAppTab('Todo')} className="font-medium text-[var(--accent-text)] hover:underline">Open</button>
+                <UiButton tone="ghost" size="xs" onClick={() => setAppTab('Todo')}>Open</UiButton>
               </div>
             ) : (
               <div className="flex flex-wrap gap-1.5">
                 {([['direct', 'I can do this'], ['needs_info', 'Needs info'], ['needs_team', 'Needs the team']] as Array<[TodoBucket, string]>).map(([b, label]) => (
-                  <button key={b} onClick={() => addTodo(b)} disabled={addingTodo}
-                    className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md text-[12px] text-[var(--t1)] ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s-hover)] disabled:opacity-50">
-                    <Plus className="w-3.5 h-3.5 text-[var(--t3)]" />{label}
-                  </button>
+                  <UiButton tone="secondary" key={b} onClick={() => addTodo(b)} disabled={addingTodo}>
+                    <Plus className="w-3.5 h-3.5 text-fg-3" />{label}
+                  </UiButton>
                 ))}
               </div>
             )}
           </section>
         )}
 
-        {chat.length > 0 && (
-          <section className="pt-3 border-t border-[var(--line)] space-y-2">
-            {chat.map((m, i) => (
-              <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
-                <div className={cn('max-w-[92%] px-3 py-2 rounded-xl text-[12.5px]',
-                  m.role === 'user' ? 'bg-[var(--accent)] text-white rounded-br-sm' : 'bg-[var(--s3)] text-[var(--t1)] rounded-bl-sm')}>
-                  {m.role === 'ai' ? <Md text={m.text} /> : m.text}
-                </div>
-              </div>
-            ))}
-            {asking && (
-              <div className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[var(--s3)] text-[12.5px] text-[var(--t3)]">
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />Thinking…
-              </div>
-            )}
+        {(chat.length > 0 || asking) && (
+          <section className="pt-4 border-t border-line flex flex-col gap-5">
+            {chat.map((m, i) => m.role === 'user'
+              ? <UserMessage key={i} text={m.text} />
+              : <AiMessage key={i} actions={<CopyAction text={m.text} />}><Md text={m.text} /></AiMessage>)}
+            {asking && <AiThinking label="Reading the email…" />}
             <div ref={endRef} />
           </section>
         )}
       </div>
 
-      <div className="sticky bottom-0 px-3 py-2.5 bg-[var(--s1)] border-t border-[var(--line)]">
-        <div className="flex items-center gap-2 h-9 pl-3 pr-1 rounded-lg bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] focus-within:ring-[var(--accent-line)]">
-          <input value={q} onChange={e => setQ(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void ask(); } }}
-            placeholder="Ask about this email…"
-            className="flex-1 min-w-0 bg-transparent outline-none text-[13px] text-[var(--t1)] placeholder:text-[var(--t4)]" />
-          <button aria-label="Ask" onClick={ask} disabled={!q.trim() || asking}
-            className="w-7 h-7 rounded-md flex items-center justify-center bg-[var(--accent)] text-white disabled:opacity-40">
-            <Send className="w-3.5 h-3.5" />
-          </button>
-        </div>
+      <div className="sticky bottom-0 px-3 py-2.5 bg-surface border-t border-line">
+        <AiComposer size="sm" value={q} onChange={setQ} onSubmit={() => void ask()} loading={asking}
+          placeholder="Ask Vector about this email…" maxRows={5} />
       </div>
     </div>
   );
@@ -979,20 +953,20 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
 
   // ── Early states ───────────────────────────────────────────────────────────
   if (available === null) {
-    return <div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-[var(--t3)]" /></div>;
+    return <div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-fg-3" /></div>;
   }
   if (available === false) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3 px-8 text-center">
-        <Mail className="w-8 h-8 text-[var(--warn)]" />
-        <p className="text-[15px] font-semibold text-[var(--t1)]">Outlook not available</p>
-        <p className="text-[13px] text-[var(--t3)] max-w-sm">Make sure Classic Outlook is open. {_oError}</p>
+        <Mail className="w-8 h-8 text-warn" />
+        <p className="text-lg font-semibold text-fg">Outlook not available</p>
+        <p className="text-base text-fg-3 max-w-sm">Make sure Classic Outlook is open. {_oError}</p>
         <div className="flex gap-2">
           <button onClick={() => { _oAvailable = null; setAvailable(null); api.outlookStatus().then(r => { _oAvailable = r.available; setAvailable(r.available); if (r.available) void loadMailboxes(); }).catch(() => { _oAvailable = false; setAvailable(false); }); }}
-            className="inline-flex items-center gap-2 h-8 px-4 rounded-md text-[13px] font-medium bg-[var(--t1)] text-[var(--bg)]">
+            className="inline-flex items-center gap-2 h-8 px-4 rounded-md text-base font-medium bg-fg text-page">
             <RefreshCw className="w-4 h-4" />Retry
           </button>
-          <button onClick={onSwitchLayout} className="h-8 px-4 rounded-md text-[13px] text-[var(--t2)] ring-1 ring-inset ring-[var(--line-2)]">Classic layout</button>
+          <UiButton tone="secondary" size="md" onClick={onSwitchLayout}>Classic layout</UiButton>
         </div>
       </div>
     );
@@ -1067,7 +1041,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
           <RBtn icon={Rows3} label="Preview text" active={showPreview} onClick={() => setShowPreview(!showPreview)} />
           <RSep />
           <IconBtn icon={AArrowDown} title="Smaller text" onClick={() => setZoom(zoom - 0.1)} />
-          <button onClick={() => setZoom(1.15)} title="Reset text size" className="shrink-0 h-8 px-1.5 rounded-md text-[12.5px] tabular-nums text-[var(--t1)] hover:bg-[var(--s-hover)]">{Math.round(zoom * 100)}%</button>
+          <UiButton tone="ghost" size="md" className="shrink-0" onClick={() => setZoom(1.15)} hint="Reset text size">{Math.round(zoom * 100)}%</UiButton>
           <IconBtn icon={AArrowUp} title="Larger text" onClick={() => setZoom(zoom + 0.1)} />
           <RSep />
           <RBtn icon={Sparkles} label="Vector pane" active={!!taskOpen} onClick={() => (taskOpen ? setTaskTabRaw('') : openTask(STRIPPED ? 'history' : 'summary'))} />
@@ -1083,26 +1057,26 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
     if (!selectedId) {
       return (
         <div className="h-full flex flex-col items-center justify-center gap-3 text-center px-6">
-          <Mail className="w-10 h-10 text-[var(--t4)]" strokeWidth={1.25} />
-          <p className="text-[14px] font-medium text-[var(--t2)]">Select an item to read</p>
-          <p className="text-[12px] text-[var(--t4)]">↑ ↓ to move · Ctrl+R reply · Del delete · Ctrl+E search</p>
+          <Mail className="w-10 h-10 text-fg-4" strokeWidth={1.25} />
+          <p className="text-lg font-medium text-fg-2">Select an item to read</p>
+          <p className="text-sm text-fg-4">↑ ↓ to move · Ctrl+R reply · Del delete · Ctrl+E search</p>
         </div>
       );
     }
     if (!liveDetail) {
-      return <div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" /></div>;
+      return <div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-fg-4" /></div>;
     }
     const d = liveDetail;
     const files  = d.attachments.filter(a => !a.isInline);
     const inline = d.attachments.filter(a => a.isInline);
     const shownAtts = showInline ? d.attachments : files;
     return (
-      <div className="h-full overflow-y-auto bg-[var(--s1)]">
+      <div className="h-full overflow-y-auto bg-surface">
         <header className="px-6 pt-5 pb-4">
           <div className="flex items-start gap-3">
-            <h1 className="flex-1 min-w-0 text-[19px] leading-snug font-semibold text-[var(--t1)] break-words">{d.subject || '(no subject)'}</h1>
+            <h1 className="flex-1 min-w-0 text-2xl leading-snug font-semibold text-fg break-words">{d.subject || '(no subject)'}</h1>
             {categories[d.entryId] && (
-              <span className="shrink-0 mt-1 px-2 h-6 inline-flex items-center rounded text-[11.5px] bg-[var(--violet-soft)] text-[var(--violet)]">{categories[d.entryId]}</span>
+              <span className="shrink-0 mt-1 px-2 h-6 inline-flex items-center rounded text-xs bg-ai-soft text-ai">{categories[d.entryId]}</span>
             )}
             {!inPopout && <IconBtn icon={Maximize2} title="Open in its own window (Enter)" onClick={() => setPopout(true)} />}
           </div>
@@ -1111,10 +1085,10 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
             <div className="flex-1 min-w-0">
               {/* Name and address on their own lines — side by side, a narrow
                   reading pane (Vector pane open) cut the name to "Steve…". */}
-              <p className="text-[14px] font-semibold text-[var(--t1)] truncate">{d.sender}</p>
-              <p className="text-[12.5px] text-[var(--t3)] truncate" title={d.senderEmail}>{d.senderEmail}</p>
-              {d.to && <p className="text-[12.5px] text-[var(--t2)] truncate" title={d.to}><span className="text-[var(--t3)]">To:</span> {d.to}</p>}
-              {d.cc && <p className="text-[12.5px] text-[var(--t2)] truncate" title={d.cc}><span className="text-[var(--t3)]">Cc:</span> {d.cc}</p>}
+              <p className="text-lg font-semibold text-fg truncate">{d.sender}</p>
+              <p className="text-sm text-fg-3 truncate" title={d.senderEmail}>{d.senderEmail}</p>
+              {d.to && <p className="text-sm text-fg-2 truncate" title={d.to}><span className="text-fg-3">To:</span> {d.to}</p>}
+              {d.cc && <p className="text-sm text-fg-2 truncate" title={d.cc}><span className="text-fg-3">Cc:</span> {d.cc}</p>}
             </div>
             <div className="shrink-0 flex flex-col items-end gap-1">
               <div className="flex items-center gap-0.5">
@@ -1123,7 +1097,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
                 <IconBtn icon={MoreHorizontal} title="More actions"
                   onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ kind: 'row', id: d.entryId, x: r.right - 220, y: r.bottom + 4 }); }} />
               </div>
-              <span className="text-[12px] text-[var(--t3)] whitespace-nowrap">{fullDate(d.received)}</span>
+              <span className="mono text-xs text-fg-3 whitespace-nowrap">{fullDate(d.received)}</span>
             </div>
           </div>
 
@@ -1135,18 +1109,18 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
                   <button key={a.index} onClick={() => openAttachment(a)}
                     draggable onDragStart={e => { e.dataTransfer.setData('vector/attachment', JSON.stringify({ attIndex: a.index, attName: a.name, isImage: a.isImage || isImageFile(a.name) })); e.dataTransfer.effectAllowed = 'copy'; }}
                     title={`${a.name} · ${fmtSize(a.size)} — click to open, drag into the Pricer`}
-                    className="w-[220px] max-w-full h-12 flex items-center gap-2.5 pl-2 pr-3 rounded-md ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s-hover)] text-left transition-colors">
+                    className="w-56 max-w-full h-12 flex items-center gap-2.5 pl-2 pr-3 rounded-md ring-1 ring-inset ring-line-2 hover:bg-hover text-left transition-colors">
                     <span className={cn('w-8 h-8 shrink-0 rounded flex items-center justify-center', k.tone)}><k.Icon className="w-4 h-4" /></span>
                     <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] text-[var(--t1)] truncate">{a.name}</span>
-                      <span className="block text-[11px] text-[var(--t3)]">{fmtSize(a.size)}</span>
+                      <span className="block text-sm text-fg truncate">{a.name}</span>
+                      <span className="block text-xs text-fg-3">{fmtSize(a.size)}</span>
                     </span>
                   </button>
                 );
               })}
               {inline.length > 0 && (
                 <button onClick={() => setShowInline(s => !s)}
-                  className="h-12 px-3 rounded-md text-[12px] text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s-hover)]">
+                  className="h-12 px-3 rounded-md text-sm text-fg-3 hover:text-fg hover:bg-hover">
                   {showInline ? 'Hide inline images' : `+ ${plural(inline.length, 'inline image')}`}
                 </button>
               )}
@@ -1156,7 +1130,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
 
         {compose && <InlineCompose key={`${d.entryId}:${compose}`} detail={d} mode={compose} onClose={() => setCompose(null)} toast={toast} zoom={zoom} />}
 
-        <div className="border-t border-[var(--line)]">
+        <div className="border-t border-line">
           {d.htmlBody
             ? <EmailBodyFrame key={d.entryId} html={d.htmlBody} entryId={d.entryId} attachments={d.attachments} onImageOpen={setLightbox} zoom={zoom} />
             : <PlainBody text={d.body} zoom={zoom} />}
@@ -1170,18 +1144,18 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
   const listBody = (
     <div ref={listScroll} role="listbox" aria-label="Messages" className="flex-1 min-h-0 overflow-y-auto">
       {(loading && !emails.length && !deepActive) || deepLoading ? (
-        <div className="h-full flex flex-col items-center justify-center gap-2 text-[12.5px] text-[var(--t3)] px-6 text-center">
-          <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" />
+        <div className="h-full flex flex-col items-center justify-center gap-2 text-sm text-fg-3 px-6 text-center">
+          <Loader2 className="w-5 h-5 animate-spin text-fg-4" />
           {deepLoading ? 'Searching the quote folders…' : 'Loading messages…'}
         </div>
       ) : displayEmails.length === 0 ? (
         <div className="h-full flex flex-col items-center justify-center gap-2 px-6 text-center">
-          <InboxIcon className="w-9 h-9 text-[var(--t4)]" strokeWidth={1.25} />
-          <p className="text-[13px] text-[var(--t2)]">
+          <InboxIcon className="w-9 h-9 text-fg-4" strokeWidth={1.25} />
+          <p className="text-base text-fg-2">
             {deepActive ? 'Nothing in the quote folders matches' : q || pills.length ? 'No loaded messages match' : view === 'inbox' ? 'All caught up' : `Nothing in ${VIEW_LABEL[view]}`}
           </p>
           {!deepActive && (q.trim().length >= 2 || pills.length > 0) && (
-            <button onClick={runSearch} className="text-[12.5px] font-medium text-[var(--accent-text)] hover:underline">Search the quote folders</button>
+            <button onClick={runSearch} className="text-sm font-medium text-accent-text hover:underline">Search the quote folders</button>
           )}
         </div>
       ) : (
@@ -1196,27 +1170,27 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
             return (
               <React.Fragment key={e.entryId}>
                 {head && (
-                  <div className="sticky top-0 z-[1] flex items-center h-8 px-4 text-[12px] font-semibold text-[var(--t2)] bg-[var(--s1)] border-b border-[var(--line)]">{head}</div>
+                  <div className="sticky top-0 z-sticky flex items-center h-8 px-4 text-sm font-semibold text-fg-2 bg-surface border-b border-line">{head}</div>
                 )}
                 <div role="option" aria-selected={sel} data-entry-id={e.entryId}
                   draggable onDragStart={ev => { ev.dataTransfer.setData('vector/email-row', e.entryId); ev.dataTransfer.effectAllowed = 'copyMove'; }}
                   onClick={() => { setSelected(e.entryId); if (readingPos === 'off') setPopout(true); }}
                   onDoubleClick={() => { setSelected(e.entryId); setPopout(true); }}
                   onContextMenu={ev => { ev.preventDefault(); setSelected(e.entryId); setMenu({ kind: 'row', id: e.entryId, x: ev.clientX, y: ev.clientY }); }}
-                  className={cn('group relative flex gap-3 pl-4 pr-3 border-b border-[var(--line)] cursor-default select-none',
+                  className={cn('group relative flex gap-3 pl-4 pr-3 border-b border-line cursor-default select-none',
                     density === 'compact' ? 'py-1.5' : 'py-2.5',
-                    sel ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--s-hover)]')}>
-                  {e.unread && <span className="absolute left-0 inset-y-0 w-[3px] bg-[var(--accent)]" />}
+                    sel ? 'bg-accent-soft' : 'hover:bg-hover')}>
+                  {e.unread && <span className="absolute left-0 inset-y-0 w-0.5 bg-signal" />}
                   {density === 'comfortable' && <span className="mt-0.5"><Avatar name={e.sender} seed={e.senderEmail} size={32} /></span>}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 min-w-0 h-5">
-                      <span className={cn('flex-1 min-w-0 truncate text-[13px] text-[var(--t1)]', e.unread && 'font-semibold')}>
+                      <span className={cn('flex-1 min-w-0 truncate text-base text-fg', e.unread && 'font-semibold')}>
                         <Highlight text={e.sender} terms={hlTerms} mode={hlMode} />
                       </span>
-                      <span className="shrink-0 flex items-center gap-1.5 text-[var(--t3)] group-hover:hidden">
+                      <span className="shrink-0 flex items-center gap-1.5 text-fg-3 group-hover:hidden">
                         {hasFiles && <Paperclip className="w-3.5 h-3.5" />}
-                        {fl && <Flag className="w-3.5 h-3.5 text-[var(--err)] fill-current" />}
-                        <span className={cn('text-[11.5px] tabular-nums', e.unread && 'text-[var(--accent-text)] font-semibold')}>{rowDate(e.received)}</span>
+                        {fl && <Flag className="w-3.5 h-3.5 text-err fill-current" />}
+                        <span className={cn('mono text-2xs', e.unread ? 'text-accent-text' : 'text-fg-3')}>{rowDate(e.received)}</span>
                       </span>
                       <span className="shrink-0 hidden group-hover:flex items-center">
                         {([
@@ -1226,23 +1200,23 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
                         ] as Array<[IconT, string, () => void, boolean]>).map(([I, label, fn, on]) => (
                           <button key={label} aria-label={label} title={label}
                             onClick={ev => { ev.stopPropagation(); fn(); }}
-                            className={cn('w-6 h-6 rounded flex items-center justify-center hover:bg-[var(--s3)]',
-                              on ? 'text-[var(--err)]' : 'text-[var(--t2)] hover:text-[var(--t1)]')}>
+                            className={cn('w-6 h-6 rounded flex items-center justify-center hover:bg-subtle',
+                              on ? 'text-err' : 'text-fg-2 hover:text-fg')}>
                             <I className="w-3.5 h-3.5" />
                           </button>
                         ))}
                       </span>
                     </div>
-                    <p className={cn('truncate text-[12.5px]', e.unread ? 'text-[var(--accent-text)] font-semibold' : 'text-[var(--t1)]')}>
+                    <p className={cn('truncate text-sm', e.unread ? 'text-accent-text font-semibold' : 'text-fg')}>
                       <Highlight text={e.subject || '(no subject)'} terms={hlTerms} mode={hlMode} />
                     </p>
                     {showPreview && density === 'comfortable' && e.bodyPreview && (
-                      <p className="truncate text-[12px] text-[var(--t3)]">{e.bodyPreview}</p>
+                      <p className="truncate text-sm text-fg-3">{e.bodyPreview}</p>
                     )}
                     {(categories[e.entryId] || (deepActive && e.folder)) && (
                       <div className="mt-1 flex items-center gap-1.5">
-                        {categories[e.entryId] && <span className="px-1.5 h-5 inline-flex items-center rounded text-[11px] bg-[var(--violet-soft)] text-[var(--violet)]">{categories[e.entryId]}</span>}
-                        {deepActive && e.folder && <span className="px-1.5 h-5 inline-flex items-center rounded text-[11px] bg-[var(--s3)] text-[var(--t3)] truncate">{e.folder}</span>}
+                        {categories[e.entryId] && <span className="px-1.5 h-5 inline-flex items-center rounded text-xs bg-ai-soft text-ai">{categories[e.entryId]}</span>}
+                        {deepActive && e.folder && <span className="px-1.5 h-5 inline-flex items-center rounded text-xs bg-subtle text-fg-3 truncate">{e.folder}</span>}
                       </div>
                     )}
                   </div>
@@ -1251,10 +1225,9 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
             );
           })}
           {!deepActive && hasMore && (
-            <button onClick={() => { const n = limit + 50; setLimit(n); void loadEmails({ force: true, limit: n }); }} disabled={loading}
-              className="w-full h-10 text-[12.5px] font-medium text-[var(--accent-text)] hover:bg-[var(--s-hover)] disabled:opacity-50">
+            <UiButton tone="ghost" size="lg" className="w-full" onClick={() => { const n = limit + 50; setLimit(n); void loadEmails({ force: true, limit: n }); }} disabled={loading}>
               {loading ? 'Loading…' : 'Load older messages'}
-            </button>
+            </UiButton>
           )}
         </>
       )}
@@ -1263,26 +1236,26 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
 
   const listPane = (
     <section ref={listRef as React.RefObject<HTMLElement>}
-      className={cn('min-w-0 min-h-0 flex flex-col bg-[var(--s1)]', readingPos === 'off' ? 'flex-1' : 'shrink-0')}
+      className={cn('min-w-0 min-h-0 flex flex-col bg-surface', readingPos === 'off' ? 'flex-1' : 'shrink-0')}
       style={readingPos === 'right' ? { width: listW } : readingPos === 'bottom' ? { height: listH } : undefined}>
-      <div className="shrink-0 flex items-center gap-2 pl-4 pr-2 h-11 border-b border-[var(--line)]">
+      <div className="shrink-0 flex items-center gap-2 pl-4 pr-2 h-11 border-b border-line">
         <div className="flex-1 min-w-0 flex items-baseline gap-2">
-          <h2 className="text-[15px] font-semibold text-[var(--t1)] truncate">{deepActive ? 'Search results' : VIEW_LABEL[view]}</h2>
-          <span className="text-[12px] text-[var(--t3)] truncate">{deepActive ? (deep ? plural(deep.total, 'result') : '') : boxName}</span>
+          <h2 className="text-lg font-semibold text-fg truncate">{deepActive ? 'Search results' : VIEW_LABEL[view]}</h2>
+          <span className="text-sm text-fg-3 truncate">{deepActive ? (deep ? plural(deep.total, 'result') : '') : boxName}</span>
         </div>
         {deepActive ? (
-          <button onClick={clearSearch} className="shrink-0 h-8 px-2.5 rounded-md text-[12.5px] font-medium text-[var(--accent-text)] hover:bg-[var(--s-hover)]">Back to {VIEW_LABEL[view]}</button>
+          <UiButton tone="ghost" size="md" className="shrink-0" onClick={clearSearch}>Back to {VIEW_LABEL[view]}</UiButton>
         ) : (
           <RBtn icon={SlidersHorizontal} label={view === 'inbox' ? 'All' : VIEW_LABEL[view]} caret
             onClick={e => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ kind: 'filter', id: '', x: r.left, y: r.bottom + 4 }); }} />
         )}
       </div>
       {pills.length > 0 && (
-        <div className="shrink-0 flex flex-wrap items-center gap-1.5 px-4 py-2 border-b border-[var(--line)]">
+        <div className="shrink-0 flex flex-wrap items-center gap-1.5 px-4 py-2 border-b border-line">
           {pills.map(p => (
             <button key={p.key} onClick={() => setFilters(p.patch)} title="Remove this filter"
-              className="inline-flex items-center gap-1 h-6 pl-2.5 pr-1.5 rounded-full text-[11.5px] bg-[var(--accent-soft)] text-[var(--accent-text)]">
-              <span className="truncate max-w-[160px]">{p.label}</span><X className="w-3 h-3" />
+              className="inline-flex items-center gap-1 h-6 pl-2.5 pr-1.5 rounded-full text-xs bg-accent-soft text-accent-text">
+              <span className="truncate max-w-40">{p.label}</span><X className="w-3 h-3" />
             </button>
           ))}
         </div>
@@ -1313,50 +1286,50 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
   const menuEmail = menu ? (emails.find(e => e.entryId === menu.id) || deep?.list.find(e => e.entryId === menu.id) || null) : null;
 
   return (
-    <div ref={rootRef} className="h-full min-h-0 flex flex-col bg-[var(--s1)] text-[var(--t1)]">
+    <div ref={rootRef} className="h-full min-h-0 flex flex-col bg-surface text-fg">
       {/* ── Ribbon tabs + search ─────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-4 px-3 h-11 border-b border-[var(--line)] bg-[var(--s1)]">
+      <div className="shrink-0 flex items-center gap-4 px-3 h-11 border-b border-line bg-surface">
         <div role="tablist" aria-label="Ribbon" className="flex items-center">
           {([['home', 'Home'], ['ai', 'Vector AI'], ['tools', 'Tools'], ['view', 'View']] as Array<[RibbonTab, string]>).map(([id, label]) => (
             <button key={id} role="tab" aria-selected={ribbon === id} onClick={() => setRibbon(id)}
-              className={cn('relative h-11 px-3 text-[13px] transition-colors',
+              className={cn('relative h-11 px-3 text-base transition-colors',
                 ribbon === id
-                  ? 'font-semibold text-[var(--t1)] after:absolute after:left-3 after:right-3 after:bottom-0 after:h-[3px] after:rounded-t after:bg-[var(--accent)]'
-                  : 'text-[var(--t2)] hover:text-[var(--t1)]')}>
-              {id === 'ai' && <Sparkles className="inline w-3.5 h-3.5 mr-1 -mt-0.5 text-[var(--accent-text)]" />}{label}
+                  ? 'font-semibold text-fg after:absolute after:left-3 after:right-3 after:bottom-0 after:h-0.5 after:rounded-t after:bg-signal'
+                  : 'font-medium text-fg-tab hover:text-fg')}>
+              {id === 'ai' && <Sparkles className="inline w-3.5 h-3.5 mr-1 -mt-0.5 text-accent-text" />}{label}
             </button>
           ))}
         </div>
         <div className="flex-1" />
-        <div className="relative w-[min(460px,42%)]">
-          <div className="flex items-center gap-2 h-8 pl-2.5 pr-1 rounded-md bg-[var(--s3)] ring-1 ring-inset ring-[var(--line)] focus-within:bg-[var(--s1)] focus-within:ring-[var(--accent-line)]">
-            <Search className="w-4 h-4 text-[var(--t3)] shrink-0" />
+        <div className="relative w-[min(var(--search-w),42%)]">
+          <div className="flex items-center gap-2 h-8 pl-2.5 pr-1 rounded-md bg-subtle ring-1 ring-inset ring-line focus-within:bg-surface focus-within:ring-accent-line">
+            <Search className="w-4 h-4 text-fg-3 shrink-0" />
             <input ref={searchRef} value={q} onChange={e => setQ(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter') { e.preventDefault(); void runSearch(); }
                 if (e.key === 'Escape') { e.preventDefault(); clearSearch(); (e.target as HTMLInputElement).blur(); }
               }}
               placeholder="Search — type to filter, Enter searches the quote folders"
-              className="flex-1 min-w-0 bg-transparent outline-none text-[13px] text-[var(--t1)] placeholder:text-[var(--t4)]" />
+              className="flex-1 min-w-0 bg-transparent outline-none text-base text-fg placeholder:text-fg-4" />
             {(q || deepActive) && (
-              <button aria-label="Clear search" onClick={clearSearch} className="w-6 h-6 rounded flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]"><X className="w-3.5 h-3.5" /></button>
+              <button aria-label="Clear search" onClick={clearSearch} className="w-6 h-6 rounded flex items-center justify-center text-fg-3 hover:text-fg"><X className="w-3.5 h-3.5" /></button>
             )}
             <button aria-label="Search filters" title="Filters — sender, date, folder, attachments, read state"
               onClick={() => setShowFilters(s => !s)}
-              className={cn('h-6 px-1.5 rounded flex items-center gap-1 text-[11.5px]',
-                pills.length || showFilters ? 'bg-[var(--accent-soft)] text-[var(--accent-text)]' : 'text-[var(--t3)] hover:text-[var(--t1)]')}>
+              className={cn('h-6 px-1.5 rounded flex items-center gap-1 text-xs',
+                pills.length || showFilters ? 'bg-accent-soft text-accent-text' : 'text-fg-3 hover:text-fg')}>
               <SlidersHorizontal className="w-3.5 h-3.5" />{pills.length || ''}
             </button>
           </div>
           {showFilters && (
             <>
               <div className="fixed inset-0 z-40" onClick={() => setShowFilters(false)} />
-              <div className="absolute right-0 top-10 z-50 w-[380px] max-w-[90vw] rounded-lg bg-[var(--s1)] ring-1 ring-inset ring-[var(--line-2)] overflow-hidden" style={{ boxShadow: 'var(--pop-sh)' }}>
+              <div className="absolute right-0 top-10 z-50 w-96 max-w-[90vw] rounded-lg bg-surface ring-1 ring-inset ring-line-2 overflow-hidden" style={{ boxShadow: 'var(--pop-sh)' }}>
                 <SearchFilterPanel filters={filters} setFilters={setFilters} matchMode={matchMode} setMatchMode={setMatchMode}
                   facets={facets} onReset={() => setFiltersRaw(EMPTY_FILTERS)} pillCount={pills.length} />
-                <div className="flex justify-end gap-2 px-3 py-2 border-t border-[var(--line)]">
-                  <button onClick={() => setShowFilters(false)} className="h-8 px-3 rounded-md text-[12.5px] text-[var(--t2)] hover:bg-[var(--s-hover)]">Close</button>
-                  <button onClick={runSearch} className="h-8 px-3.5 rounded-md text-[12.5px] font-semibold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]">Search quote folders</button>
+                <div className="flex justify-end gap-2 px-3 py-2 border-t border-line">
+                  <UiButton tone="ghost" size="md" onClick={() => setShowFilters(false)}>Close</UiButton>
+                  <UiButton tone="primary" size="md" onClick={runSearch}>Search quote folders</UiButton>
                 </div>
               </div>
             </>
@@ -1365,7 +1338,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       </div>
 
       {/* ── Simplified ribbon ────────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center gap-0.5 px-2 h-12 border-b border-[var(--line-2)] bg-[var(--s1)] overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+      <div className="shrink-0 flex items-center gap-0.5 px-2 h-12 border-b border-line-2 bg-surface overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
         {ribbonBody}
       </div>
 
@@ -1373,14 +1346,13 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       <div className="flex-1 min-h-0 flex">
         {/* Folder pane */}
         {folderPane && (
-          <nav aria-label="Folders" className="shrink-0 flex flex-col min-h-0 bg-[var(--s1)] border-r border-[var(--line)]" style={{ width: foldersWide ? 196 : 52 }}>
+          <nav aria-label="Folders" className="shrink-0 flex flex-col min-h-0 bg-surface border-r border-line" style={{ width: foldersWide ? 196 : 52 }}>
             <div className={cn('shrink-0 flex items-center gap-1 p-2', !foldersWide && 'flex-col')}>
               <IconBtn icon={PanelLeft} title="Hide folder pane" onClick={() => setFolderPane(false)} />
               {foldersWide ? (
-                <button onClick={() => setComposeNew(true)}
-                  className="flex-1 inline-flex items-center justify-center gap-2 h-8 rounded-md text-[13px] font-semibold bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]">
+                <UiButton tone="primary" size="md" className="flex-1" onClick={() => setComposeNew(true)}>
                   <SquarePen className="w-4 h-4" />New email
-                </button>
+                </UiButton>
               ) : <IconBtn icon={SquarePen} title="New email" onClick={() => setComposeNew(true)} />}
             </div>
             <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-3">
@@ -1400,8 +1372,8 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
                 return (
                   <div key={b.storeId} className="mt-2">
                     <button onClick={() => { const n = { ...expanded, [b.storeId]: !open }; setExpanded(n); try { localStorage.setItem('ol_expanded', JSON.stringify(n)); } catch { /* private */ } }}
-                      className="w-full flex items-center gap-1.5 px-2 py-1 rounded-[var(--r-xs)] text-[10px] font-bold uppercase tracking-[0.07em] text-[var(--t4)] hover:text-[var(--t2)]">
-                      {open ? <ChevronDown className="w-3.5 h-3.5 text-[var(--t3)]" /> : <ChevronRight className="w-3.5 h-3.5 text-[var(--t3)]" />}
+                      className="w-full flex items-center gap-1.5 px-2 py-1 rounded-control text-2xs font-semibold uppercase tracking-[0.07em] text-fg-4 hover:text-fg-2">
+                      {open ? <ChevronDown className="w-3.5 h-3.5 text-fg-3" /> : <ChevronRight className="w-3.5 h-3.5 text-fg-3" />}
                       <span className="truncate">{b.name}</span>
                     </button>
                     {open && ([
@@ -1415,12 +1387,12 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
                           onDragOver={v === 'flagged' && current ? (ev => { if (ev.dataTransfer.types.includes('vector/email-row')) { ev.preventDefault(); setDropView(dropKey); } }) : undefined}
                           onDragLeave={() => setDropView(cur => (cur === dropKey ? null : cur))}
                           onDrop={v === 'flagged' && current ? (ev => { ev.preventDefault(); setDropView(null); const id = ev.dataTransfer.getData('vector/email-row'); if (id && !flagged.has(id)) toggleFlag(id); }) : undefined}
-                          className={cn('relative w-full flex items-center gap-[7px] pl-7 pr-2 py-[5px] rounded-[var(--r-xs)] text-[11.5px] transition-colors',
-                            dropView === dropKey ? 'bg-[var(--accent-soft)] ring-1 ring-inset ring-[var(--accent-line)]'
-                              : active ? 'bg-[var(--accent-soft)] font-semibold text-[var(--accent-text)]' : 'text-[var(--t2)] hover:bg-[var(--s3)]')}>
-                          <I className={cn('w-[13px] h-[13px] shrink-0', active ? 'text-[var(--accent-text)]' : 'text-[var(--t3)]')} />
+                          className={cn('relative w-full flex items-center gap-1.5 pl-7 pr-2 py-1 rounded-control text-xs transition-colors',
+                            dropView === dropKey ? 'bg-accent-soft ring-1 ring-inset ring-accent-line'
+                              : active ? 'bg-accent-soft font-semibold text-accent-text' : 'text-fg-2 hover:bg-subtle')}>
+                          <I className={cn('w-3 h-3 shrink-0', active ? 'text-accent-text' : 'text-fg-3')} />
                           <span className="flex-1 text-left truncate">{VIEW_LABEL[v]}</span>
-                          {n ? <span className={cn('text-[10px] font-semibold tabular-nums', active ? 'text-[var(--accent-text)]' : 'text-[var(--t4)]')}>{n}</span> : null}
+                          {n ? <span className={cn('text-2xs font-semibold tabular-nums', active ? 'text-accent-text' : 'text-fg-4')}>{n}</span> : null}
                         </button>
                       );
                     })}
@@ -1437,7 +1409,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
           {readingPos !== 'off' && (
             <div role="separator" onMouseDown={dragList} onDoubleClick={() => (readingPos === 'bottom' ? setListH(280) : setListW(360))}
               title="Drag to resize · double-click to reset"
-              className={cn('shrink-0 relative bg-[var(--line-2)] hover:bg-[var(--accent)] transition-colors z-[2]',
+              className={cn('shrink-0 relative bg-line-2 hover:bg-accent transition-colors z-sticky',
                 readingPos === 'bottom' ? 'h-px cursor-row-resize before:absolute before:inset-x-0 before:-top-1.5 before:-bottom-1.5' : 'w-px cursor-col-resize before:absolute before:inset-y-0 before:-left-1.5 before:-right-1.5')} />
           )}
           {readingPos !== 'off' && (
@@ -1449,28 +1421,28 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
         {taskOpen && (
           <>
             <div role="separator" onMouseDown={dragTask} title="Drag to resize"
-              className="shrink-0 relative w-px bg-[var(--line-2)] hover:bg-[var(--accent)] cursor-col-resize transition-colors z-[2] before:absolute before:inset-y-0 before:-left-1.5 before:-right-1.5" />
-            <aside ref={taskRef as React.RefObject<HTMLElement>} aria-label="Vector" className="shrink-0 min-h-0 flex flex-col bg-[var(--s1)]" style={{ width: taskW }}>
-              <div className="shrink-0 flex items-center gap-1 pl-3 pr-1.5 h-11 border-b border-[var(--line)]">
-                <Sparkles className="w-4 h-4 text-[var(--accent-text)]" />
-                <span className="flex-1 text-[14px] font-semibold">Vector</span>
+              className="shrink-0 relative w-px bg-line-2 hover:bg-accent cursor-col-resize transition-colors z-sticky before:absolute before:inset-y-0 before:-left-1.5 before:-right-1.5" />
+            <aside ref={taskRef as React.RefObject<HTMLElement>} aria-label="Vector" className="shrink-0 min-h-0 flex flex-col bg-surface" style={{ width: taskW }}>
+              <div className="shrink-0 flex items-center gap-1 pl-3 pr-1.5 h-11 border-b border-line">
+                <Sparkles className="w-4 h-4 text-accent-text" />
+                <span className="flex-1 text-lg font-semibold">Vector</span>
                 <IconBtn icon={taskW > 520 ? Minimize2 : Maximize2} title={taskW > 520 ? 'Narrower' : 'Wider'} onClick={() => setTaskW(taskW > 520 ? 400 : 680)} />
                 <IconBtn icon={X} title="Close the Vector pane" onClick={() => setTaskTabRaw('')} />
               </div>
-              <div role="tablist" className="shrink-0 flex items-center gap-0.5 px-2 h-11 border-b border-[var(--line)] overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+              <div role="tablist" className="shrink-0 flex items-center gap-0.5 px-2 h-11 border-b border-line overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
                 {TASK_TABS.map(t => (
                   <button key={t.id} role="tab" aria-selected={taskOpen === t.id} onClick={() => openTask(t.id)}
-                    className={cn('shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-[12.5px] transition-colors',
-                      taskOpen === t.id ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] font-medium' : 'text-[var(--t2)] hover:bg-[var(--s-hover)] hover:text-[var(--t1)]')}>
+                    className={cn('shrink-0 inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-sm transition-colors',
+                      taskOpen === t.id ? 'bg-accent-soft text-accent-text font-semibold' : 'font-medium text-fg-tab hover:bg-hover hover:text-fg')}>
                     <t.Icon className="w-3.5 h-3.5" />{t.label}{STRIPPED && t.ai && <Lock className="w-3 h-3 opacity-60" />}
                   </button>
                 ))}
               </div>
               <div className="flex-1 min-h-0 overflow-y-auto">
                 {!liveDetail ? (
-                  <div className="h-full flex flex-col items-center justify-center gap-2 px-6 text-center text-[12.5px] text-[var(--t3)]">
-                    {selectedId ? <Loader2 className="w-5 h-5 animate-spin text-[var(--t4)]" /> : <>
-                      <Sparkles className="w-8 h-8 text-[var(--t4)]" strokeWidth={1.25} />
+                  <div className="h-full flex flex-col items-center justify-center gap-2 px-6 text-center text-sm text-fg-3">
+                    {selectedId ? <Loader2 className="w-5 h-5 animate-spin text-fg-4" /> : <>
+                      <Sparkles className="w-8 h-8 text-fg-4" strokeWidth={1.25} />
                       Select an email and Vector works on it here.
                     </>}
                   </div>
@@ -1495,22 +1467,22 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       </div>
 
       {/* ── Status bar ───────────────────────────────────────────────────── */}
-      <footer className="shrink-0 flex items-center gap-4 px-4 h-7 text-[11.5px] text-[var(--t3)] bg-[var(--s3)] border-t border-[var(--line-2)]">
-        <span>Items: {emails.length}</span>
-        <span>Unread: {unreadCount}</span>
+      <footer className="shrink-0 flex items-center gap-4 px-4 h-7 text-xs text-fg-3 bg-subtle border-t border-line-2">
+        <span>Items <span className="mono">{emails.length}</span></span>
+        <span>Unread <span className="mono">{unreadCount}</span></span>
         {loading && <span className="inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" />Updating…</span>}
-        {deep?.truncated && <span className="text-[var(--warn)]">Search hit its time limit — partial results</span>}
+        {deep?.truncated && <span className="text-warn">Search hit its time limit — partial results</span>}
         <span className="flex-1" />
         {syncedLabel && <span>Updated {syncedLabel}</span>}
-        <span className="inline-flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-[var(--ok)]" />Connected to Outlook</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-ok" />Connected to Outlook</span>
         <span className="tabular-nums">{Math.round(zoom * 100)}%</span>
       </footer>
 
       {/* ── Undo delete ──────────────────────────────────────────────────── */}
       {pendingDel && (
-        <div className="fixed left-1/2 -translate-x-1/2 bottom-10 z-[9980] flex items-center gap-4 pl-4 pr-2 h-11 rounded-lg bg-[var(--t1)] text-[var(--bg)] text-[13px]" style={{ boxShadow: 'var(--pop-sh)' }}>
-          <span className="truncate max-w-[340px]">Deleted “{pendingDel.label}”</span>
-          <button onClick={undoDelete} className="h-8 px-3 rounded-md font-semibold text-[var(--accent)] hover:bg-white/10">Undo</button>
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-10 z-modal flex items-center gap-4 pl-4 pr-2 h-11 rounded-lg bg-fg text-page text-base" style={{ boxShadow: 'var(--pop-sh)' }}>
+          <span className="truncate max-w-80">Deleted “{pendingDel.label}”</span>
+          <UiButton tone="ghost" size="md" onClick={undoDelete}>Undo</UiButton>
           <button aria-label="Dismiss" onClick={commitDelete} className="w-8 h-8 rounded-md flex items-center justify-center opacity-70 hover:opacity-100"><X className="w-4 h-4" /></button>
         </div>
       )}
@@ -1528,8 +1500,8 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
           <div className="px-3 pb-1.5 flex flex-wrap gap-1">
             {CATEGORIES.map(c => (
               <button key={c} onClick={() => { setMenu(null); categorize(menu.id, c); }}
-                className={cn('h-6 px-2 rounded text-[11.5px] transition-colors',
-                  categories[menu.id] === c ? 'bg-[var(--violet-soft)] text-[var(--violet)]' : 'bg-[var(--s3)] text-[var(--t2)] hover:text-[var(--t1)]')}>{c}</button>
+                className={cn('h-6 px-2 rounded text-xs transition-colors',
+                  categories[menu.id] === c ? 'bg-ai-soft text-ai' : 'bg-subtle text-fg-2 hover:text-fg')}>{c}</button>
             ))}
           </div>
           <MenuSep />
@@ -1566,10 +1538,10 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       {lightbox && <ImageLightbox src={lightbox.src} name={lightbox.name} onClose={() => setLightbox(null)} />}
 
       {popout && selectedId && (
-        <div className="fixed inset-0 z-[9960] bg-black/50 flex items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) setPopout(false); }}>
-          <div className="flex flex-col bg-[var(--s1)] rounded-xl overflow-hidden ring-1 ring-inset ring-[var(--line-2)]"
-            style={{ width: 'min(96vw, 1280px)', height: 'min(95vh, 1200px)', boxShadow: 'var(--pop-sh)' }}>
-            <div className="shrink-0 flex items-center gap-1 px-2 h-12 border-b border-[var(--line-2)] overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
+        <div className="fixed inset-0 z-overlay bg-overlay flex items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) setPopout(false); }}>
+          <div className="flex flex-col bg-surface rounded-xl overflow-hidden ring-1 ring-inset ring-line-2"
+            style={{ width: 'min(96vw, var(--modal-xl))', height: 'min(95vh, var(--modal-h))', boxShadow: 'var(--pop-sh)' }}>
+            <div className="shrink-0 flex items-center gap-1 px-2 h-12 border-b border-line-2 overflow-x-auto" style={{ scrollbarWidth: 'none' }}>
               <RBtn icon={Reply} label="Reply" disabled={!liveDetail} onClick={() => openCompose('reply')} />
               <RBtn icon={Forward} label="Forward" disabled={!liveDetail} onClick={() => openCompose('forward')} />
               <RSep />
@@ -1586,12 +1558,12 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       )}
 
       {classicId && (
-        <div className="fixed inset-0 z-[9960] bg-black/50 flex items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) setClassicId(null); }}>
-          <div className="flex flex-col bg-[var(--s1)] rounded-xl overflow-hidden ring-1 ring-inset ring-[var(--line-2)]"
-            style={{ width: 'min(96vw, 1280px)', height: 'min(95vh, 1200px)', boxShadow: 'var(--pop-sh)' }}>
-            <div className="shrink-0 flex items-center gap-2 pl-4 pr-2 h-11 border-b border-[var(--line-2)]">
-              <Wrench className="w-4 h-4 text-[var(--t3)]" />
-              <span className="flex-1 text-[13px] font-semibold truncate">Classic tools — {(emails.find(e => e.entryId === classicId) || selected)?.subject || ''}</span>
+        <div className="fixed inset-0 z-overlay bg-overlay flex items-center justify-center p-3" onClick={e => { if (e.target === e.currentTarget) setClassicId(null); }}>
+          <div className="flex flex-col bg-surface rounded-xl overflow-hidden ring-1 ring-inset ring-line-2"
+            style={{ width: 'min(96vw, var(--modal-xl))', height: 'min(95vh, var(--modal-h))', boxShadow: 'var(--pop-sh)' }}>
+            <div className="shrink-0 flex items-center gap-2 pl-4 pr-2 h-11 border-b border-line-2">
+              <Wrench className="w-4 h-4 text-fg-3" />
+              <span className="flex-1 text-base font-semibold truncate">Classic tools — {(emails.find(e => e.entryId === classicId) || selected)?.subject || ''}</span>
               <IconBtn icon={X} title="Close" onClick={() => setClassicId(null)} />
             </div>
             <div className="flex-1 min-h-0">

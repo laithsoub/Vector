@@ -55,18 +55,18 @@ export function Dropdown({
     <DropdownClose.Provider value={close}>
       <div ref={ref} className="relative">
         {label && (
-          <label className="block text-[10px] font-bold text-[var(--t4)] uppercase tracking-wide mb-1">
-            {label}{required && <span className="text-[var(--err)] ml-0.5">*</span>}
+          <label className="block text-2xs font-semibold text-fg-4 uppercase tracking-wide mb-1">
+            {label}{required && <span className="text-err ml-0.5">*</span>}
           </label>
         )}
         <button ref={btnRef} onClick={handleOpen}
-          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-xl border bg-[var(--s1)] border-[var(--line)] hover:border-[var(--accent-line)] transition-all text-left${open ? ' border-[var(--accent-line)] ring-2 ring-[var(--accent-soft)]' : ''}`}>
-          <span className={value ? 'font-semibold text-[var(--t1)]' : 'text-[var(--t4)]'}>{value || placeholder}</span>
-          <ChevronDown className={`w-3.5 h-3.5 text-[var(--t4)] transition-transform shrink-0 ml-1${open ? ' rotate-180' : ''}`}/>
+          className={`w-full flex items-center justify-between px-3 py-2 text-xs rounded-xl border bg-surface border-line hover:border-accent-line transition-all text-left${open ? ' border-accent-line ring-2 ring-accent-soft' : ''}`}>
+          <span className={value ? 'font-semibold text-fg' : 'text-fg-4'}>{value || placeholder}</span>
+          <ChevronDown className={`w-3.5 h-3.5 text-fg-4 transition-transform shrink-0 ml-1${open ? ' rotate-180' : ''}`}/>
         </button>
         {open && createPortal(
           <div ref={dropRef} style={{ position: 'absolute', top: pos.top, left: pos.left, width: pos.width, zIndex: 9999 }}
-            className="bg-white border border-[var(--line)] rounded-xl shadow-2xl overflow-auto max-h-80">
+            className="bg-surface border border-line rounded-xl overflow-auto max-h-80">
             {children}
           </div>,
           document.body,
@@ -88,9 +88,9 @@ export function DItem({
   const close = React.useContext(DropdownClose);
   return (
     <button onClick={() => { onClick(); close(); }}
-      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--s-hover)] transition-colors${
-        active ? ' bg-[var(--warn-soft)] text-[var(--warn)] font-semibold' : ''}${
-        dim && !active ? ' text-[var(--t4)]' : ''}`}>
+      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-hover transition-colors${
+        active ? ' bg-warn-soft text-warn font-semibold' : ''}${
+        dim && !active ? ' text-fg-4' : ''}`}>
       {children}
     </button>
   );

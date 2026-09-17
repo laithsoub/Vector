@@ -20,6 +20,7 @@ import {
 import { api, type CbuRef, type CbuRefScan } from '../lib/api';
 import { SIZES_1PH, SIZES_3PH } from '../lib/cbuData';
 import { Dropdown, DItem } from './Dropdown';
+import { Button as UiButton, IconButton as UiIconButton } from '../ui';
 
 const ALL_SIZES = [...SIZES_1PH, ...SIZES_3PH];
 
@@ -159,39 +160,38 @@ export default function CbuRefQuotes({
 
   // ── One quote ──────────────────────────────────────────────────────────────
   const Row = ({ r, lead, showSize }: { r: CbuRef; lead?: boolean; showSize?: boolean }) => (
-    <div className={`flex items-start gap-2 px-4 py-2.5 border-b border-[var(--line)] last:border-b-0${
-      lead ? ' bg-[var(--warn-soft)]' : ''}`}>
+    <div className={`flex items-start gap-2 px-4 py-2.5 border-b border-line last:border-b-0${
+      lead ? ' bg-warn-soft' : ''}`}>
       <button onClick={() => pin(r)} title={r.pinned ? 'Unpin' : 'Keep this one as the quote to reuse at this size'}
         className={`mt-0.5 p-0.5 rounded shrink-0 transition-colors${
-          r.pinned ? ' text-[var(--warn)]' : ' text-[var(--t4)] hover:text-[var(--warn)]'}`}>
+          r.pinned ? ' text-warn' : ' text-fg-4 hover:text-warn'}`}>
         <Star className="w-3.5 h-3.5" fill={r.pinned ? 'currentColor' : 'none'}/>
       </button>
 
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5 flex-wrap">
-          <span className={`font-mono font-bold text-[var(--t1)] ${lead ? 'text-base' : 'text-xs'}`}>
+          <span className={`mono font-semibold text-fg ${lead ? 'text-base' : 'text-xs'}`}>
             {r.quoteRef}
           </span>
-          <button aria-label="Copy quote reference" onClick={() => copy(r)} title="Copy"
-            className="p-0.5 rounded text-[var(--t4)] hover:text-[var(--accent-text)] hover:bg-[var(--accent-soft)] transition-colors shrink-0">
-            {copied === r.id ? <Check className="w-3.5 h-3.5 text-[var(--ok)]"/> : <Copy className="w-3.5 h-3.5"/>}
-          </button>
+          <UiButton tone="ghost" className="shrink-0" aria-label="Copy quote reference" onClick={() => copy(r)} hint="Copy">
+            {copied === r.id ? <Check className="w-3.5 h-3.5 text-ok"/> : <Copy className="w-3.5 h-3.5"/>}
+          </UiButton>
           {showSize && (
-            <span className="px-1.5 py-px rounded text-[9px] font-bold uppercase tracking-wide bg-[var(--s3)] text-[var(--t3)]">
+            <span className="px-1.5 py-px rounded text-2xs font-semibold uppercase tracking-wide bg-subtle text-fg-3">
               {r.system.trim()}
             </span>
           )}
           {r.confidence === 'weak' && (
             <span title="The reference in this brief is not a recognisable Salesforce or BidManager id — likely a practice export"
-              className="inline-flex items-center gap-0.5 px-1 py-px rounded text-[9px] font-bold uppercase tracking-wide bg-[var(--warn-soft)] text-[var(--warn)]">
+              className="inline-flex items-center gap-0.5 px-1 py-px rounded text-2xs font-semibold uppercase tracking-wide bg-warn-soft text-warn">
               <AlertTriangle className="w-2.5 h-2.5"/> unverified
             </span>
           )}
         </div>
-        <div className="text-[11px] text-[var(--t3)] truncate">
-          {r.project || <span className="italic text-[var(--t4)]">no project title in the brief</span>}
+        <div className="text-xs text-fg-3 truncate">
+          {r.project || <span className="italic text-fg-4">no project title in the brief</span>}
         </div>
-        <div className="text-[10px] text-[var(--t4)] mt-0.5">
+        <div className="text-2xs text-fg-4 mt-0.5">
           {[niceDate(r.dated), r.duration, SOURCE_LABEL[r.source] || r.source]
             .filter(Boolean).join(' · ')}
         </div>
@@ -199,15 +199,9 @@ export default function CbuRefQuotes({
 
       <div className="flex items-center gap-0.5 shrink-0">
         {r.source !== 'mail' && r.detail && (
-          <button onClick={() => reveal(r)} title="Show the brief in Explorer"
-            className="p-1 rounded text-[var(--t4)] hover:text-[var(--accent-text)] hover:bg-[var(--accent-soft)] transition-colors">
-            <FolderOpen className="w-3.5 h-3.5"/>
-          </button>
+          <UiIconButton icon={FolderOpen} label="Show the brief in Explorer" onClick={() => reveal(r)} />
         )}
-        <button onClick={() => hide(r)} title="Not a real quote — remove it from the list"
-          className="p-1 rounded text-[var(--t4)] hover:text-[var(--err)] hover:bg-[var(--err-soft)] transition-colors">
-          <X className="w-3.5 h-3.5"/>
-        </button>
+        <UiIconButton icon={X} label="Not a real quote — remove it from the list" tone="danger" onClick={() => hide(r)} />
       </div>
     </div>
   );
@@ -219,7 +213,7 @@ export default function CbuRefQuotes({
       <DItem onClick={() => onPickSize(s)} active={s === size} dim={n === 0}>
         <span className="flex items-center justify-between gap-3">
           <span>{shortSize(s)}</span>
-          <span className={`text-[10px] font-semibold${n ? ' text-[var(--accent-text)]' : ' text-[var(--t4)]'}`}>
+          <span className={`text-2xs font-semibold${n ? ' text-accent-text' : ' text-fg-4'}`}>
             {n ? `${n} quote${n > 1 ? 's' : ''}` : '—'}
           </span>
         </span>
@@ -239,22 +233,22 @@ export default function CbuRefQuotes({
       {/* ── Title + scan ─────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-sm font-bold text-[var(--t1)]">Past LoadStar-PS quotes</h2>
-          <p className="text-[11px] text-[var(--t4)] mt-0.5">
+          <h2 className="text-sm font-semibold text-fg">Past LoadStar-PS quotes</h2>
+          <p className="text-xs text-fg-4 mt-0.5">
             Pick a system to get the quote number to copy in Bidman · {covered} of {ALL_SIZES.length} sizes covered, {refs.length} quotes · {scanned}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <label title="Also open the Outlook messages that carry a Tech Brief or a filled sizing calculator. Slower — one COM read per message."
-            className="flex items-center gap-1 text-[10px] text-[var(--t3)] cursor-pointer select-none">
+            className="flex items-center gap-1 text-2xs text-fg-3 cursor-pointer select-none">
             <input type="checkbox" checked={scanMail} onChange={e => setScanMail(e.target.checked)}
-              className="w-3 h-3 accent-[var(--accent)]"/>
+              className="w-3 h-3 accent-accent"/>
             Outlook too
           </label>
           <button onClick={runScan} disabled={scanning}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all${
-              scanning ? ' bg-[var(--s3)] text-[var(--t4)] cursor-not-allowed'
-                       : ' bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white'}`}>
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all${
+              scanning ? ' bg-subtle text-fg-4 cursor-not-allowed'
+                       : ' bg-accent hover:bg-accent-hover text-on-accent'}`}>
             <RefreshCw className={`w-3.5 h-3.5${scanning ? ' animate-spin' : ''}`}/>
             {scanning ? (scanMail ? 'Scanning Outlook…' : 'Scanning…') : 'Scan for new quotes'}
           </button>
@@ -262,34 +256,34 @@ export default function CbuRefQuotes({
       </div>
 
       {error && (
-        <div className="text-xs text-[var(--err)] bg-[var(--err-soft)] border border-[var(--err-soft)] rounded-xl px-4 py-2">
+        <div className="text-xs text-err bg-err-soft border border-err-soft rounded-xl px-4 py-2">
           {error}
         </div>
       )}
       {!!lastScan?.errors?.length && (
-        <div className="text-[10px] text-[var(--warn)] bg-[var(--warn-soft)] border border-[var(--warn-soft)] rounded-xl px-4 py-1.5">
+        <div className="text-2xs text-warn bg-warn-soft border border-warn-soft rounded-xl px-4 py-1.5">
           {lastScan.errors.length} file{lastScan.errors.length === 1 ? '' : 's'} could not be read: {lastScan.errors.slice(0, 3).join('; ')}
         </div>
       )}
 
       {/* ── Pick a system, or search across all of them ──────────────────────── */}
-      <div className="bg-[var(--s2)] border border-[var(--line)] rounded-2xl p-3">
+      <div className="bg-raised border border-line rounded-2xl p-3">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
           <Dropdown label="System" value={size ? size.trim() : ''} placeholder="Select system…" wide>
-            <div className="px-3 pt-2 pb-1 text-[9px] font-bold text-[var(--t4)] uppercase tracking-widest">Single phase</div>
+            <div className="px-3 pt-2 pb-1 text-2xs font-semibold text-fg-4 uppercase tracking-widest">Single phase</div>
             {SIZES_1PH.map(s => <MenuItem key={s} s={s}/>)}
-            <div className="px-3 pt-2 pb-1 text-[9px] font-bold text-[var(--t4)] uppercase tracking-widest border-t border-[var(--line)] mt-1">Three phase</div>
+            <div className="px-3 pt-2 pb-1 text-2xs font-semibold text-fg-4 uppercase tracking-widest border-t border-line mt-1">Three phase</div>
             {SIZES_3PH.map(s => <MenuItem key={s} s={s}/>)}
             {strays.length > 0 && (
               <>
-                <div className="px-3 pt-2 pb-1 text-[9px] font-bold text-[var(--t4)] uppercase tracking-widest border-t border-[var(--line)] mt-1">
+                <div className="px-3 pt-2 pb-1 text-2xs font-semibold text-fg-4 uppercase tracking-widest border-t border-line mt-1">
                   Sizes the calculator no longer lists
                 </div>
                 {strays.map(s => (
                   <DItem key={s} onClick={() => onPickSize(s)} active={s === size}>
                     <span className="flex items-center justify-between gap-3">
                       <span>{s.trim()}</span>
-                      <span className="text-[10px] font-semibold text-[var(--accent-text)]">{bySize.get(s)!.length}</span>
+                      <span className="text-2xs font-semibold text-accent-text">{bySize.get(s)!.length}</span>
                     </span>
                   </DItem>
                 ))}
@@ -298,19 +292,16 @@ export default function CbuRefQuotes({
           </Dropdown>
 
           <div>
-            <label className="block text-[10px] font-bold text-[var(--t4)] uppercase tracking-wide mb-1">
+            <label className="block text-2xs font-semibold text-fg-4 uppercase tracking-wide mb-1">
               Or search every size
             </label>
             <div className="relative">
-              <Search className="w-3.5 h-3.5 text-[var(--t4)] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"/>
+              <Search className="w-3.5 h-3.5 text-fg-4 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"/>
               <input value={q} onChange={e => setQ(e.target.value)}
                 placeholder="Quote number or project…"
-                className="w-full pl-8 pr-7 py-2 text-xs rounded-xl border border-[var(--line)] bg-[var(--s1)] focus:outline-none focus:border-[var(--accent-line)] transition-colors"/>
+                className="w-full pl-8 pr-7 py-2 text-xs rounded-xl border border-line bg-surface focus:outline-none focus:border-accent-line transition-colors"/>
               {q && (
-                <button onClick={() => setQ('')} aria-label="Clear search"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-[var(--t4)] hover:text-[var(--err)]">
-                  <X className="w-3.5 h-3.5"/>
-                </button>
+                <UiIconButton icon={X} label="Clear search" tone="danger" className="absolute right-2 top-1/2 -translate-y-1/2" onClick={() => setQ('')} />
               )}
             </div>
           </div>
@@ -319,61 +310,59 @@ export default function CbuRefQuotes({
 
       {/* ── Results ──────────────────────────────────────────────────────────── */}
       {term ? (
-        <div className="bg-[var(--s2)] border border-[var(--line)] rounded-2xl overflow-hidden">
-          <div className="px-4 py-2 bg-[var(--s3)] border-b border-[var(--line)] text-[10px] font-bold text-[var(--t3)] uppercase tracking-wide">
+        <div className="bg-raised border border-line rounded-2xl overflow-hidden">
+          <div className="px-4 py-2 bg-subtle border-b border-line text-2xs font-semibold text-fg-3 uppercase tracking-wide">
             {hits.length} match{hits.length === 1 ? '' : 'es'} for “{q.trim()}”
           </div>
           {hits.length === 0
-            ? <div className="px-4 py-4 text-xs text-[var(--t4)]">Nothing recorded under that. Scan for new quotes, or clear the search and add one by hand.</div>
+            ? <div className="px-4 py-4 text-xs text-fg-4">Nothing recorded under that. Scan for new quotes, or clear the search and add one by hand.</div>
             : hits.map(r => <Row key={r.id} r={r} showSize/>)}
         </div>
       ) : size ? (
-        <div className="bg-[var(--s2)] border border-[var(--line)] rounded-2xl overflow-hidden">
-          <div className="flex items-center justify-between gap-3 px-4 py-2 bg-[var(--s3)] border-b border-[var(--line)]">
-            <div className="text-[10px] font-bold text-[var(--t3)] uppercase tracking-wide">
+        <div className="bg-raised border border-line rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between gap-3 px-4 py-2 bg-subtle border-b border-line">
+            <div className="text-2xs font-semibold text-fg-3 uppercase tracking-wide">
               {size.trim()} · {mine.length} quote{mine.length === 1 ? '' : 's'}
-              {mine.length > 1 && <span className="ml-1 normal-case font-semibold text-[var(--t4)]">— starred first, then newest</span>}
+              {mine.length > 1 && <span className="ml-1 normal-case font-semibold text-fg-4">— starred first, then newest</span>}
             </div>
-            <button onClick={onOpenSizer} title="Configure this system in the sizer"
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-bold text-[var(--t3)] hover:text-[var(--accent-text)] hover:bg-[var(--accent-soft)] transition-colors shrink-0">
+            <UiButton tone="ghost" className="shrink-0" onClick={onOpenSizer} hint="Configure this system in the sizer">
               <Sliders className="w-3 h-3"/> Open in sizer
-            </button>
+            </UiButton>
           </div>
 
           {mine.length === 0 ? (
-            <div className="px-4 py-4 text-xs text-[var(--t4)]">
+            <div className="px-4 py-4 text-xs text-fg-4">
               {loading ? 'Loading…'
-                : <>No quote recorded at <span className="font-semibold text-[var(--t3)]">{size.trim()}</span> yet.
+                : <>No quote recorded at <span className="font-semibold text-fg-3">{size.trim()}</span> yet.
                     Scan for new ones, or add the reference by hand.</>}
             </div>
           ) : mine.map((r, i) => <Row key={r.id} r={r} lead={i === 0}/>)}
 
           {/* Add by hand — for the quote whose brief was never saved locally */}
           {adding ? (
-            <div className="flex items-center gap-2 px-4 py-2 border-t border-[var(--line)]">
+            <div className="flex items-center gap-2 px-4 py-2 border-t border-line">
               <input value={newRef} onChange={e => setNewRef(e.target.value)} placeholder="Quote reference"
                 onKeyDown={e => { if (e.key === 'Enter') addByHand(); }}
-                className="w-48 px-2 py-1 text-xs rounded-lg border border-[var(--line)] bg-[var(--warn-soft)] focus:outline-none focus:border-[var(--accent-line)] font-mono font-semibold"/>
+                className="w-48 px-2 py-1 text-xs rounded-lg border border-line bg-warn-soft focus:outline-none focus:border-accent-line mono font-semibold"/>
               <input value={newProj} onChange={e => setNewProj(e.target.value)} placeholder="Project (optional)"
                 onKeyDown={e => { if (e.key === 'Enter') addByHand(); }}
-                className="flex-1 min-w-0 px-2 py-1 text-xs rounded-lg border border-[var(--line)] bg-white focus:outline-none focus:border-[var(--accent-line)]"/>
+                className="flex-1 min-w-0 px-2 py-1 text-xs rounded-lg border border-line bg-surface focus:outline-none focus:border-accent-line"/>
               <button onClick={addByHand} disabled={!newRef.trim()}
                 className={`px-2.5 py-1 rounded-lg text-xs font-bold${
-                  newRef.trim() ? ' bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white' : ' bg-[var(--s3)] text-[var(--t4)]'}`}>
+                  newRef.trim() ? ' bg-accent hover:bg-accent-hover text-on-accent' : ' bg-subtle text-fg-4'}`}>
                 Save
               </button>
-              <button onClick={() => { setAdding(false); setNewRef(''); setNewProj(''); }}
-                className="p-1 rounded text-[var(--t4)] hover:text-[var(--err)]"><X className="w-3.5 h-3.5"/></button>
+              <UiButton tone="quiet-danger" onClick={() => { setAdding(false); setNewRef(''); setNewProj(''); }}><X className="w-3.5 h-3.5"/></UiButton>
             </div>
           ) : (
             <button onClick={() => setAdding(true)}
-              className="w-full flex items-center gap-1 px-4 py-2 text-[10px] font-semibold text-[var(--t4)] hover:text-[var(--accent-text)] border-t border-[var(--line)] transition-colors">
+              className="w-full flex items-center gap-1 px-4 py-2 text-2xs font-semibold text-fg-4 hover:text-accent-text border-t border-line transition-colors">
               <Plus className="w-3 h-3"/> Add a quote reference for {size.trim()} by hand
             </button>
           )}
         </div>
       ) : (
-        <div className="bg-[var(--s2)] border border-[var(--line)] rounded-2xl px-4 py-6 text-xs text-[var(--t4)] text-center">
+        <div className="bg-raised border border-line rounded-2xl px-4 py-6 text-xs text-fg-4 text-center">
           {loading ? 'Loading…' : 'Pick a system above, or search by quote number or project.'}
         </div>
       )}

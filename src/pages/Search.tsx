@@ -16,6 +16,7 @@ import { api } from '../lib/api';
 import { plural } from '../lib/errors';
 import type { SearchResult, DqDoc } from '../types';
 import type { ToastFn } from '../App';
+import { Button as UiButton, IconButton as UiIconButton } from '../ui';
 
 type StatusFilter   = 'any' | 'Pending' | 'Processed' | 'On Hold' | 'Error';
 type ProductFilter  = 'any' | string;
@@ -34,7 +35,7 @@ function CopilotMarkdown({ text }: { text: string }) {
     if (!line.trim()) { elements.push(<div key={key} className="h-2" />); return; }
     // Horizontal rule / citation separator
     if (/^---+$/.test(line.trim())) {
-      elements.push(<hr key={key} className="my-2 border-violet-200 dark:border-violet-700/40" />);
+      elements.push(<hr key={key} className="my-2 border-ai-line " />);
       return;
     }
     // Images: ![alt](url)
@@ -43,37 +44,37 @@ function CopilotMarkdown({ text }: { text: string }) {
       if (m) {
         elements.push(
           <img key={key} src={m[2]} alt={m[1] || 'Copilot image'}
-            className="max-w-full rounded-lg mt-2 mb-2 border border-[var(--line-2)]" />
+            className="max-w-full rounded-lg mt-2 mb-2 border border-line-2" />
         );
         return;
       }
     }
     // Headers
     if (line.startsWith('### ')) {
-      elements.push(<p key={key} className="text-[12px] font-bold mt-2 text-[var(--t1)]">{line.slice(4)}</p>);
+      elements.push(<p key={key} className="text-sm font-semibold mt-2 text-fg">{line.slice(4)}</p>);
       return;
     }
     if (line.startsWith('## ')) {
-      elements.push(<p key={key} className="text-[13px] font-bold mt-2 text-[var(--t1)]">{line.slice(3)}</p>);
+      elements.push(<p key={key} className="text-base font-semibold mt-2 text-fg">{line.slice(3)}</p>);
       return;
     }
     if (line.startsWith('**') && line.endsWith('**')) {
-      elements.push(<p key={key} className="text-[12px] font-bold mt-1 text-[var(--t1)]">{line.slice(2, -2)}</p>);
+      elements.push(<p key={key} className="text-sm font-semibold mt-1 text-fg">{line.slice(2, -2)}</p>);
       return;
     }
     // Bullet lists
     if (/^[\-\*•]\s/.test(line.trim()) || /^\d+\.\s/.test(line.trim())) {
       const content = line.replace(/^[\s\-\*•]+/, '').replace(/^\d+\.\s*/, '');
       elements.push(
-        <div key={key} className="flex gap-1.5 text-[12px] text-[var(--t2)] leading-relaxed">
-          <span className="text-violet-400 mt-0.5 shrink-0">•</span>
+        <div key={key} className="flex gap-1.5 text-sm text-fg-2 leading-relaxed">
+          <span className="text-ai mt-0.5 shrink-0">•</span>
           <span>{renderInline(content)}</span>
         </div>
       );
       return;
     }
     // Regular text with inline formatting
-    elements.push(<p key={key} className="text-[12px] text-[var(--t2)] leading-relaxed">{renderInline(line)}</p>);
+    elements.push(<p key={key} className="text-sm text-fg-2 leading-relaxed">{renderInline(line)}</p>);
   });
 
   return <div className="space-y-0.5">{elements}</div>;
@@ -93,25 +94,25 @@ function renderInline(text: string): React.ReactNode {
     }
     if (match[1]) {
       // **bold**
-      parts.push(<strong key={match.index} className="font-semibold text-[var(--t1)]">{match[2]}</strong>);
+      parts.push(<strong key={match.index} className="font-semibold text-fg">{match[2]}</strong>);
     } else if (match[6]) {
       // ![img](url)
       parts.push(
         <img key={match.index} src={match[8]} alt={match[7] || 'image'}
-          className="inline-block max-h-40 rounded mt-1 border border-[var(--line-2)]" />
+          className="inline-block max-h-40 rounded mt-1 border border-line-2" />
       );
     } else if (match[3]) {
       // [link](url)
       parts.push(
         <a key={match.index} href={match[5]} target="_blank" rel="noopener noreferrer"
-          className="text-[var(--accent-text)] underline underline-offset-2 hover:text-[var(--accent-text)]">
+          className="text-accent-text underline underline-offset-2 hover:text-accent-text">
           {match[4]}
         </a>
       );
     } else if (match[9]) {
       // `code`
       parts.push(
-        <code key={match.index} className="px-1 py-0.5 rounded bg-[var(--s3)] text-[11px] font-mono">{match[10]}</code>
+        <code key={match.index} className="px-1 py-0.5 rounded bg-subtle text-xs mono">{match[10]}</code>
       );
     }
     lastIdx = match.index + match[0].length;
@@ -297,33 +298,33 @@ export function SearchPage({
       {/* Hero search input */}
       <Card>
         {!connected && (
-          <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-md bg-amber-50 dark:bg-amber-900/15 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/30 text-[11.5px] text-amber-700 dark:text-amber-400">
+          <div className="mb-3 flex items-center gap-2 px-3 py-2 rounded-md bg-warn-soft ring-1 ring-inset ring-warn-line text-xs text-warn ">
             <AlertCircle className="w-3.5 h-3.5 shrink-0" />
             Not connected to JOE — searches will fail. Click "Connect to JOE" in the header.
           </div>
         )}
 
         <div className="flex items-center gap-2">
-          <SearchIcon className="w-4 h-4 text-[var(--t3)] ml-2" />
+          <SearchIcon className="w-4 h-4 text-fg-3 ml-2" />
           <input ref={inputRef} value={query} onChange={e => setQuery(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && doSearch()}
             placeholder="SF ID, quote name, customer, salesman…"
-            className="flex-1 h-9 bg-transparent text-[14px] focus:outline-none placeholder:text-[var(--t3)] text-[var(--t1)]" />
+            className="flex-1 h-9 bg-transparent text-lg focus:outline-none placeholder:text-fg-3 text-fg" />
           {(query || activeQuery) && (
             <button aria-label="Clear search" onClick={clearAll}
-              className="text-[var(--t3)] hover:text-[var(--t1)] px-2">
+              className="text-fg-3 hover:text-fg px-2">
               <X className="w-4 h-4" />
             </button>
           )}
           <button onClick={() => { setAiOpen(o => !o); setTimeout(() => aiInputRef.current?.focus(), 50); }}
-              className={cn('h-8 px-3 rounded-md text-[11.5px] font-medium ring-1 ring-inset flex items-center gap-1.5 transition-colors',
+              className={cn('h-8 px-3 rounded-md text-xs font-medium ring-1 ring-inset flex items-center gap-1.5 transition-colors',
                 aiOpen
-                  ? 'bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 ring-violet-300 dark:ring-violet-600'
-                  : 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-300 ring-violet-200 dark:ring-violet-700/40 hover:bg-violet-100')}>
+                  ? 'bg-ai-soft text-ai ring-ai-line '
+                  : 'bg-ai-soft text-ai ring-ai-line hover:bg-ai-soft')}>
               <Sparkles className="w-3.5 h-3.5" />
               Ask AI
               {aiMessages.length > 0 && (
-                <span className="ml-0.5 w-4 h-4 rounded-full bg-violet-500 text-white text-[9px] font-bold flex items-center justify-center">
+                <span className="ml-0.5 w-4 h-4 rounded-full bg-ai text-on-status text-2xs font-semibold flex items-center justify-center">
                   {aiMessages.filter(m => m.role === 'ai').length}
                 </span>
               )}
@@ -333,24 +334,23 @@ export function SearchPage({
         </div>
 
         {!activeQuery && recents.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-[var(--line)] flex items-center gap-2 flex-wrap">
-            <span className="text-[10.5px] text-[var(--t3)] uppercase tracking-wider font-semibold">Recent</span>
+          <div className="mt-3 pt-3 border-t border-line flex items-center gap-2 flex-wrap">
+            <span className="text-2xs text-fg-3 uppercase tracking-wider font-semibold">Recent</span>
             {recents.map(s => (
-              <button key={s} onClick={() => { setQuery(s); doSearch(s); }}
-                className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--s3)] hover:bg-[var(--s-hover)] text-[var(--t2)] flex items-center gap-1.5">
-                <Clock className="w-3 h-3 text-[var(--t3)]" /> {s}
-              </button>
+              <UiButton tone="ghost" key={s} onClick={() => { setQuery(s); doSearch(s); }}>
+                <Clock className="w-3 h-3 text-fg-3" /> {s}
+              </UiButton>
             ))}
             <button onClick={() => { setRecents([]); localStorage.removeItem(RECENT_KEY); }}
-              className="text-[10.5px] text-[var(--t3)] hover:text-red-500 ml-1">Clear</button>
+              className="text-2xs text-fg-3 hover:text-err ml-1">Clear</button>
           </div>
         )}
 
         {/* Ask AI conversation panel */}
         {aiOpen && (
-          <div className="mt-3 border-t border-violet-100 dark:border-violet-800/40 pt-3">
+          <div className="mt-3 border-t border-ai-line pt-3">
             {!aiAvailable && (
-              <div className="mb-3 px-3 py-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 ring-1 ring-inset ring-amber-200 dark:ring-amber-700/40 text-[11.5px] text-amber-700 dark:text-amber-300">
+              <div className="mb-3 px-3 py-2 rounded-lg bg-warn-soft ring-1 ring-inset ring-warn-line text-xs text-warn ">
                 No Gemini API key set — go to <strong>Settings</strong> → add your key in the <strong>Gemini API key</strong> field → Save.
                 Get a free key at <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="underline">aistudio.google.com</a>
               </div>
@@ -361,27 +361,27 @@ export function SearchPage({
                 {aiMessages.map((m, i) => (
                   <div key={i} className={cn('flex gap-2.5', m.role === 'user' ? 'justify-end' : 'justify-start')}>
                     {m.role === 'ai' && (
-                      <div className="w-6 h-6 rounded-full bg-violet-100 dark:bg-violet-900/40 flex items-center justify-center shrink-0 mt-0.5">
-                        <Sparkles className="w-3 h-3 text-violet-500" />
+                      <div className="w-6 h-6 rounded-full bg-ai-soft flex items-center justify-center shrink-0 mt-0.5">
+                        <Sparkles className="w-3 h-3 text-ai" />
                       </div>
                     )}
-                    <div className={cn('max-w-[85%] rounded-xl px-3 py-2 text-[12px] leading-relaxed',
+                    <div className={cn('max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed',
                       m.role === 'user'
-                        ? 'bg-[var(--t1)] text-[var(--bg)] rounded-br-sm'
-                        : 'bg-violet-50 dark:bg-violet-900/20 text-[var(--t1)] ring-1 ring-inset ring-violet-100 dark:ring-violet-800/40 rounded-bl-sm')}>
+                        ? 'bg-fg text-page rounded-br-sm'
+                        : 'bg-ai-soft text-fg ring-1 ring-inset ring-ai-line rounded-bl-sm')}>
                       {m.role === 'ai' ? <CopilotMarkdown text={m.text} /> : m.text}
                     </div>
                   </div>
                 ))}
                 {aiLoading && (
                   <div className="flex gap-2.5 justify-start">
-                    <div className="w-6 h-6 rounded-full bg-violet-100 dark:bg-violet-900/40 flex items-center justify-center shrink-0">
-                      <Loader2 className="w-3 h-3 text-violet-500 animate-spin" />
+                    <div className="w-6 h-6 rounded-full bg-ai-soft flex items-center justify-center shrink-0">
+                      <Loader2 className="w-3 h-3 text-ai animate-spin" />
                     </div>
-                    <div className="bg-violet-50 dark:bg-violet-900/20 ring-1 ring-inset ring-violet-100 dark:ring-violet-800/40 rounded-xl rounded-bl-sm px-3 py-2">
+                    <div className="bg-ai-soft ring-1 ring-inset ring-ai-line rounded-xl rounded-bl-sm px-3 py-2">
                       <div className="flex gap-1">
                         {[0,1,2].map(i => (
-                          <div key={i} className="w-1.5 h-1.5 rounded-full bg-violet-400 animate-bounce" style={{animationDelay: `${i*150}ms`}} />
+                          <div key={i} className="w-1.5 h-1.5 rounded-full bg-ai " style={{animationDelay: `${i*150}ms`}} />
                         ))}
                       </div>
                     </div>
@@ -398,28 +398,23 @@ export function SearchPage({
                 onChange={e => setAiInput(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); askAI(); }}}
                 placeholder={aiMessages.length === 0 ? 'Ask anything about your jobs, quotes, or workflow…' : 'Follow up…'}
-                className="flex-1 h-8 px-3 rounded-lg bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[12px] focus:outline-none focus:ring-violet-300 dark:focus:ring-violet-700 placeholder:text-[var(--t3)]"
+                className="flex-1 h-8 px-3 rounded-lg bg-subtle ring-1 ring-inset ring-line-2 text-sm focus:outline-none focus:ring-ai-line placeholder:text-fg-3"
               />
               {aiMessages.length > 0 && (
                 <button onClick={() => setAiMessages([])}
-                  className="text-[10.5px] text-[var(--t3)] hover:text-red-500 px-1 whitespace-nowrap">
+                  className="text-2xs text-fg-3 hover:text-err px-1 whitespace-nowrap">
                   Clear
                 </button>
               )}
-              <button aria-label="Send question" onClick={() => askAI()}
-                disabled={aiLoading || !aiInput.trim()}
-                className="h-8 w-8 rounded-lg bg-violet-500 hover:bg-violet-600 text-white flex items-center justify-center disabled:opacity-40 disabled:cursor-not-allowed shrink-0">
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+              <UiIconButton icon={ArrowRight} label="Send question" tone="primary" className="shrink-0" onClick={() => askAI()} disabled={aiLoading || !aiInput.trim()} />
             </div>
             {/* Quick prompts */}
             {aiMessages.length === 0 && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {['What went wrong with the last failed job?', 'Walk me through raising a PMO', 'How do I fix a FedAuth error?', 'What\'s in the queue right now?'].map(p => (
-                  <button key={p} onClick={() => { setAiInput(p); askAI(p); }}
-                    className="text-[10.5px] px-2 py-1 rounded-md bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-300 ring-1 ring-inset ring-violet-100 dark:ring-violet-800/40 hover:bg-violet-100 dark:hover:bg-violet-900/30 transition-colors">
+                  <UiButton tone="secondary" key={p} onClick={() => { setAiInput(p); askAI(p); }}>
                     {p}
-                  </button>
+                  </UiButton>
                 ))}
               </div>
             )}
@@ -430,23 +425,23 @@ export function SearchPage({
       {/* D&Q Store documents — full-text (name + PDF/email content) */}
       {activeQuery && (
         <Card padded={false} className="overflow-hidden">
-          <div className="px-4 py-2.5 border-b border-[var(--line)] flex items-center gap-2">
-            <FileText className="w-3.5 h-3.5 text-[var(--accent-text)]" />
-            <span className="text-[12px] font-semibold">{mineOnly ? 'My quotes' : 'D&Q Store'}</span>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--s3)] text-[var(--t3)]">name + content</span>
-            {dqSearching && <Loader2 className="w-3 h-3 text-[var(--t3)] animate-spin ml-0.5" />}
+          <div className="px-4 py-2.5 border-b border-line flex items-center gap-2">
+            <FileText className="w-3.5 h-3.5 text-accent-text" />
+            <span className="text-sm font-semibold">{mineOnly ? 'My quotes' : 'D&Q Store'}</span>
+            <span className="text-2xs px-1.5 py-0.5 rounded bg-subtle text-fg-3">name + content</span>
+            {dqSearching && <Loader2 className="w-3 h-3 text-fg-3 animate-spin ml-0.5" />}
             <div className="flex-1" />
             {dqResults.length > 0 && (
-              <span className="text-[11px] text-[var(--t3)] num mr-1">{dqResults.length} file{dqResults.length !== 1 ? 's' : ''}</span>
+              <span className="text-xs text-fg-3 num mr-1">{dqResults.length} file{dqResults.length !== 1 ? 's' : ''}</span>
             )}
             {/* Mine-only toggle */}
             <button aria-label={mineOnly ? 'Showing only quotes you created — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'} onClick={() => toggleMine(!mineOnly)}
               title={mineOnly ? 'Showing only quotes you created — click to search everyone’s' : 'Searching everyone’s quotes — click to show only yours'}
               className={cn(
-                'h-6 px-2 rounded-md text-[10.5px] font-medium flex items-center gap-1.5 ring-1 ring-inset transition-colors',
+                'h-6 px-2 rounded-md text-2xs font-medium flex items-center gap-1.5 ring-1 ring-inset transition-colors',
                 mineOnly
-                  ? 'bg-[var(--accent-soft)] ring-[var(--accent-line)] text-[var(--accent-text)]'
-                  : 'ring-[var(--line-2)] text-[var(--t3)] hover:bg-[var(--s3)]',
+                  ? 'bg-accent-soft ring-accent-line text-accent-text'
+                  : 'ring-line-2 text-fg-3 hover:bg-subtle',
               )}>
               <User className="w-3 h-3" />
               Mine only
@@ -455,39 +450,39 @@ export function SearchPage({
           </div>
 
           {dqResults.length > 0 ? (
-            <div className="divide-y divide-[var(--line)]">
+            <div className="divide-y divide-line">
               {dqResults.map((d, i) => {
                 const isMail = ['msg', 'eml'].includes(d.ext);
                 const Icon = isMail ? Mail : FileText;
                 return (
                   <a key={i} href={d.url} target="_blank" rel="noopener noreferrer"
-                    className="flex items-start gap-3 px-4 py-2.5 hover:bg-[var(--s3)] group">
-                    <Icon className="w-4 h-4 text-[var(--t3)] mt-0.5 shrink-0" />
+                    className="flex items-start gap-3 px-4 py-2.5 hover:bg-subtle group">
+                    <Icon className="w-4 h-4 text-fg-3 mt-0.5 shrink-0" />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
-                        <p className="text-[12.5px] font-medium truncate">{d.title || d.filename}</p>
+                        <p className="text-sm font-medium truncate">{d.title || d.filename}</p>
                         {d.ext && (
-                          <span className="text-[9px] uppercase font-semibold px-1 py-0.5 rounded bg-[var(--s3)] text-[var(--t3)] shrink-0">{d.ext}</span>
+                          <span className="text-2xs uppercase font-semibold px-1 py-0.5 rounded bg-subtle text-fg-3 shrink-0">{d.ext}</span>
                         )}
                       </div>
                       {d.summary && (
-                        <p className="text-[11px] text-[var(--t3)] mt-0.5 line-clamp-2">{d.summary}</p>
+                        <p className="text-xs text-fg-3 mt-0.5 line-clamp-2">{d.summary}</p>
                       )}
                       {(d.author || d.modified) && (
-                        <p className="text-[10px] text-[var(--t3)] mt-0.5 num">
+                        <p className="text-2xs text-fg-3 mt-0.5 num">
                           {d.author}{d.author && d.modified ? ' · ' : ''}{d.modified ? relTime(d.modified) : ''}
                         </p>
                       )}
                     </div>
-                    <ExternalLink className="w-3.5 h-3.5 text-[var(--t4)] group-hover:text-[var(--accent-text)] shrink-0 mt-0.5" />
+                    <ExternalLink className="w-3.5 h-3.5 text-fg-4 group-hover:text-accent-text shrink-0 mt-0.5" />
                   </a>
                 );
               })}
             </div>
           ) : dqSearching ? (
-            <p className="px-4 py-3 text-[11.5px] text-[var(--t3)]">Searching quote files…</p>
+            <p className="px-4 py-3 text-xs text-fg-3">Searching quote files…</p>
           ) : (
-            <p className="px-4 py-3 text-[11.5px] text-[var(--t3)]">
+            <p className="px-4 py-3 text-xs text-fg-3">
               {mineOnly
                 ? 'No quotes you created matched — try turning off “Mine only”.'
                 : 'No files matched in the D&Q Store.'}
@@ -511,7 +506,7 @@ export function SearchPage({
 
             {hasFilters && (
               <button onClick={() => { setStatus('any'); setProductF('any'); setSalesmanF('any'); }}
-                className="text-[11px] font-medium text-[var(--t3)] hover:text-red-600 flex items-center gap-1">
+                className="text-xs font-medium text-fg-3 hover:text-err flex items-center gap-1">
                 <X className="w-3 h-3" /> Clear filters
               </button>
             )}
@@ -522,32 +517,32 @@ export function SearchPage({
               { value: 'value-asc',  label: 'Value ↑' },
             ]} />
 
-            <div className="flex items-center rounded-md ring-1 ring-inset ring-[var(--line-2)] p-0.5">
+            <div className="flex items-center rounded-md ring-1 ring-inset ring-line-2 p-0.5">
               {[
                 { id: 'cards' as const, I: LayoutGrid },
                 { id: 'table' as const, I: TableIcon },
               ].map(v => (
                 <button key={v.id} onClick={() => setView(v.id)}
                   className={cn('w-7 h-7 rounded-sm flex items-center justify-center',
-                    view === v.id ? 'bg-[var(--t1)] text-[var(--bg)]' : 'text-[var(--t3)] hover:text-[var(--t1)]')}>
+                    view === v.id ? 'bg-fg text-page' : 'text-fg-3 hover:text-fg')}>
                   <v.I className="w-3.5 h-3.5" />
                 </button>
               ))}
             </div>
           </div>
 
-          <div className="px-4 py-2 border-t border-[var(--line)] bg-[var(--s1)] flex items-center gap-3 text-[11.5px]">
-            <span className="text-[var(--t2)]">
-              <span className="font-semibold text-[var(--t1)] num">{summary.total.toLocaleString()}</span> result{summary.total !== 1 ? 's' : ''}
+          <div className="px-4 py-2 border-t border-line bg-surface flex items-center gap-3 text-xs">
+            <span className="text-fg-2">
+              <span className="font-semibold text-fg num">{summary.total.toLocaleString()}</span> result{summary.total !== 1 ? 's' : ''}
             </span>
             {summary.value > 0 && <>
-              <span className="text-[var(--t4)]">·</span>
-              <span className="text-[var(--t2)]">
-                Combined value <span className="font-semibold text-[var(--t1)] num">{fmtMoneyFull(summary.value, '€')}</span>
+              <span className="text-fg-4">·</span>
+              <span className="text-fg-2">
+                Combined value <span className="font-semibold text-fg num">{fmtMoneyFull(summary.value, '€')}</span>
               </span>
             </>}
             <div className="flex-1" />
-            <button onClick={exportCsv} className="text-[11px] font-medium text-[var(--t3)] hover:text-[var(--t1)] flex items-center gap-1">
+            <button onClick={exportCsv} className="text-xs font-medium text-fg-3 hover:text-fg flex items-center gap-1">
               <Download className="w-3 h-3" /> Export CSV
             </button>
           </div>
@@ -557,20 +552,20 @@ export function SearchPage({
       {/* Results */}
       {error && results.length === 0 && dqResults.length === 0 ? (
         <Card className="text-center py-16">
-          <div className="w-12 h-12 rounded-full bg-[var(--s3)] flex items-center justify-center mx-auto mb-3">
-            <SearchX className="w-5 h-5 text-[var(--t3)]" />
+          <div className="w-12 h-12 rounded-full bg-subtle flex items-center justify-center mx-auto mb-3">
+            <SearchX className="w-5 h-5 text-fg-3" />
           </div>
-          <p className="text-[14px] font-semibold">{error}</p>
-          <p className="text-[12px] text-[var(--t3)] mt-1">Try a different term, or clear filters.</p>
+          <p className="text-lg font-semibold">{error}</p>
+          <p className="text-sm text-fg-3 mt-1">Try a different term, or clear filters.</p>
         </Card>
       ) : filtered.length === 0 && results.length === 0 && !activeQuery ? (
         <Card className="text-center py-12">
-          <div className="w-12 h-12 rounded-full bg-[var(--accent-soft)] text-[var(--accent-text)] flex items-center justify-center mx-auto mb-3">
+          <div className="w-12 h-12 rounded-full bg-accent-soft text-accent-text flex items-center justify-center mx-auto mb-3">
             <SearchIcon className="w-5 h-5" />
           </div>
-          <p className="text-[13px] font-semibold">Search the SharePoint Quotations list</p>
-          <p className="text-[11.5px] text-[var(--t3)] mt-1 max-w-md mx-auto">
-            Try a Salesforce ID like <code className="mono text-[var(--accent-text)]">SR00MzKQ8</code>, a customer name like <em>Heathrow</em>, or a quote name.
+          <p className="text-base font-semibold">Search the SharePoint Quotations list</p>
+          <p className="text-xs text-fg-3 mt-1 max-w-md mx-auto">
+            Try a Salesforce ID like <code className="mono text-accent-text">SR00MzKQ8</code>, a customer name like <em>Heathrow</em>, or a quote name.
           </p>
         </Card>
       ) : view === 'cards' ? (
@@ -579,32 +574,32 @@ export function SearchPage({
         </div>
       ) : (
         <Card padded={false} className="overflow-hidden">
-          <table className="w-full text-[11.5px]">
+          <table className="w-full text-xs">
             <thead>
-              <tr className="bg-[var(--s1)] border-b border-[var(--line)]">
+              <tr className="bg-surface border-b border-line">
                 {['SF ID', 'Customer', 'Quote', 'Division', 'Status', 'Value', 'Arrived', ''].map(h => (
-                  <th key={h} className="text-left px-4 py-2.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--t3)]">{h}</th>
+                  <th key={h} className="text-left px-4 py-2.5 text-2xs font-semibold uppercase tracking-wider text-fg-3">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {filtered.map(r => (
-                <tr key={r.Id ?? r.SALESFORCEID} className="border-b border-[var(--line)] hover:bg-[var(--s3)]">
-                  <td className="px-4 py-2.5 mono text-[var(--accent-text)] font-semibold">{r.SALESFORCEID}</td>
-                  <td className="px-4 py-2.5 font-medium truncate max-w-[180px]">{r.CUSTOMER || '—'}</td>
-                  <td className="px-4 py-2.5 text-[var(--t2)] truncate max-w-[180px]">{r.QUOTATION_x0020_NAME || r.Title || '—'}</td>
+                <tr key={r.Id ?? r.SALESFORCEID} className="border-b border-line hover:bg-subtle">
+                  <td className="px-4 py-2.5 mono text-accent-text font-semibold">{r.SALESFORCEID}</td>
+                  <td className="px-4 py-2.5 font-medium truncate max-w-44">{r.CUSTOMER || '—'}</td>
+                  <td className="px-4 py-2.5 text-fg-2 truncate max-w-44">{r.QUOTATION_x0020_NAME || r.Title || '—'}</td>
                   <td className="px-4 py-2.5">
                     {r.DIVISION ? (
                       <span className="inline-flex items-center gap-1.5">
-                        <span className="w-1.5 h-3.5 rounded-sm" style={{ background: PRODUCT_COLORS[r.DIVISION] || '#65656c' }} />
+                        <span className="w-1.5 h-3.5 rounded-sm" style={{ background: PRODUCT_COLORS[r.DIVISION] || 'var(--t3)' }} />
                         {r.DIVISION}
                       </span>
                     ) : '—'}
                   </td>
                   <td className="px-4 py-2.5">{r.STATUS ? <Pill tone="neutral">{r.STATUS}</Pill> : '—'}</td>
-                  <td className="px-4 py-2.5 num font-medium text-right">{r.PRICE ? fmtMoneyFull(Number(r.PRICE), '€') : '—'}</td>
-                  <td className="px-4 py-2.5 text-[var(--t3)] num">{r.ARRIVED_x0020_ON ? relTime(r.ARRIVED_x0020_ON) : '—'}</td>
-                  <td className="px-4 py-2.5 text-[var(--t3)]"><ExternalLink className="w-3.5 h-3.5" /></td>
+                  <td className="px-4 py-2.5 mono font-medium text-right">{r.PRICE ? fmtMoneyFull(Number(r.PRICE), '€') : '—'}</td>
+                  <td className="px-4 py-2.5 text-fg-3 num">{r.ARRIVED_x0020_ON ? relTime(r.ARRIVED_x0020_ON) : '—'}</td>
+                  <td className="px-4 py-2.5 text-fg-3"><ExternalLink className="w-3.5 h-3.5" /></td>
                 </tr>
               ))}
             </tbody>
@@ -632,26 +627,26 @@ function FilterChip<V extends string>({
     <div className="relative">
       <button onClick={() => setOpen(o => !o)}
         className={cn(
-          'h-8 px-2.5 rounded-md text-[11.5px] flex items-center gap-1.5 ring-1 ring-inset transition-colors',
+          'h-8 px-2.5 rounded-md text-xs flex items-center gap-1.5 ring-1 ring-inset transition-colors',
           isActive
-            ? 'bg-[var(--accent-soft)] ring-[var(--accent-line)] text-[var(--accent-text)] font-medium'
-            : 'ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)]',
+            ? 'bg-accent-soft ring-accent-line text-accent-text font-medium'
+            : 'ring-line-2 text-fg-2 hover:bg-subtle',
         )}>
         <Icon className="w-3.5 h-3.5" />
-        <span className="text-[var(--t3)]">{label}:</span>
+        <span className="text-fg-3">{label}:</span>
         <span>{current?.label}</span>
-        <ChevronDown className="w-3 h-3 text-[var(--t3)]" />
+        <ChevronDown className="w-3 h-3 text-fg-3" />
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute z-20 mt-1 min-w-[180px] max-h-72 overflow-y-auto rounded-lg bg-[var(--s1)] ring-1 ring-[var(--line-2)] shadow-lg py-1">
+          <div className="absolute z-20 mt-1 min-w-44 max-h-72 overflow-y-auto rounded-lg bg-surface ring-1 ring-line-2 shadow-float py-1">
             {options.map(o => (
               <button key={o.value} onClick={() => { setValue(o.value); setOpen(false); }}
-                className={cn('w-full px-2.5 py-1.5 text-left text-[11.5px] flex items-center gap-2',
+                className={cn('w-full px-2.5 py-1.5 text-left text-xs flex items-center gap-2',
                   o.value === value
-                    ? 'bg-[var(--accent-soft)] text-[var(--accent-text)] font-medium'
-                    : 'text-[var(--t2)] hover:bg-[var(--s3)]')}>
+                    ? 'bg-accent-soft text-accent-text font-medium'
+                    : 'text-fg-2 hover:bg-subtle')}>
                 {o.label}
                 {o.value === value && <Check className="w-3 h-3 ml-auto" />}
               </button>
@@ -664,48 +659,48 @@ function FilterChip<V extends string>({
 }
 
 function ResultCard({ r }: { r: SearchResult }) {
-  const productColor = r.DIVISION ? (PRODUCT_COLORS[r.DIVISION] || '#65656c') : '#65656c';
-  const statusBg = r.STATUS === 'Processed' ? 'bg-emerald-500'
-                 : r.STATUS === 'Error' ? 'bg-red-500'
-                 : r.STATUS === 'On Hold' ? 'bg-amber-500'
-                 : 'bg-[var(--accent)]';
+  const productColor = r.DIVISION ? (PRODUCT_COLORS[r.DIVISION] || 'var(--t3)') : 'var(--t3)';
+  const statusBg = r.STATUS === 'Processed' ? 'bg-ok'
+                 : r.STATUS === 'Error' ? 'bg-err'
+                 : r.STATUS === 'On Hold' ? 'bg-warn'
+                 : 'bg-accent';
   return (
-    <div className="rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-[var(--line)] hover:ring-[var(--line-3)] transition-all overflow-hidden">
+    <div className="rounded-xl bg-surface ring-1 ring-inset ring-line hover:ring-line-3 transition-all overflow-hidden">
       <div className="flex">
         <div className="w-1 shrink-0" style={{ background: productColor }} />
         <div className="flex-1 p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="text-[10px] mono font-semibold text-[var(--accent-text)]">{r.SALESFORCEID || '—'}</p>
-              <h4 className="text-[13.5px] font-semibold mt-0.5 truncate">{r.CUSTOMER || r.QUOTATION_x0020_NAME || '(no name)'}</h4>
-              <p className="text-[11.5px] text-[var(--t3)] mt-0.5 truncate">
+              <p className="text-2xs mono font-semibold text-accent-text">{r.SALESFORCEID || '—'}</p>
+              <h4 className="text-base font-semibold mt-0.5 truncate">{r.CUSTOMER || r.QUOTATION_x0020_NAME || '(no name)'}</h4>
+              <p className="text-xs text-fg-3 mt-0.5 truncate">
                 {r.QUOTATION_x0020_NAME || r.Title || '—'}
                 {r.DIVISION && <> · {r.DIVISION}</>}
               </p>
             </div>
             <div className="shrink-0 flex items-center gap-1.5">
               <span className={cn('w-2 h-2 rounded-full', statusBg)} />
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--t3)]">
+              <span className="text-2xs font-semibold uppercase tracking-wide text-fg-3">
                 {r.STATUS || '—'}
               </span>
             </div>
           </div>
 
-          <div className="grid grid-cols-4 gap-3 mt-4 text-[11px]">
+          <div className="grid grid-cols-4 gap-3 mt-4 text-xs">
             <div>
-              <p className="text-[9.5px] uppercase tracking-wider text-[var(--t3)] font-semibold">Value</p>
+              <p className="text-2xs uppercase tracking-wider text-fg-3 font-semibold">Value</p>
               <p className="num font-semibold mt-0.5">{r.PRICE ? fmtMoneyFull(Number(r.PRICE), '€') : '—'}</p>
             </div>
             <div>
-              <p className="text-[9.5px] uppercase tracking-wider text-[var(--t3)] font-semibold">Salesman</p>
+              <p className="text-2xs uppercase tracking-wider text-fg-3 font-semibold">Salesman</p>
               <p className="font-medium mt-0.5 truncate">{r.REQUESTED_x0020_BY ? r.REQUESTED_x0020_BY.split(' ')[0] : '—'}</p>
             </div>
             <div>
-              <p className="text-[9.5px] uppercase tracking-wider text-[var(--t3)] font-semibold">Country</p>
+              <p className="text-2xs uppercase tracking-wider text-fg-3 font-semibold">Country</p>
               <p className="font-medium mt-0.5 truncate">{r.Country || '—'}</p>
             </div>
             <div>
-              <p className="text-[9.5px] uppercase tracking-wider text-[var(--t3)] font-semibold">Arrived</p>
+              <p className="text-2xs uppercase tracking-wider text-fg-3 font-semibold">Arrived</p>
               <p className="font-medium mt-0.5">{r.ARRIVED_x0020_ON ? relTime(r.ARRIVED_x0020_ON) : '—'}</p>
             </div>
           </div>

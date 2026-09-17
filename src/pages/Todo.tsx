@@ -12,6 +12,7 @@ import {
 
 import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, relTime } from '../lib/ui';
+import { Button, EmptyState, Input, Section, Segmented, Select, Stat, StatRow, Toolbar, Button as UiButton, IconButton as UiIconButton } from '../ui';
 import { api } from '../lib/api';
 import { failed, plural } from '../lib/errors';
 import { runTask, isCancel } from '../lib/tasks';
@@ -93,21 +94,18 @@ function RecipientPicker({
       <div className="flex flex-wrap gap-1.5 mb-2">
         {value.map(r => (
           <span key={r.email}
-            className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full text-[11px] bg-[var(--accent-soft)] text-[var(--accent-text)] border border-[var(--accent-line)]">
-            <span className="truncate max-w-[220px]" title={r.email}>{r.name || r.email}</span>
-            <button aria-label="Remove" onClick={() => onChange(value.filter(v => v.email !== r.email))}
-              className="p-0.5 rounded-full hover:bg-[var(--s3)] transition-colors" title="Remove">
-              <X className="w-3 h-3" />
-            </button>
+            className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full text-xs bg-accent-soft text-accent-text border border-accent-line">
+            <span className="truncate max-w-56" title={r.email}>{r.name || r.email}</span>
+            <UiIconButton icon={X} label="Remove" onClick={() => onChange(value.filter(v => v.email !== r.email))} />
           </span>
         ))}
-        {!value.length && <span className="text-[11px] text-[var(--t4)]">Nobody yet — this stays with you.</span>}
+        {!value.length && <span className="text-xs text-fg-4">Nobody yet — this stays with you.</span>}
       </div>
 
       <div className="relative">
         <div className="flex gap-2">
           <div className="relative flex-1">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t4)]" />
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-fg-4" />
             <TextInput
               value={q}
               onChange={e => { setQ(e.target.value); setOpen(true); }}
@@ -120,36 +118,34 @@ function RecipientPicker({
               className="pl-8"
             />
           </div>
-          <button aria-label="Re-read who you correspond with from Outlook" onClick={onRefresh} disabled={refreshing}
-            title="Re-read who you correspond with from Outlook"
-            className="h-[34px] px-3 rounded-[9px] text-[11px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors disabled:opacity-50 flex items-center gap-1.5">
+          <UiButton tone="secondary" size="md" aria-label="Re-read who you correspond with from Outlook" onClick={onRefresh} disabled={refreshing} hint="Re-read who you correspond with from Outlook">
             {refreshing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
             Refresh
-          </button>
+          </UiButton>
         </div>
 
         {open && (
-          <div className="absolute z-30 left-0 right-0 mt-1 max-h-[260px] overflow-y-auto vec-scroll rounded-[10px] border border-[var(--line-2)] bg-[var(--s1)] shadow-lg">
-            {loading && <p className="px-3 py-2.5 text-[11px] text-[var(--t3)]">Loading people…</p>}
+          <div className="absolute z-30 left-0 right-0 mt-1 max-h-64 overflow-y-auto vec-scroll rounded-panel border border-line-2 bg-surface shadow-float">
+            {loading && <p className="px-3 py-2.5 text-xs text-fg-3">Loading people…</p>}
             {!loading && typedIsEmail && (
               <button onMouseDown={() => add({ name: q.trim(), email: q.trim() })}
-                className="w-full text-left px-3 py-2 text-[11.5px] hover:bg-[var(--s2)] transition-colors border-b border-[var(--line)]">
-                <span className="text-[var(--accent-text)] font-semibold">Use “{q.trim()}”</span>
+                className="w-full text-left px-3 py-2 text-xs hover:bg-raised transition-colors border-b border-line">
+                <span className="text-accent-text font-semibold">Use “{q.trim()}”</span>
               </button>
             )}
             {!loading && !hits.length && !typedIsEmail && (
-              <p className="px-3 py-2.5 text-[11px] text-[var(--t3)]">
+              <p className="px-3 py-2.5 text-xs text-fg-3">
                 {options.length ? 'No match.' : 'No people harvested yet — hit Refresh.'}
               </p>
             )}
             {hits.map(o => (
               <button key={o.email} onMouseDown={() => add({ name: o.name, email: o.email })}
-                className="w-full text-left px-3 py-2 hover:bg-[var(--s2)] transition-colors flex items-center justify-between gap-3">
+                className="w-full text-left px-3 py-2 hover:bg-raised transition-colors flex items-center justify-between gap-3">
                 <span className="min-w-0">
-                  <span className="block text-[11.5px] text-[var(--t1)] truncate">{o.name || o.email}</span>
-                  <span className="block text-[10px] text-[var(--t4)] truncate">{o.email}</span>
+                  <span className="block text-xs text-fg truncate">{o.name || o.email}</span>
+                  <span className="block text-2xs text-fg-4 truncate">{o.email}</span>
                 </span>
-                <span className="shrink-0 text-[9.5px] text-[var(--t4)]">
+                <span className="shrink-0 text-2xs text-fg-4">
                   {o.source === 'crm' ? 'CRM' : `${o.count} mails`}
                 </span>
               </button>
@@ -239,13 +235,13 @@ function TodoDetail({
   const meta = bucketMeta(draft.bucket);
 
   return (
-    <div className="fixed inset-0 z-40 flex items-stretch justify-end bg-black/40 backdrop-blur-[2px]"
+    <div className="fixed inset-0 z-40 flex items-stretch justify-end bg-overlay "
       onClick={onClose}>
-      <div className="w-full max-w-[720px] h-full overflow-y-auto vec-scroll bg-[var(--s0)] border-l border-[var(--line)] shadow-2xl"
+      <div className="w-full max-w-180 h-full overflow-y-auto vec-scroll bg-page border-l border-line "
         onClick={e => e.stopPropagation()}>
 
         {/* Header */}
-        <div className="sticky top-0 z-10 px-5 py-4 bg-[var(--s0)] border-b border-[var(--line)] flex items-start gap-3">
+        <div className="sticky top-0 z-10 px-5 py-4 bg-page border-b border-line flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-1.5">
               <Pill tone={meta.tone} dot>{meta.label}</Pill>
@@ -254,17 +250,15 @@ function TodoDetail({
               {isOverdue(draft) && <Pill tone="err">{fmtDue(draft.due)}</Pill>}
             </div>
             <input value={draft.title} onChange={e => set('title', e.target.value)}
-              className="w-full bg-transparent text-[15px] font-semibold text-[var(--t1)] outline-none border-b border-transparent focus:border-[var(--accent-line)] transition-colors" />
+              className="w-full bg-transparent text-lg font-semibold text-fg outline-none border-b border-transparent focus:border-accent-line transition-colors" />
             {draft.sender && (
-              <p className="text-[11px] text-[var(--t3)] mt-1.5 truncate">
+              <p className="text-xs text-fg-3 mt-1.5 truncate">
                 From {draft.sender} &lt;{draft.senderEmail}&gt; · {relTime(draft.received)}
                 {draft.received && ` · waiting ${waitingDays(draft.received)}d`}
               </p>
             )}
           </div>
-          <button aria-label="Close" onClick={onClose} className="p-1.5 rounded-lg text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s2)] transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+          <UiIconButton icon={X} label="Close" onClick={onClose} />
         </div>
 
         <div className="p-5 space-y-4">
@@ -274,24 +268,24 @@ function TodoDetail({
             <div className="space-y-3">
               <Field label="Next step">
                 <textarea value={draft.action} onChange={e => set('action', e.target.value)} rows={2}
-                  className="w-full px-3 py-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none resize-y" />
+                  className="w-full px-3 py-2 rounded-panel text-sm bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none resize-y" />
               </Field>
               {draft.bucket !== 'direct' && (
                 <Field label={draft.bucket === 'needs_info' ? "What's missing" : 'Who must act'}>
                   <textarea value={draft.blocker} onChange={e => set('blocker', e.target.value)} rows={2}
-                    className="w-full px-3 py-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none resize-y" />
+                    className="w-full px-3 py-2 rounded-panel text-sm bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none resize-y" />
                 </Field>
               )}
               <Field label="My notes">
                 <textarea value={draft.notes} onChange={e => set('notes', e.target.value)} rows={2}
                   placeholder="Anything you want to remember about this one"
-                  className="w-full px-3 py-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none resize-y" />
+                  className="w-full px-3 py-2 rounded-panel text-sm bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none resize-y" />
               </Field>
 
               <div className="grid grid-cols-3 gap-3">
                 <Field label="Bucket">
                   <select value={draft.bucket} onChange={e => set('bucket', e.target.value as TodoBucket)}
-                    className="w-full h-[34px] px-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none">
+                    className="w-full h-8 px-2 rounded-panel text-sm bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none">
                     {BUCKETS.map(b => <option key={b.id} value={b.id}>{b.label}</option>)}
                   </select>
                 </Field>
@@ -300,7 +294,7 @@ function TodoDetail({
                 </Field>
                 <Field label="Priority">
                   <select value={draft.priority} onChange={e => set('priority', e.target.value as 'high' | 'normal')}
-                    className="w-full h-[34px] px-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none">
+                    className="w-full h-8 px-2 rounded-panel text-sm bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none">
                     <option value="normal">Normal</option>
                     <option value="high">High</option>
                   </select>
@@ -309,7 +303,7 @@ function TodoDetail({
 
               {draft.summary && (
                 <Field label="From the email">
-                  <p className="text-[11.5px] text-[var(--t2)] leading-relaxed whitespace-pre-wrap max-h-[160px] overflow-y-auto vec-scroll p-3 rounded-[9px] bg-[var(--s1)] border border-[var(--line)]">
+                  <p className="text-xs text-fg-2 leading-relaxed whitespace-pre-wrap max-h-40 overflow-y-auto vec-scroll p-3 rounded-panel bg-surface border border-line">
                     {draft.summary}
                   </p>
                 </Field>
@@ -341,13 +335,10 @@ function TodoDetail({
                   <div className="flex flex-wrap gap-1.5">
                     {draft.attachments.map(a => (
                       <span key={a.index}
-                        className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full text-[11px] bg-[var(--s2)] border border-[var(--line-2)] text-[var(--t2)]">
-                        <Paperclip className="w-3 h-3 text-[var(--t4)]" />
-                        <span className="truncate max-w-[200px]" title={a.name}>{a.name}</span>
-                        <button aria-label="Don't attach this" onClick={() => set('attachments', draft.attachments.filter(x => x.index !== a.index))}
-                          className="p-0.5 rounded-full hover:bg-[var(--s3)] transition-colors" title="Don't attach this">
-                          <X className="w-3 h-3" />
-                        </button>
+                        className="inline-flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-full text-xs bg-raised border border-line-2 text-fg-2">
+                        <Paperclip className="w-3 h-3 text-fg-4" />
+                        <span className="truncate max-w-48" title={a.name}>{a.name}</span>
+                        <UiIconButton icon={X} label="Don't attach this" onClick={() => set('attachments', draft.attachments.filter(x => x.index !== a.index))} />
                       </span>
                     ))}
                   </div>
@@ -363,38 +354,35 @@ function TodoDetail({
               <Field label="Message">
                 <textarea value={draft.draftBody} onChange={e => set('draftBody', e.target.value)} rows={9}
                   placeholder="Write it yourself, or let Vector draft it from the item above."
-                  className="w-full px-3 py-2 rounded-[9px] text-[12px] leading-relaxed bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none resize-y font-mono" />
+                  className="w-full px-3 py-2 rounded-panel text-sm leading-relaxed bg-surface border border-line-2 text-fg focus:border-accent-line focus:outline-none resize-y mono" />
               </Field>
 
               <div className="flex flex-wrap items-center gap-2">
                 <button onClick={writeDraft} disabled={writing}
-                  className="h-[34px] px-3 rounded-[9px] text-[11.5px] font-semibold bg-[var(--violet-soft)] text-[var(--violet)] hover:brightness-105 transition-all disabled:opacity-50 flex items-center gap-1.5">
+                  className="h-8 px-3 rounded-panel text-xs font-semibold bg-ai-soft text-ai hover:opacity-80 transition-opacity disabled:opacity-50 flex items-center gap-1.5">
                   {writing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                   Write it for me
                 </button>
-                <button onClick={() => send(true)} disabled={!!sending}
-                  className="h-[34px] px-3 rounded-[9px] text-[11.5px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors disabled:opacity-50 flex items-center gap-1.5">
+                <UiButton tone="secondary" size="md" onClick={() => send(true)} disabled={!!sending}>
                   {sending === 'draft' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileEdit className="w-3.5 h-3.5" />}
                   Open in Outlook
-                </button>
+                </UiButton>
 
                 {!confirmSend ? (
-                  <button onClick={() => setConfirmSend(true)} disabled={!!sending}
-                    className="h-[34px] px-3 rounded-[9px] text-[11.5px] font-semibold bg-[var(--accent)] text-white hover:brightness-110 transition-all disabled:opacity-50 flex items-center gap-1.5">
+                  <UiButton tone="primary" size="md" onClick={() => setConfirmSend(true)} disabled={!!sending}>
                     <Send className="w-3.5 h-3.5" /> Send now
-                  </button>
+                  </UiButton>
                 ) : (
-                  <span className="flex items-center gap-2 pl-3 pr-1 h-[34px] rounded-[9px] bg-[var(--err-soft)] border border-transparent">
-                    <span className="text-[11px] text-[var(--err)] font-semibold">
+                  <span className="flex items-center gap-2 pl-3 pr-1 h-8 rounded-panel bg-err-soft border border-transparent">
+                    <span className="text-xs text-err font-semibold">
                       Send to {draft.recipients.map(r => r.email).join(', ')}?
                     </span>
-                    <button onClick={() => send(false)} disabled={!!sending}
-                      className="h-[26px] px-2.5 rounded-[7px] text-[11px] font-semibold bg-[var(--err)] text-white hover:brightness-110 transition-all disabled:opacity-50 flex items-center gap-1.5">
+                    <UiButton tone="danger" size="xs" onClick={() => send(false)} disabled={!!sending}>
                       {sending === 'send' ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
                       Yes, send
-                    </button>
+                    </UiButton>
                     <button onClick={() => setConfirmSend(false)}
-                      className="h-[26px] px-2 rounded-[7px] text-[11px] text-[var(--t3)] hover:text-[var(--t1)] transition-colors">
+                      className="h-6 px-2 rounded-panel text-xs text-fg-3 hover:text-fg transition-colors">
                       Cancel
                     </button>
                   </span>
@@ -405,25 +393,22 @@ function TodoDetail({
 
           {/* Footer actions */}
           <div className="flex items-center justify-between gap-2 pb-2">
-            <button onClick={remove}
-              className="h-[34px] px-3 rounded-[9px] text-[11.5px] font-semibold text-[var(--err)] hover:bg-[var(--err-soft)] transition-colors flex items-center gap-1.5">
+            <UiButton tone="quiet-danger" size="md" onClick={remove}>
               <Trash2 className="w-3.5 h-3.5" /> Delete
-            </button>
+            </UiButton>
             <div className="flex items-center gap-2">
               {draft.entryId && (
-                <button onClick={() => api.outlookOpenInOutlook(draft.entryId).catch(() => {})}
-                  className="h-[34px] px-3 rounded-[var(--r-sm)] text-[11.5px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors flex items-center gap-1.5">
+                <UiButton tone="secondary" size="md" onClick={() => api.outlookOpenInOutlook(draft.entryId).catch(() => {})}>
                   <Mail className="w-3.5 h-3.5" /> Open email
-                </button>
+                </UiButton>
               )}
               <button onClick={() => save({ status: draft.status === 'done' ? 'open' : 'done' })}
-                className="h-[34px] px-3 rounded-[9px] text-[11.5px] font-semibold bg-[var(--ok-soft)] text-[var(--ok)] hover:brightness-105 transition-all flex items-center gap-1.5">
+                className="h-8 px-3 rounded-panel text-xs font-semibold bg-ok-soft text-ok hover:opacity-80 transition-opacity flex items-center gap-1.5">
                 <CheckCircle2 className="w-3.5 h-3.5" /> {draft.status === 'done' ? 'Reopen' : 'Mark done'}
               </button>
-              <button onClick={() => save()} disabled={saving}
-                className="h-[34px] px-4 rounded-[9px] text-[11.5px] font-semibold bg-[var(--accent)] text-white hover:brightness-110 transition-all disabled:opacity-50 flex items-center gap-1.5">
+              <UiButton tone="primary" size="md" onClick={() => save()} disabled={saving}>
                 {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null} Save
-              </button>
+              </UiButton>
             </div>
           </div>
         </div>
@@ -456,40 +441,35 @@ function TodoCard({
       }}
       onDragEnd={onDragEnd}
       className={cn(
-        'group cursor-pointer rounded-[12px] border bg-[var(--s1)] p-3 transition-all hover:border-[var(--accent-line)] hover:shadow-sm active:cursor-grabbing',
-        overdue ? 'border-[var(--err-soft)]' : 'border-[var(--line-2)]',
+        'group cursor-pointer rounded-panel border border-line bg-surface p-3 transition-colors hover:border-line-3 active:cursor-grabbing',
         item.status === 'done' && 'opacity-55',
-        dragging && 'opacity-40 ring-1 ring-[var(--accent-line)]',
+        dragging && 'opacity-40 ring-1 ring-accent-line',
       )}>
       <div className="flex items-start gap-2">
-        <GripVertical className="w-3 h-3 mt-0.5 shrink-0 text-[var(--t4)] opacity-0 group-hover:opacity-100 transition-opacity cursor-grab" />
-        <p className={cn('flex-1 text-[12px] font-semibold text-[var(--t1)] leading-snug',
+        <GripVertical className="w-3 h-3 mt-0.5 shrink-0 text-fg-4 opacity-0 group-hover:opacity-100 transition-opacity cursor-grab" />
+        <p className={cn('flex-1 text-md font-medium text-fg leading-snug',
           item.status === 'done' && 'line-through')}>
           {item.title}
         </p>
-        <button aria-label={item.status === 'done' ? 'Reopen' : 'Mark done'} onClick={e => { e.stopPropagation(); onDone(); }}
-          title={item.status === 'done' ? 'Reopen' : 'Mark done'}
-          className="shrink-0 p-1 rounded-md text-[var(--t4)] opacity-0 group-hover:opacity-100 hover:text-[var(--ok)] hover:bg-[var(--ok-soft)] transition-all">
-          <CheckCircle2 className="w-3.5 h-3.5" />
-        </button>
+        <UiIconButton icon={CheckCircle2} label={item.status === 'done' ? 'Reopen' : 'Mark done'} className="shrink-0 opacity-0 group-hover:opacity-100" onClick={e => { e.stopPropagation(); onDone(); }} />
       </div>
 
-      {item.action && <p className="text-[11px] text-[var(--t3)] mt-1.5 leading-relaxed line-clamp-2">{item.action}</p>}
+      {item.action && <p className="text-xs text-fg-3 mt-1.5 leading-relaxed line-clamp-2">{item.action}</p>}
 
       <div className="flex flex-wrap items-center gap-1.5 mt-2.5">
         {item.priority === 'high' && <Pill tone="err">High</Pill>}
-        <span className={cn('inline-flex items-center gap-1 text-[10px] font-semibold',
-          overdue ? 'text-[var(--err)]' : 'text-[var(--t4)]')}>
+        <span className={cn('inline-flex items-center gap-1 mono text-2xs',
+          overdue ? 'text-err' : 'text-fg-3')}>
           <CalendarDays className="w-3 h-3" /> {fmtDue(item.due)}
         </span>
         {!!item.attachments.length && (
-          <span className="inline-flex items-center gap-1 text-[10px] text-[var(--t4)]">
+          <span className="inline-flex items-center gap-1 text-2xs text-fg-4">
             <Paperclip className="w-3 h-3" /> {item.attachments.length}
           </span>
         )}
         {item.status === 'waiting' && <Pill tone="brand">Waiting</Pill>}
         {!!item.recipients.length && (
-          <span className="inline-flex items-center gap-1 text-[10px] text-[var(--t4)] truncate max-w-[150px]"
+          <span className="inline-flex items-center gap-1 text-2xs text-fg-4 truncate max-w-36"
             title={item.recipients.map(r => r.email).join(', ')}>
             <ChevronRight className="w-3 h-3" /> {item.recipients[0].name || item.recipients[0].email}
             {item.recipients.length > 1 && ` +${item.recipients.length - 1}`}
@@ -498,7 +478,7 @@ function TodoCard({
       </div>
 
       {item.sender && (
-        <p className="text-[10px] text-[var(--t4)] mt-2 truncate border-t border-[var(--line)] pt-2">
+        <p className="text-2xs text-fg-4 mt-2 truncate border-t border-line pt-2">
           {item.sender} · waiting {waitingDays(item.received)}d
         </p>
       )}
@@ -650,135 +630,85 @@ export function TodoPage({ toast, onOpenCount }: { toast: ToastFn; onOpenCount?:
   const scannedAt = status?.lastScanAt || lastScanAt;
 
   return (
-    <div className="space-y-[17px]">
-      {/* ── Scan bar ───────────────────────────────────────────────────────── */}
-      <Card>
-        <CardTitle
-          title="Triage the shared mailbox"
-          sub={`Every unanswered thread in ${mailbox || 'the quote factory box'} — sorted into what you can finish, what's blocked, and what belongs to someone else.`}
-          right={
-            <>
-              <button onClick={addManual}
-                className="h-[34px] px-3 rounded-[var(--r-sm)] text-[11.5px] font-semibold border border-[var(--line-2)] text-[var(--t2)] hover:text-[var(--t1)] hover:border-[var(--accent-line)] transition-colors flex items-center gap-1.5">
-                <Plus className="w-3.5 h-3.5" /> New
-              </button>
-              <select value={days} onChange={e => setDays(Number(e.target.value))} disabled={running}
-                className="h-[34px] px-2 rounded-[var(--r-sm)] text-[11.5px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)] focus:border-[var(--accent-line)] focus:outline-none disabled:opacity-50">
-                <option value={7}>Last 7 days</option>
-                <option value={14}>Last 14 days</option>
-                <option value={30}>Last 30 days</option>
-                <option value={60}>Last 60 days</option>
-                <option value={90}>Last 90 days</option>
-              </select>
-              <button onClick={runScan} disabled={running}
-                className="h-[34px] px-4 rounded-[var(--r-sm)] text-[11.5px] font-semibold bg-[var(--accent)] text-white hover:brightness-110 transition-all disabled:opacity-60 flex items-center gap-1.5">
-                {running ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-                {running ? 'Scanning…' : 'Full scan'}
-              </button>
-            </>
-          }
-        />
-
-        {running && (
-          <div className="mb-3 p-3 rounded-[10px] bg-[var(--s2)] border border-[var(--line)]">
-            <p className="text-[11.5px] text-[var(--t2)] flex items-center gap-2">
-              <Loader2 className="w-3.5 h-3.5 animate-spin text-[var(--accent)]" />
-              {status?.message || 'Working…'}
-            </p>
-            {!!status?.threads && (
-              <p className="text-[10.5px] text-[var(--t4)] mt-1.5">
-                {status.threads} unanswered thread(s) found · {status.triaged} triaged
-              </p>
-            )}
-          </div>
-        )}
-        {!running && status?.phase === 'error' && (
-          <div className="mb-3 p-3 rounded-[10px] bg-[var(--err-soft)] flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-[var(--err)] shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <p className="text-[11.5px] text-[var(--err)]">{status.error}</p>
-              {status.startedAt && (
-                <p className="text-[10.5px] text-[var(--t4)] mt-1">Last attempted {relTime(status.startedAt)}</p>
+    <div className="flex flex-col gap-6">
+      {/* ── Scan ─────────────────────────────────────────────────────────── */}
+      <Section
+        title="Triage the shared mailbox"
+        description={`Every unanswered thread in ${mailbox || 'the quote factory box'} — sorted into what you can finish, what's blocked, and what belongs to someone else.`}
+        actions={<>
+          <Button icon={Plus} onClick={addManual}>New</Button>
+          <Select value={String(days)} onChange={v => v && setDays(Number(v))} disabled={running}
+            w="calc(var(--sp-16) * 2)"
+            data={[7, 14, 30, 60, 90].map(d => ({ value: String(d), label: `Last ${d} days` }))} />
+          <Button tone="primary" icon={Play} onClick={runScan} loading={running}>
+            {running ? 'Scanning…' : 'Full scan'}
+          </Button>
+        </>}>
+        <div className="flex flex-col gap-4">
+          {running && (
+            <div className="flex items-center gap-2 text-sm text-fg-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-accent-text" />
+              <span>{status?.message || 'Working…'}</span>
+              {!!status?.threads && (
+                <span className="mono text-xs text-fg-3">· {status.threads} found · {status.triaged} triaged</span>
               )}
             </div>
-          </div>
-        )}
-        {/* The last completed run, restored from the database — survives a page
-            refresh and a server restart, so the panel is never blank. */}
-        {!running && status?.phase === 'done' && status.message && (
-          <div className="mb-3 p-3 rounded-[10px] bg-[var(--s2)] border border-[var(--line)] flex items-start gap-2">
-            <CheckCircle2 className="w-4 h-4 text-[var(--ok)] shrink-0 mt-0.5" />
-            <div className="min-w-0">
-              <p className="text-[11.5px] text-[var(--t2)]">{status.message}</p>
-              <p className="text-[10.5px] text-[var(--t4)] mt-1">
-                Last {status.days}-day scan of {status.mailbox || mailbox}
-                {scannedAt ? ` · ${relTime(scannedAt)}` : ''}
+          )}
+          {!running && status?.phase === 'error' && (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-control bg-err-soft border border-err-line">
+              <AlertCircle className="w-4 h-4 text-err shrink-0 mt-0.5" />
+              <div className="min-w-0">
+                <p className="text-sm text-err">{status.error}</p>
+                {status.startedAt && <p className="text-xs text-fg-3 mt-0.5">Last attempted {relTime(status.startedAt)}</p>}
+              </div>
+            </div>
+          )}
+          {/* The last completed run, restored from the database — survives a page
+              refresh and a server restart, so the panel is never blank. */}
+          {!running && status?.phase === 'done' && status.message && (
+            <div className="flex items-start gap-2 text-sm">
+              <CheckCircle2 className="w-4 h-4 text-ok shrink-0 mt-0.5" />
+              <p className="text-fg-2">
+                {status.message}
+                <span className="text-fg-3"> · last {status.days}-day scan of {status.mailbox || mailbox}
+                  {scannedAt ? ` · ${relTime(scannedAt)}` : ''}</span>
               </p>
             </div>
-          </div>
-        )}
+          )}
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-          {[
-            { label: 'Still owed', value: counts.open,    icon: ListTodo,     tint: 'var(--accent)' },
-            { label: 'Overdue',    value: counts.overdue, icon: Clock,        tint: 'var(--err)' },
-            { label: 'Waiting on others', value: counts.waiting, icon: Send,  tint: 'var(--violet)' },
-            { label: 'Done',       value: counts.done,    icon: CheckCircle2, tint: 'var(--ok)' },
-          ].map(k => (
-            <div key={k.label} className="rounded-[var(--r-md)] border border-[var(--line-2)] bg-[var(--s1)] px-3 py-2.5">
-              <div className="flex items-center gap-1.5 mb-1">
-                <k.icon className="w-3.5 h-3.5" style={{ color: k.tint }} />
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--t4)]">{k.label}</span>
-              </div>
-              <p className="text-[19px] font-semibold text-[var(--t1)] leading-none">{k.value}</p>
-            </div>
-          ))}
+          <StatRow>
+            <Stat size="sm" label="Still owed" value={counts.open} icon={ListTodo} tone="accent" />
+            <Stat size="sm" label="Overdue" value={counts.overdue} icon={Clock} tone={counts.overdue ? 'err' : undefined} />
+            <Stat size="sm" label="Waiting on others" value={counts.waiting} icon={Send} />
+            <Stat size="sm" label="Done" value={counts.done} icon={CheckCircle2} tone="ok"
+              sub={scannedAt ? `Last full scan ${relTime(scannedAt)}` : 'Never scanned — run one to fill the board.'} />
+          </StatRow>
         </div>
+      </Section>
 
-        <p className="text-[10.5px] text-[var(--t4)] mt-3">
-          {scannedAt ? `Last full scan ${relTime(scannedAt)}` : 'Never scanned — run one to fill the board.'}
-        </p>
-      </Card>
-
-      {/* ── Filters ────────────────────────────────────────────────────────── */}
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="flex rounded-[var(--r-sm)] border border-[var(--line-2)] overflow-hidden">
-          {(['open', 'done', 'all'] as const).map(v => (
-            <button key={v} onClick={() => setView(v)}
-              className={cn('px-3 h-[32px] text-[11.5px] font-semibold transition-colors',
-                view === v ? 'bg-[var(--accent)] text-white' : 'text-[var(--t3)] hover:text-[var(--t1)] hover:bg-[var(--s2)]')}>
-              {v === 'open' ? 'Open' : v === 'done' ? 'Done' : 'All'}
-            </button>
-          ))}
-        </div>
-        <div className="relative flex-1 min-w-[220px] max-w-[420px]">
-          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--t4)]" />
-          <TextInput value={filter} onChange={e => setFilter(e.target.value)}
-            placeholder="Filter by customer, subject, sender…" className="pl-8 h-[32px]" />
-        </div>
+      {/* ── Filters ──────────────────────────────────────────────────────── */}
+      <Toolbar>
+        <Segmented value={view} onChange={setView}
+          data={[{ value: 'open', label: 'Open' }, { value: 'done', label: 'Done' }, { value: 'all', label: 'All' }]} />
+        <Input icon={Search} value={filter} onChange={e => setFilter(e.currentTarget.value)}
+          placeholder="Filter by customer, subject, sender…" className="flex-1 min-w-56 max-w-104" />
         {!!items.length && (
-          <span className="text-[10.5px] text-[var(--t4)] hidden md:inline-flex items-center gap-1">
+          <span className="text-xs text-fg-4 hidden md:inline-flex items-center gap-1">
             <GripVertical className="w-3 h-3" /> Drag a card to re-file it
           </span>
         )}
-      </div>
+      </Toolbar>
 
-      {/* ── Board ──────────────────────────────────────────────────────────── */}
+      {/* ── Board ────────────────────────────────────────────────────────── */}
       {loading ? (
-        <Card><p className="text-[12px] text-[var(--t3)] flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</p></Card>
+        <div className="flex items-center gap-2 text-sm text-fg-3 py-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
       ) : !items.length ? (
-        <Card>
-          <div className="py-10 text-center">
-            <InboxIcon className="w-8 h-8 mx-auto text-[var(--t4)] mb-3" />
-            <p className="text-[13px] font-semibold text-[var(--t1)]">Nothing on the list yet</p>
-            <p className="text-[11.5px] text-[var(--t3)] mt-1.5 max-w-[420px] mx-auto leading-relaxed">
-              Run a full scan to sweep every unanswered thread out of the shared mailbox, or add
-              something by hand — or send one over from the Inbox after summarising it.
-            </p>
-          </div>
-        </Card>
+        <div className="rounded-panel border border-dashed border-line-2">
+          <EmptyState icon={InboxIcon} title="Nothing on the list yet"
+            description="Run a full scan to sweep every unanswered thread out of the shared mailbox, or add something by hand — or send one over from the Inbox after summarising it." />
+        </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-[17px] items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
           {BUCKETS.map(b => {
             const col     = shown.filter(t => t.bucket === b.id);
             const isOver  = dragOver === b.id;
@@ -804,33 +734,31 @@ export function TodoPage({ toast, onOpenCount }: { toast: ToastFn; onOpenCount?:
                   setDragOver(null); setDragId(null);
                   if (Number.isFinite(id)) moveBucket(id, b.id);
                 }}
-                className="rounded-[var(--r-xl)] transition-shadow"
-                style={isOver && canDrop ? { boxShadow: `0 0 0 2px ${b.color}` } : undefined}>
-                <Card padded={false} className="p-4">
-                  <div className="flex items-start gap-2 mb-3">
-                    <b.icon className="w-4 h-4 mt-0.5 shrink-0" style={{ color: b.color }} />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-[12.5px] font-semibold text-[var(--t1)] leading-none">{b.label}</p>
-                      <p className="text-[10.5px] text-[var(--t4)] mt-1.5 leading-tight">{b.sub}</p>
-                    </div>
-                    <Pill tone={b.tone}>{col.length}</Pill>
+                className={cn('min-w-0 rounded-panel transition-colors',
+                  isOver && canDrop && 'bg-accent-soft outline outline-1 outline-dashed outline-accent')}>
+                <div className="flex items-start gap-2 pb-2 mb-3 border-b border-line">
+                  <b.icon className="w-4 h-4 mt-0.5 shrink-0" style={{ color: b.color }} />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-lg font-semibold text-fg leading-tight">{b.label}</p>
+                    <p className="text-xs text-fg-3 mt-0.5 leading-snug">{b.sub}</p>
                   </div>
-                  <div className="space-y-2 min-h-[60px]">
-                    {col.map(t => (
-                      <TodoCard key={t.id} item={t}
-                        onOpen={() => setOpenItem(t)}
-                        onDone={() => toggleDone(t)}
-                        onDragStart={() => setDragId(t.id)}
-                        onDragEnd={() => { setDragId(null); setDragOver(null); }}
-                        dragging={dragId === t.id} />
-                    ))}
-                    {!col.length && (
-                      <p className="text-[11px] text-[var(--t4)] py-6 text-center">
-                        {canDrop && isOver ? 'Drop to move it here' : 'Nothing here.'}
-                      </p>
-                    )}
-                  </div>
-                </Card>
+                  <span className="mono text-sm text-fg-3">{col.length}</span>
+                </div>
+                <div className="flex flex-col gap-2 min-h-14">
+                  {col.map(t => (
+                    <TodoCard key={t.id} item={t}
+                      onOpen={() => setOpenItem(t)}
+                      onDone={() => toggleDone(t)}
+                      onDragStart={() => setDragId(t.id)}
+                      onDragEnd={() => { setDragId(null); setDragOver(null); }}
+                      dragging={dragId === t.id} />
+                  ))}
+                  {!col.length && (
+                    <p className="text-sm text-fg-4 py-6 text-center">
+                      {canDrop && isOver ? 'Drop to move it here' : 'Nothing here.'}
+                    </p>
+                  )}
+                </div>
               </div>
             );
           })}

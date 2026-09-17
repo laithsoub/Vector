@@ -1,275 +1,433 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+/* Plex is self-hosted (@fontsource) rather than pulled from Google Fonts: the
+   desktop build runs behind the corporate proxy, where a font CDN is not a
+   given, and a missing mono face would break every column of figures. */
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans/400-italic.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@layer base {
-  :root {
-    --font-sans: 'Geist', Inter, ui-sans-serif, system-ui, sans-serif;
-    --font-mono: '"Geist Mono"', '"JetBrains Mono"', ui-monospace, monospace;
-  }
+/* ═══════════════════════════════════════════════════════════════════════════
+   VECTOR v3 — "PRECISION INSTRUMENT"
+   The ONLY file allowed to hold raw colours and pixel values. Everything else
+   (Tailwind config, the Mantine theme, src/ui, every page) reads these.
 
+   Light is cool white, dark is graphite; both are first-class.
+   One accent, Vector blue, for primary action; one signal, tinted orange, for
+   the small marks that say "you are here" (active rule, focus, selection,
+   unread) and never for status or fills. Violet and the blue→violet wash
+   belong to Ask Vector alone.
+   Flat: hairlines separate things, a single soft shadow marks what floats.
+
+   Scopes: `:root`/`.light` carry light, `.dark` carries dark. The `.light`
+   restatement lets a light panel sit inside a dark page (the UI sample shows
+   both themes side by side) — a custom property re-declared on a subtree is
+   re-evaluated there, a value inherited from :root is not.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* ── type ── */
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+
+  --fs-2xs: 10.5px;   /* eyebrows, table group labels */
+  --fs-xs:  11.5px;   /* captions, hints, badges */
+  --fs-sm:  12.5px;   /* controls, table cells */
+  --fs-md:  13px;     /* body */
+  --fs-lg:  14px;     /* section titles */
+  --fs-xl:  16px;     /* panel titles */
+  --fs-2xl: 18px;     /* page title */
+  --fs-3xl: 24px;     /* figures */
+  --fs-4xl: 30px;     /* hero figures */
+
+  --lh-tight: 1.2;
+  --lh-snug:  1.35;
+  --lh-body:  1.5;
+  --lh-loose: 1.65;
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+
+  --tracking-tight: -0.01em;
+  --tracking-caps:   0.08em;
+
+  /* ── space (4px grid) ── */
+  --sp-px: 1px;
+  --sp-0-5: 2px;
+  --sp-1:  4px;
+  --sp-1-5: 6px;
+  --sp-2:  8px;
+  --sp-2-5: 10px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  20px;
+  --sp-6:  24px;
+  --sp-8:  32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+
+  /* ── shape ── */
+  --r-control: 4px;
+  --r-panel:   8px;
+  --r-round:   999px;
+  --hairline:  1px;
+  --focus-w:   2px;
+
+  /* ── controls ── */
+  --h-xs: 24px;
+  --h-sm: 28px;
+  --h-md: 32px;
+  --h-lg: 36px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+
+  /* ── shell ── */
+  --pad-page:  24px;
+  --gap-page:  16px;
+  --header-h:  56px;
+  --sidebar-w: 220px;
+  --rail-w:    8px;
+  --measure:   68ch;
+  --measure-chat: 760px;
+  --popover-w: 320px;
+  --toast-w:   360px;
+  --modal-sm:  400px;
+  --modal-md:  560px;
+  --modal-lg:  800px;
+  --modal-xl:  1280px;
+  --modal-2xl: 1400px;
+  --modal-h:   1200px;
+  --search-w:  460px;
+  /* Quick Quote line grid: cat no · product · description · qty · price · total · remove */
+  --qq-cols: 68px 84px 1fr 40px 76px 80px 22px;
+
+  /* ── motion: state changes only, never decoration ── */
+  --dur-fast: 120ms;
+  --dur:      160ms;
+  --ease:     cubic-bezier(0.2, 0, 0, 1);
+
+  /* ── layers ── */
+  --z-sticky:  2;
+  --z-rail:    40;
+  --z-sidebar: 50;
+  --z-overlay: 200;
+  --z-modal:   300;
+  --z-toast:   400;
+
+  /* ── primary palette: Vector blue, 10 shades, shade 6 = #4f7cff ── */
+  --ink-0: #eef3ff;
+  --ink-1: #dde7ff;
+  --ink-2: #bccdff;
+  --ink-3: #98b2ff;
+  --ink-4: #7596ff;
+  --ink-5: #6189ff;
+  --ink-6: #4f7cff;
+  --ink-7: #3d67e8;
+  --ink-8: #3153c2;
+  --ink-9: #27429b;
+}
+
+:root, .light {
+  color-scheme: light;
+
+  /* cool graphite on white */
+  --bg:      #f7f8fa;
+  --s0:      #f7f8fa;   /* page */
+  --s1:      #ffffff;   /* fields, panels */
+  --s2:      #ffffff;   /* floating layers */
+  --s3:      #f0f2f5;   /* quiet fill: table head, segmented track */
+  --s-hover: #eceff3;
+  --s-sunk:  #f3f5f8;   /* code, terminal-ish blocks */
+
+  --t1: #0a0c10;
+  --t2: #353b47;
+  --t3: #5e6676;
+  --t4: #959dac;
+  --t-tab: #1c212a;   /* tab labels: near-black, active ones go full t1 */
+
+  --line:   #e3e6ec;
+  --line-2: #d5d9e1;
+  --line-3: #bcc2cd;
+
+  /* accent: the fill is the brand blue; text on white takes the deeper shade */
+  --accent:       var(--ink-6);
+  --accent-hover: var(--ink-7);
+  --accent-ink:   #ffffff;
+  --accent-text:  var(--ink-7);
+  --accent-soft:  color-mix(in srgb, var(--ink-6) 9%, transparent);
+  --accent-line:  color-mix(in srgb, var(--ink-6) 34%, transparent);
+  --focus:        color-mix(in srgb, var(--signal) 70%, transparent);
+  --selection:    color-mix(in srgb, var(--signal) 18%, transparent);
+
+  /* signal: tinted orange, redder than --warn so the two never read alike */
+  --signal:      #c2602f;
+  --signal-soft: color-mix(in srgb, var(--signal) 10%, transparent);
+  --signal-line: color-mix(in srgb, var(--signal) 40%, transparent);
+
+  /* status: clear but not loud */
+  --ok:     #1d8a57;
+  --warn:   #b4741a;
+  --err:    #d14343;
+  --violet: #7a5af8;
+  --ok-soft:     color-mix(in srgb, var(--ok) 9%, transparent);
+  --warn-soft:   color-mix(in srgb, var(--warn) 10%, transparent);
+  --err-soft:    color-mix(in srgb, var(--err) 8%, transparent);
+  --violet-soft: color-mix(in srgb, var(--violet) 8%, transparent);
+  --on-status:   #ffffff;
+  --ok-line:     color-mix(in srgb, var(--ok) 30%, transparent);
+  --warn-line:   color-mix(in srgb, var(--warn) 32%, transparent);
+  --err-line:    color-mix(in srgb, var(--err) 30%, transparent);
+  --violet-line: color-mix(in srgb, var(--violet) 30%, transparent);
+  --on-accent-soft: color-mix(in srgb, var(--accent-ink) 18%, transparent);
+
+  /* Ask Vector: a blue→violet wash reserved for AI surfaces */
+  --ai-grad: linear-gradient(135deg, var(--ink-6), var(--violet));
+  --ai-wash: linear-gradient(180deg, color-mix(in srgb, var(--violet) 6%, transparent), transparent 70%);
+
+  --overlay: color-mix(in srgb, #0f1217 36%, transparent);
+  --term:    #0f1217;
+  --term-fg: #e8ecf2;
+
+  /* the one shadow, for floating layers only */
+  --shadow-float: 0 1px 2px rgba(15, 18, 23, 0.06), 0 12px 32px -12px rgba(15, 18, 23, 0.2);
+
+  --chart-1: var(--ink-6);
+  --chart-2: #1d8a57;
+  --chart-3: #b4741a;
+  --chart-4: #7a5af8;
+  --chart-5: #7c8596;
+  --chart-grid: #e3e6ec;
+
+  /* categorical: product lines, avatars */
+  --cat-1:  #4f7cff;
+  --cat-2:  #3b82c4;
+  --cat-3:  #6366f1;
+  --cat-4:  #d14343;
+  --cat-5:  #7a5af8;
+  --cat-6:  #a855f7;
+  --cat-7:  #c2417f;
+  --cat-8:  #0e93b0;
+  --cat-9:  #0f9488;
+  --cat-10: #1d8a57;
+  --cat-11: #6a9a1f;
+  --cat-12: #b4741a;
+}
+
+.dark {
+  color-scheme: dark;
+
+  /* graphite */
+  --bg:      #0f1115;
+  --s0:      #0f1115;
+  --s1:      #161a20;
+  --s2:      #1b2027;
+  --s3:      #1e232b;
+  --s-hover: #232932;
+  --s-sunk:  #0b0d10;
+
+  --t1: #f5f7fa;
+  --t2: #c3c9d3;
+  --t3: #98a1af;
+  --t4: #6b7380;
+  --t-tab: #e1e5eb;
+
+  --line:   #242932;
+  --line-2: #2e343e;
+  --line-3: #444b57;
+
+  --accent:       var(--ink-6);
+  --accent-hover: var(--ink-5);
+  --accent-ink:   #ffffff;
+  --accent-text:  var(--ink-4);
+  --accent-soft:  color-mix(in srgb, var(--ink-6) 15%, transparent);
+  --accent-line:  color-mix(in srgb, var(--ink-6) 42%, transparent);
+  --focus:        color-mix(in srgb, var(--signal) 75%, transparent);
+  --selection:    color-mix(in srgb, var(--signal) 28%, transparent);
+
+  --signal:      #e98a5c;
+  --signal-soft: color-mix(in srgb, var(--signal) 15%, transparent);
+  --signal-line: color-mix(in srgb, var(--signal) 45%, transparent);
+
+  --ok:     #4cc38a;
+  --warn:   #e3a849;
+  --err:    #f07171;
+  --violet: #a38bff;
+  --ok-soft:     color-mix(in srgb, var(--ok) 12%, transparent);
+  --warn-soft:   color-mix(in srgb, var(--warn) 12%, transparent);
+  --err-soft:    color-mix(in srgb, var(--err) 12%, transparent);
+  --violet-soft: color-mix(in srgb, var(--violet) 13%, transparent);
+  --on-status:   #0f1115;
+  --ok-line:     color-mix(in srgb, var(--ok) 34%, transparent);
+  --warn-line:   color-mix(in srgb, var(--warn) 34%, transparent);
+  --err-line:    color-mix(in srgb, var(--err) 34%, transparent);
+  --violet-line: color-mix(in srgb, var(--violet) 38%, transparent);
+  --on-accent-soft: color-mix(in srgb, var(--accent-ink) 18%, transparent);
+
+  --ai-wash: linear-gradient(180deg, color-mix(in srgb, var(--violet) 9%, transparent), transparent 70%);
+
+  --overlay: color-mix(in srgb, #05060a 62%, transparent);
+  --term:    #0b0d10;
+  --term-fg: #e8ecf2;
+
+  --shadow-float: 0 1px 2px rgba(0, 0, 0, 0.45), 0 16px 40px -12px rgba(0, 0, 0, 0.7);
+
+  --chart-1: var(--ink-5);
+  --chart-2: #4cc38a;
+  --chart-3: #e3a849;
+  --chart-4: #a38bff;
+  --chart-5: #7a8494;
+  --chart-grid: #242932;
+
+  --cat-1:  #6189ff;
+  --cat-2:  #5ea3e0;
+  --cat-3:  #818cf8;
+  --cat-4:  #f07171;
+  --cat-5:  #a38bff;
+  --cat-6:  #c084fc;
+  --cat-7:  #e070a8;
+  --cat-8:  #38bdd8;
+  --cat-9:  #2dd4bf;
+  --cat-10: #4cc38a;
+  --cat-11: #a3c75a;
+  --cat-12: #e3a849;
+}
+
+/* ── v2 names, kept as aliases so an unmigrated screen still lands on v3 ── */
+:root {
+  --r-xs: var(--r-control);
+  --r-sm: var(--r-control);
+  --r-md: var(--r-panel);
+  --r-lg: var(--r-panel);
+  --r-xl: var(--r-panel);
+  --bg-grad:   var(--bg);
+  --card-sh:   none;
+  --pop-sh:    var(--shadow-float);
+  --glow:      0 0 transparent;
+  --highlight: 0 0 transparent;
+}
+
+@layer base {
   html, body, #root { height: 100%; }
 
   body {
-    @apply antialiased bg-ink-50 text-ink-900 dark:bg-ink-950 dark:text-ink-50;
+    background: var(--bg);
+    color: var(--t1);
     font-family: var(--font-sans);
+    font-size: var(--fs-md);
+    line-height: var(--lh-body);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'ss02';
   }
+
+  ::selection { background: var(--selection); }
+
+  :focus-visible {
+    outline: var(--focus-w) solid var(--focus);
+    outline-offset: var(--sp-px);
+  }
+
+  code, kbd, samp, pre { font-family: var(--font-mono); }
+
+  /* Plain tables get the instrument treatment by default. :where() keeps this
+     at zero specificity, so a page's own utilities still win. */
+  :where(table) { border-collapse: separate; border-spacing: 0; font-variant-numeric: tabular-nums; }
+  :where(thead th) {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+    background: var(--s3);
+    border-bottom: var(--hairline) solid var(--line-2);
+    font-size: var(--fs-2xs);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-caps);
+    text-transform: uppercase;
+    color: var(--t3);
+    white-space: nowrap;
+  }
+  :where(tbody td) { border-bottom: var(--hairline) solid var(--line); }
+  :where(tbody tr) { transition: background-color var(--dur-fast) var(--ease); }
+  :where(tbody tr:hover) { background: var(--s-hover); }
+  :where(td.num, th.num, td[align='right'], th[align='right']) {
+    font-family: var(--font-mono);
+    text-align: end;
+    white-space: nowrap;
+  }
+
+  /* Native controls that have not moved to src/ui yet. */
+  :where(select) {
+    height: var(--h-sm);
+    padding-inline: var(--sp-2) var(--sp-6);
+    border: var(--hairline) solid var(--line-2);
+    border-radius: var(--r-control);
+    background-color: var(--s1);
+    color: var(--t1);
+    font-size: var(--fs-sm);
+  }
+  :where(select:focus) { outline: none; border-color: var(--accent); box-shadow: 0 0 0 var(--hairline) var(--accent); }
+  :where(input[type='checkbox'], input[type='radio']) { accent-color: var(--accent); }
+  :where(input[type='range']) { accent-color: var(--accent); }
 }
 
 @layer utilities {
+  /* Every price, quantity, code and id: mono + tabular so columns line up. */
   .num  { font-variant-numeric: tabular-nums; }
-  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
+  /* Keycaps that mark the one global shortcut (Ctrl+K). */
+  .signal-keys.signal-keys kbd {
+    color: var(--t1);
+    background: var(--signal-soft);
+    border-color: var(--signal-line);
+  }
+
+  .eyebrow {
+    font-size: var(--fs-2xs);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-caps);
+    text-transform: uppercase;
+    color: var(--t3);
+  }
+  .hairline   { border: var(--hairline) solid var(--line); }
+  .hairline-b { border-bottom: var(--hairline) solid var(--line); }
+  .hairline-t { border-top: var(--hairline) solid var(--line); }
+  .float      { box-shadow: var(--shadow-float); }
+  .ease       { transition-duration: var(--dur); transition-timing-function: var(--ease); }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   VECTOR v3 DESIGN TOKENS  ("New design Jul26")
-   Layered-surface + accent-glow system ported from the design mockup.
-   Light values live on :root, dark values on .dark (matches App's `.dark`
-   toggle). Migrated components read these via var(--…); un-migrated pages keep
-   using the Tailwind ink/brand scales untouched.
-   ═══════════════════════════════════════════════════════════════════════════ */
-:root {
-  /* geometry + page rhythm — every surface radius and page gutter comes from here */
-  --r-xs:6px; --r-sm:8px; --r-md:10px; --r-lg:12px; --r-xl:14px;
-  --pad-page:30px; --gap-page:22px;
-  /* Header height lives here because pages size themselves against it
-     (Assistant fills calc(100vh - var(--header-h))). */
-  --header-h:72px;
-
-  --accent:#5b8cff; --accent-hover:#7aa2ff; --accent-ink:#ffffff;
-  --accent-soft:color-mix(in oklab, var(--accent) 9%, transparent);
-  --accent-line:color-mix(in oklab, var(--accent) 24%, transparent);
-  --accent-text:color-mix(in oklab, var(--accent) 84%, #000000);
-  --bg:#fbfbfc; --bg-grad:#f6f6f9;
-  --s1:#ffffff; --s2:#ffffff; --s3:#f6f6f9; --s-hover:#f0f0f4;
-  --line:rgba(17,17,28,.07); --line-2:rgba(17,17,28,.1); --line-3:rgba(17,17,28,.16);
-  --t1:#14141c; --t2:#565664; --t3:#8b8b99; --t4:#b4b4c0;
-  --ok:#059669; --ok-soft:rgba(5,150,105,.08);
-  --warn:#b45309; --warn-soft:rgba(180,83,9,.08);
-  --err:#dc2626; --err-soft:rgba(220,38,38,.07);
-  --violet:#7c3aed; --violet-soft:rgba(124,58,237,.08);
-  /* v2 is flat: no inner highlight, no accent glow. Kept as tokens so the
-     ~19 call sites of .v3-card/.v3-glow/.v3-pop need no edit. */
-  --highlight:0 0 transparent;
-  --card-sh:0 1px 1px rgba(17,17,28,.03);
-  --pop-sh:0 1px 2px rgba(17,17,28,.06), 0 26px 64px -20px rgba(17,17,28,.2);
-  --glow:0 0 transparent;
-  --term:#0b0b12;
-}
-.dark {
-  --accent-soft:color-mix(in oklab, var(--accent) 13%, transparent);
-  --accent-line:color-mix(in oklab, var(--accent) 26%, transparent);
-  --accent-text:color-mix(in oklab, var(--accent) 74%, #ffffff);
-  --bg:#0b0b10; --bg-grad:#0e0e15;
-  --s1:#0f0f15; --s2:#13131a; --s3:#191920; --s-hover:#1e1e27;
-  --line:rgba(255,255,255,.055); --line-2:rgba(255,255,255,.085); --line-3:rgba(255,255,255,.13);
-  --t1:#f4f4f7; --t2:#a8a8b6; --t3:#71717f; --t4:#50505d;
-  --ok:#34d399; --ok-soft:rgba(52,211,153,.11);
-  --warn:#fbbf24; --warn-soft:rgba(251,191,36,.11);
-  --err:#f87171; --err-soft:rgba(248,113,113,.11);
-  --violet:#a78bfa; --violet-soft:rgba(167,139,250,.12);
-  --highlight:0 0 transparent;
-  --card-sh:0 1px 1px rgba(0,0,0,.18);
-  --pop-sh:0 1px 2px rgba(0,0,0,.4), 0 26px 64px -20px rgba(0,0,0,.8);
-  --glow:0 0 transparent;
-  --term:#08080d;
+/* Tab switches are a state change, so they get the one short fade. */
+@keyframes vecFade { from { opacity: 0; } to { opacity: 1; } }
+.vec-anim { animation: vecFade var(--dur) var(--ease) both; }
+@media (prefers-reduced-motion: reduce) {
+  .vec-anim { animation: none; }
+  *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
 }
 
-/* Motion + surface helpers (used by the v3 shell + pages) */
-@keyframes vecUp   { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
-@keyframes vecFade { from { opacity:0; } to { opacity:1; } }
-.vec-anim { animation: vecUp .42s cubic-bezier(.16,1,.3,1) both; }
-@media (prefers-reduced-motion: reduce) { .vec-anim { animation: none; } }
-
+/* v2 surface helpers, now flat. */
 @layer components {
-  /* v3 card: surface + hairline + layered shadow + top highlight */
-  .v3-card { background: var(--s2); border: 1px solid var(--line);
-             box-shadow: var(--card-sh), var(--highlight); }
-  .v3-glow { box-shadow: var(--glow); }
-  .v3-pop  { box-shadow: var(--pop-sh), var(--highlight); }
+  .v3-card { background: transparent; border: var(--hairline) solid var(--line); }
+  .v3-glow { box-shadow: none; }
+  .v3-pop  { box-shadow: var(--shadow-float); }
 }
 
-/* v3 tinted scrollbar — opt-in via .vec-scroll */
-.vec-scroll { scrollbar-width: thin; scrollbar-color: var(--line-3) transparent; }
-.vec-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
-.vec-scroll::-webkit-scrollbar-thumb { background: var(--line-3); border-radius: 8px;
-  border: 3px solid transparent; background-clip: padding-box; }
-.vec-scroll::-webkit-scrollbar-thumb:hover { background: var(--t3); }
-
-/* Scrollbar */
-::-webkit-scrollbar { width: 10px; height: 10px; }
+/* Scrollbars: thin, hairline-coloured. */
+* { scrollbar-width: thin; scrollbar-color: var(--line-3) transparent; }
+::-webkit-scrollbar { width: var(--sp-2-5); height: var(--sp-2-5); }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, .12);
-  border-radius: 8px;
-  border: 2px solid transparent;
+  background: var(--line-3);
+  border-radius: var(--r-round);
+  border: var(--sp-0-5) solid transparent;
   background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, .25);
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
-.dark ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, .12);
-  border: 2px solid transparent;
-  background-clip: padding-box;
-}
+::-webkit-scrollbar-thumb:hover { background: var(--t4); background-clip: padding-box; }
+.vec-scroll { scrollbar-width: thin; }
 
-/* Crisp chart text */
-svg.chart text { font-family: 'Geist', Inter, sans-serif; }
-
-/* ─── Dark-mode contrast boost ────────────────────────────────────────────────
-   Brighter, faintly-violet borders + rings, and whiter text. Overrides the
-   ink-700/800/600 border+ring tokens only inside .dark (later source order than
-   the @tailwind utilities, equal specificity → wins). Light mode untouched. */
-.dark [class*="border-ink-800"] { border-color: #322c46; }
-.dark [class*="border-ink-700"] { border-color: #3c3552; }
-.dark [class*="ring-ink-800"]   { --tw-ring-color: #322c46; }
-.dark [class*="ring-ink-700"]   { --tw-ring-color: #3c3552; }
-.dark [class*="ring-ink-600"]   { --tw-ring-color: #463e5e; }
-
-.dark .dark\:text-ink-50  { color: #ffffff; }
-.dark .dark\:text-ink-100 { color: #f2f2f6; }
-.dark .dark\:text-ink-200 { color: #e6e6ee; }
-
-/* ─── Light-mode contrast boost ───────────────────────────────────────────────
-   Darker, faintly-violet borders + rings. Scoped to html:not(.dark) so dark
-   mode (whose dark: variants have higher specificity anyway) is never touched. */
-html:not(.dark) [class*="border-ink-100"] { border-color: #d8d6e2; }
-html:not(.dark) [class*="border-ink-200"] { border-color: #c8c5d6; }
-html:not(.dark) [class*="ring-ink-100"]   { --tw-ring-color: #d8d6e2; }
-html:not(.dark) [class*="ring-ink-200"]   { --tw-ring-color: #c8c5d6; }
-html:not(.dark) [class*="ring-ink-300"]   { --tw-ring-color: #b6b2c8; }
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   MANTINE, WEARING THE v2 SKIN
-   Mantine ships the behaviour (stacking toasts, Ctrl+K palette, confirm
-   dialogs). Everything visual is dragged back onto the tokens above so a
-   Mantine control is indistinguishable from a hand-written one.
-
-   Why these selectors: Mantine defines its size steps on the component's own
-   generated class (.m_…), never on :root, so a :root override would never
-   reach them. The static classes below sit later in source order at equal
-   specificity, which wins. Heights are the canvas's 28 / 30 / 34.
-   ═══════════════════════════════════════════════════════════════════════════ */
-.mantine-Button-root {
-  --button-height-xs: 28px;  --button-padding-x-xs: 10px;
-  --button-height-sm: 30px;  --button-padding-x-sm: 11px;
-  --button-height-md: 34px;  --button-padding-x-md: 13px;
-  font-weight: 500;
-  letter-spacing: -0.005em;
-}
-.mantine-Input-wrapper {
-  --input-height-xs: 28px;
-  --input-height-sm: 30px;
-  --input-height-md: 34px;
-}
-/* Input surface. Mantine's default variant reads the RAW palette
-   (--mantine-color-dark-6 / dark-4), not the semantic --mantine-color-default,
-   so remapping the semantic vars alone still leaves every field on Mantine's
-   stock #2e2e2e. Setting the control's own vars is narrower than hijacking the
-   whole dark palette, and lands on exactly the tokens lib/ui's TextInput uses
-   — so a Mantine field and a hand-written one are the same object. */
-.mantine-Input-input {
-  --input-bg:                var(--s1);
-  --input-bd:                var(--line-2);
-  --input-bd-focus:          var(--accent-line);
-  --input-placeholder-color: var(--t4);
-  color: var(--t1);
-}
-
-/* Toasts — the canvas's popover: layered surface, hairline, deep pop shadow. */
-.mantine-Notification-root {
-  background: var(--s2);
-  border-color: var(--line);
-  box-shadow: var(--pop-sh);
-  padding: 12px 14px;
-}
-/* Mantine fills the icon chip with solid colour. The canvas uses a soft tinted
-   square with a coloured glyph (same idiom as the step chips), so match that. */
-.mantine-Notification-icon {
-  width: 22px; height: 22px; margin-right: 11px;
-  border-radius: var(--r-xs);
-  background: color-mix(in oklab, var(--notification-color) 14%, transparent);
-  color: var(--notification-color);
-}
-.mantine-Notification-title       { font-size: 12px; font-weight: 600; color: var(--t1); }
-.mantine-Notification-description { font-size: 12px; line-height: 1.45; color: var(--t2); }
-
-/* Command palette (Ctrl+K) */
-.mantine-Spotlight-content { background: var(--s1); border: 1px solid var(--line-2); box-shadow: var(--pop-sh); }
-.mantine-Spotlight-search {
-  height: 46px; padding-inline: 14px; font-size: 13px;
-  background: transparent; color: var(--t1);
-  border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
-}
-.mantine-Spotlight-actionsList { padding: 6px; }
-.mantine-Spotlight-action {
-  border-radius: var(--r-sm); padding: 8px 10px; font-size: 12px; color: var(--t2);
-}
-.mantine-Spotlight-action[data-selected] { background: var(--accent-soft); color: var(--accent-text); }
-.mantine-Spotlight-actionLabel       { font-size: 12px; font-weight: 500; }
-.mantine-Spotlight-actionDescription { font-size: 10.5px; color: var(--t3); }
-.mantine-Spotlight-actionsGroup {
-  padding: 8px 10px 4px; font-size: 9.5px; font-weight: 700;
-  letter-spacing: .15em; text-transform: uppercase; color: var(--t4);
-}
-.mantine-Spotlight-empty { padding: 22px; font-size: 12px; color: var(--t3); text-align: center; }
-/* Mantine highlights the typed query in yellow by default, which is the one
-   colour the v2 palette does not contain. Use the accent instead. */
-.mantine-Spotlight-action mark {
-  background: var(--accent-soft); color: var(--accent-text);
-  border-radius: 3px; padding: 0 2px;
-}
-
-/* Dropdown surfaces — Menu (EL Pricer match feedback) and Select (LSD deal
-   header). Both render in a portal, so they inherit nothing from the card they
-   belong to and have to be handed the tokens explicitly. */
-.mantine-Menu-dropdown,
-.mantine-Select-dropdown {
-  padding: 5px;
-  border: 1px solid var(--line-2);
-  border-radius: var(--r-md);
-  background: var(--s1);
-  box-shadow: var(--pop-sh);
-}
-.mantine-Menu-item,
-.mantine-Select-option {
-  padding: 7px 9px;
-  border-radius: var(--r-sm);
-  font-size: 12px;
-  color: var(--t2);
-}
-.mantine-Menu-item[data-hovered],
-.mantine-Menu-item:hover,
-.mantine-Select-option[data-combobox-active],
-.mantine-Select-option:hover { background: var(--s3); color: var(--t1); }
-.mantine-Select-option[data-combobox-selected] {
-  background: var(--accent-soft); color: var(--accent-text); font-weight: 500;
-}
-.mantine-Menu-label {
-  padding: 7px 9px 4px; font-size: 10.5px; color: var(--t3);
-}
-.mantine-Menu-divider { border-color: var(--line); }
-
-/* Checkbox — the LSD "keep the first draft" opt-in sits beside 10px caption
-   text, so it stays small and square on the accent. */
-.mantine-Checkbox-input {
-  background-color: var(--s1);
-  border-color: var(--line-3);
-  cursor: pointer;
-}
-.mantine-Checkbox-input:checked {
-  background-color: var(--accent);
-  border-color: var(--accent);
-}
-.mantine-Checkbox-label { padding-inline-start: 8px; cursor: pointer; }
-
-/* Confirm dialogs */
-.mantine-Modal-content { background: var(--s1); box-shadow: var(--pop-sh); }
-.mantine-Modal-header  { background: var(--s1); border-bottom: 1px solid var(--line); padding: 14px 18px; min-height: 0; }
-.mantine-Modal-title   { font-size: 13.5px; font-weight: 600; color: var(--t1); letter-spacing: -0.012em; }
-.mantine-Modal-body    { padding: 16px 18px 18px; }
+svg.chart text { font-family: var(--font-mono); }

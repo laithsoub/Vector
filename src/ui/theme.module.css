@@ -1,0 +1,505 @@
+/* ─── Mantine, dressed as a precision instrument ──────────────────────────────
+   Attached to every component through `classNames` in theme.ts, so the flat
+   look is the default everywhere and no screen overrides it. Values come only
+   from the tokens in src/index.css.
+
+   Mantine keeps each size step as a variable on the component's own class, so
+   the overrides below set those variables rather than fighting the rules that
+   read them.
+
+   Doubled class selectors (.x.x) are deliberate: Mantine styles dark mode with
+   `[data-mantine-color-scheme='dark'] .m_…`, which is two selectors deep. A
+   single class loses to it, and the control keeps Mantine's own dark grey. */
+
+/* ── focus ── */
+.focus:focus-visible {
+  outline: var(--focus-w) solid var(--focus);
+  outline-offset: var(--sp-px);
+}
+
+/* ── Button ── */
+.button.button {
+  --button-height-xs: var(--h-xs);
+  --button-height-sm: var(--h-sm);
+  --button-height-md: var(--h-md);
+  --button-height-lg: var(--h-lg);
+  --button-padding-x-xs: var(--sp-2);
+  --button-padding-x-sm: var(--sp-2-5);
+  --button-padding-x-md: var(--sp-3);
+  --button-padding-x-lg: var(--sp-4);
+  --button-fz: var(--fs-sm);
+  /* A button never gives up its label to a crowded toolbar. */
+  flex-shrink: 0;
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  transition: background-color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+.button.button:active { transform: none; }
+.button.button[data-variant='filled'] { --button-color: var(--accent-ink); }
+.button.button[data-variant='default'] {
+  --button-bg: var(--s1);
+  --button-hover: var(--s-hover);
+  --button-bd: var(--hairline) solid var(--line-2);
+  --button-color: var(--t1);
+}
+.button.button[data-variant='subtle'] { --button-hover: var(--s-hover); }
+.button.button:disabled,
+.button.button[data-disabled] {
+  background: var(--s3);
+  border-color: var(--line);
+  color: var(--t4);
+}
+/* Children may carry their own icon (converted hand-made buttons). */
+.buttonLabel { gap: var(--sp-1-5); }
+.buttonLabel svg { width: var(--icon-sm); height: var(--icon-sm); flex-shrink: 0; }
+.buttonSection { color: inherit; }
+.buttonSection svg { width: var(--icon-sm); height: var(--icon-sm); }
+
+/* ── ActionIcon ── */
+.actionIcon.actionIcon {
+  --ai-size-xs: var(--h-xs);
+  --ai-size-sm: var(--h-sm);
+  --ai-size-md: var(--h-md);
+  --ai-size-lg: var(--h-lg);
+  transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.actionIcon.actionIcon:active { transform: none; }
+.actionIcon.actionIcon[data-variant='filled'] { --ai-color: var(--accent-ink); }
+.actionIcon.actionIcon[data-variant='subtle'] {
+  --ai-hover: var(--s-hover);
+}
+.actionIcon.actionIcon[data-variant='subtle']:not([data-pressed]) {
+  --ai-hover-color: var(--t1);
+}
+.actionIcon.actionIcon[data-variant='default'] {
+  --ai-bg: var(--s1);
+  --ai-hover: var(--s-hover);
+  --ai-bd: var(--hairline) solid var(--line-2);
+  --ai-color: var(--t2);
+}
+.actionIcon.actionIcon[data-variant='light'] {
+  --ai-bg: var(--accent-soft);
+  --ai-hover: var(--selection);
+  --ai-color: var(--accent-text);
+}
+.actionIcon svg { width: var(--icon-md); height: var(--icon-md); }
+
+/* ── Inputs (TextInput, Select, NumberInput, Autocomplete, Textarea…) ── */
+.inputWrapper.inputWrapper {
+  --input-height-xs: var(--h-xs);
+  --input-height-sm: var(--h-sm);
+  --input-height-md: var(--h-md);
+  --input-height-lg: var(--h-lg);
+  --input-fz: var(--fs-sm);
+}
+.input.input {
+  --input-bg: var(--s1);
+  --input-bd: var(--line-2);
+  --input-bd-focus: var(--accent);
+  --input-color: var(--t1);
+  --input-placeholder-color: var(--t4);
+  --input-section-color: var(--t3);
+  --input-disabled-bg: var(--s3);
+  --input-disabled-color: var(--t4);
+  background-color: var(--input-bg);
+  border-color: var(--input-bd);
+  color: var(--input-color);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.input.input:focus,
+.input.input:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 var(--sp-px) var(--accent);
+}
+.input.input[data-error] {
+  --input-bd: var(--err);
+  --input-color: var(--t1);
+  --input-section-color: var(--err);
+}
+.input.input:disabled,
+.input.input[data-disabled] {
+  background-color: var(--input-disabled-bg);
+  color: var(--input-disabled-color);
+}
+.monoInput.monoInput { font-family: var(--font-mono); font-variant-numeric: tabular-nums slashed-zero; }
+.inputSection { color: var(--input-section-color); }
+.inputSection svg { width: var(--icon-sm); height: var(--icon-sm); }
+.inputLabel.inputLabel {
+  margin-bottom: var(--sp-1);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--t2);
+}
+.inputRequired.inputRequired { color: var(--err); }
+.inputDescription.inputDescription { font-size: var(--fs-xs); color: var(--t3); line-height: var(--lh-snug); }
+.inputError.inputError { font-size: var(--fs-xs); color: var(--err); }
+
+/* ── Combobox dropdowns (Select, Autocomplete, Combobox) ── */
+.dropdown.dropdown {
+  padding: var(--sp-1);
+  background: var(--s2);
+  border: var(--hairline) solid var(--line-2);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-float);
+}
+.option.option {
+  padding: var(--sp-1-5) var(--sp-2);
+  border-radius: var(--r-control);
+  font-size: var(--fs-sm);
+  color: var(--t2);
+}
+.option.option[data-combobox-active],
+.option.option:hover { background: var(--s-hover); color: var(--t1); }
+.option.option.option[data-combobox-selected] {
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-weight: var(--fw-medium);
+}
+.optionsGroupLabel { composes: eyebrow from global; padding: var(--sp-2) var(--sp-2) var(--sp-1); }
+.comboboxEmpty { padding: var(--sp-3); font-size: var(--fs-sm); color: var(--t3); }
+
+/* ── Menu ── */
+.menuDropdown {
+  composes: dropdown;
+  min-width: calc(var(--sp-16) * 3);
+}
+.menuItem.menuItem {
+  --menu-item-color: var(--t2);
+  --menu-item-hover: var(--s-hover);
+  padding: var(--sp-1-5) var(--sp-2);
+  border-radius: var(--r-control);
+  font-size: var(--fs-sm);
+}
+.menuItem.menuItem[data-hovered] { color: var(--t1); }
+.menuItem.menuItem[data-menu-item-color] { --menu-item-color: var(--err); }
+.menuItemSection svg { width: var(--icon-sm); height: var(--icon-sm); }
+.menuLabel { composes: eyebrow from global; padding: var(--sp-2) var(--sp-2) var(--sp-1); }
+.menuDivider.menuDivider { border-color: var(--line); margin: var(--sp-1) 0; }
+
+/* ── Popover / HoverCard ── */
+.popover.popover {
+  --popover-border-color: var(--line-2);
+  background: var(--s2);
+  box-shadow: var(--shadow-float);
+}
+
+/* ── Modal ── */
+.modalContent.modalContent {
+  background: var(--s2);
+  border: var(--hairline) solid var(--line-2);
+  box-shadow: var(--shadow-float);
+}
+.modalHeader.modalHeader {
+  min-height: 0;
+  padding: var(--sp-4) var(--sp-5) var(--sp-3);
+  background: var(--s2);
+  border-bottom: var(--hairline) solid var(--line);
+}
+.modalTitle.modalTitle {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--t1);
+  letter-spacing: var(--tracking-tight);
+}
+.modalBody.modalBody { padding: var(--sp-4) var(--sp-5) var(--sp-5); }
+.modalClose.modalClose { color: var(--t3); }
+.overlay.overlay { --overlay-bg: var(--overlay); background: var(--overlay); }
+
+/* ── Notification ── */
+.notification.notification {
+  padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-5);
+  background: var(--s2);
+  border: var(--hairline) solid var(--line-2);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-float);
+}
+/* A thin stripe in the tone instead of Mantine's filled bar. */
+.notification.notification::before {
+  top: var(--sp-3);
+  bottom: var(--sp-3);
+  inset-inline-start: var(--sp-2);
+  width: var(--focus-w);
+  background: var(--notification-color);
+  border-radius: var(--r-round);
+}
+.notificationIcon.notificationIcon {
+  width: var(--icon-lg);
+  height: var(--icon-lg);
+  margin-inline-end: var(--sp-3);
+  background: transparent;
+  color: var(--notification-color);
+}
+.notificationIcon svg { width: var(--icon-md); height: var(--icon-md); }
+.notificationTitle.notificationTitle {
+  margin-bottom: var(--sp-0-5);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+  color: var(--t1);
+}
+.notificationDescription.notificationDescription {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--t2);
+}
+.notificationLoader { margin-inline-end: var(--sp-3); }
+.notificationClose.notificationClose { color: var(--t3); }
+.notificationClose.notificationClose:hover { background: var(--s-hover); }
+
+/* ── Table: the hero ── */
+.table.table {
+  --table-border-color: var(--line);
+  --table-hover-color: var(--s-hover);
+  --table-highlight-on-hover-color: var(--s-hover);
+  --table-striped-color: var(--s-sunk);
+  font-size: var(--fs-sm);
+  color: var(--t1);
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.tableThead.tableThead { z-index: var(--z-sticky); }
+.tableTh.tableTh {
+  position: relative;
+  padding-block: var(--sp-2);
+  background: var(--s3);
+  border-bottom: var(--hairline) solid var(--line-2);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--t3);
+  white-space: nowrap;
+}
+.tableTd.tableTd {
+  border-bottom: var(--hairline) solid var(--line);
+  vertical-align: middle;
+}
+.tableTr.tableTr { transition: background-color var(--dur-fast) var(--ease); }
+.tableTr.tableTr[data-selected] { background: var(--accent-soft); }
+.tableTr.tableTr[data-selected] > td:first-child { box-shadow: inset var(--focus-w) 0 0 var(--accent); }
+.tableTr.tableTr:focus-visible { outline: var(--focus-w) solid var(--focus); outline-offset: calc(var(--focus-w) * -1); }
+.tableTfoot .tableTd.tableTd,
+.tableTfoot .tableTh.tableTh {
+  border-top: var(--hairline) solid var(--line-2);
+  border-bottom: 0;
+  font-weight: var(--fw-semibold);
+}
+.tableCaption.tableCaption { font-size: var(--fs-xs); color: var(--t3); }
+/* Numbers: mono, tabular, right-aligned — set per cell by src/ui/Table. */
+.num.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums slashed-zero;
+  text-align: end;
+  white-space: nowrap;
+}
+
+/* ── Paper ── */
+.paper.paper {
+  --paper-border-color: var(--line);
+  background: var(--s1);
+}
+
+/* ── Tooltip: inverted ink chip ── */
+.tooltip.tooltip {
+  --tooltip-bg: var(--t1);
+  --tooltip-color: var(--bg);
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  box-shadow: var(--shadow-float);
+}
+/* Keycaps inside the inverted chip. */
+.tooltip.tooltip kbd {
+  color: var(--bg);
+  background: transparent;
+  border-color: color-mix(in srgb, var(--bg) 35%, transparent);
+}
+
+/* ── Tabs: underline, weight marks the active one ── */
+.tabsList.tabsList { gap: var(--sp-4); }
+.tabsList.tabsList::before { border-color: var(--line); }
+.tab.tab {
+  padding: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--t-tab);
+  background: transparent;
+  transition: color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.tab.tab:hover { background: transparent; color: var(--t1); border-color: var(--line-3); }
+.tab.tab[data-active] { color: var(--t1); font-weight: var(--fw-semibold); border-color: var(--signal); }
+.tabSection svg { width: var(--icon-sm); height: var(--icon-sm); }
+.tabsPanel.tabsPanel { padding-top: var(--sp-4); }
+
+/* ── Checkbox / Radio / Switch ── */
+.checkboxInput.checkboxInput {
+  background-color: var(--s1);
+  border-color: var(--line-3);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.checkboxInput.checkboxInput:checked { background-color: var(--accent); border-color: var(--accent); }
+.checkboxInput.checkboxInput:disabled { background-color: var(--s3); border-color: var(--line); }
+.checkboxIcon.checkboxIcon { color: var(--accent-ink); }
+.radioIcon.radioIcon { color: var(--accent-ink); }
+.choiceLabel.choiceLabel {
+  padding-inline-start: var(--sp-2);
+  font-size: var(--fs-sm);
+  color: var(--t1);
+  cursor: pointer;
+}
+.choiceLabel.choiceLabel[data-disabled] { color: var(--t4); cursor: not-allowed; }
+.choiceDescription.choiceDescription {
+  padding-inline-start: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--t3);
+}
+.switchTrack.switchTrack {
+  background-color: var(--line-2);
+  border-color: var(--line-2);
+  cursor: pointer;
+  transition: background-color var(--dur) var(--ease);
+}
+.switchInput:checked + .switchTrack.switchTrack { background-color: var(--accent); border-color: var(--accent); }
+.switchThumb.switchThumb {
+  background-color: var(--s1);
+  border: 0;
+  transition: inset-inline-start var(--dur) var(--ease);
+}
+.switchInput:checked + .switchTrack .switchThumb.switchThumb { background-color: var(--accent-ink); }
+
+/* ── Badge: quiet tinted label, never a filled pill ── */
+.badge.badge {
+  --badge-height-xs: calc(var(--sp-4) + var(--sp-0-5));
+  --badge-height-sm: calc(var(--sp-5) - var(--sp-0-5));
+  --badge-padding-x-xs: var(--sp-1-5);
+  --badge-padding-x-sm: var(--sp-2);
+  --badge-fz-xs: var(--fs-2xs);
+  --badge-fz-sm: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+/* Mantine writes the variant variables inline, so the dot variant is set with
+   real properties rather than by redefining --badge-bg. */
+.badge.badge[data-variant='dot'] {
+  background: transparent;
+  border: 0;
+  color: var(--t2);
+  padding-inline: 0;
+}
+
+/* ── SegmentedControl ── */
+.segRoot.segRoot {
+  --sc-shadow: none;
+  --sc-transition-duration: var(--dur);
+  --sc-transition-timing-function: var(--ease);
+  padding: var(--sp-0-5);
+  background: var(--s3);
+  border: var(--hairline) solid var(--line);
+}
+.segIndicator.segIndicator { background: var(--s1); box-shadow: 0 0 0 var(--hairline) var(--line-2); }
+.segLabel.segLabel { font-size: var(--fs-xs); font-weight: var(--fw-medium); color: var(--t-tab); }
+.segLabel.segLabel:hover { color: var(--t1); }
+.segLabel.segLabel[data-active] { color: var(--t1); font-weight: var(--fw-semibold); }
+
+/* ── Kbd ── */
+.kbd.kbd {
+  padding: 0 var(--sp-1);
+  min-width: calc(var(--sp-4) + var(--sp-0-5));
+  height: calc(var(--sp-4) + var(--sp-0-5));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-tight);
+  color: var(--t2);
+  background: var(--s3);
+  border: var(--hairline) solid var(--line-2);
+  border-radius: var(--r-control);
+}
+
+/* ── Loader / Divider / Skeleton / Progress ── */
+.loader.loader { --loader-color: var(--t3); }
+.divider.divider { --divider-color: var(--line); }
+.dividerLabel { composes: eyebrow from global; }
+.skeleton.skeleton::before { background: var(--s1); }
+.skeleton.skeleton::after { background: var(--s3); }
+.progressRoot.progressRoot { --progress-root-bg: var(--s3); }
+.progressSection { transition: width var(--dur) var(--ease); }
+
+/* ── Anchor ── */
+.anchor.anchor { color: var(--accent-text); text-underline-offset: var(--sp-0-5); }
+
+/* ── Spotlight (Ctrl+K) ── */
+.spotlightContent.spotlightContent {
+  background: var(--s2);
+  border: var(--hairline) solid var(--line-2);
+  box-shadow: var(--shadow-float);
+}
+.spotlightSearch.spotlightSearch {
+  height: calc(var(--h-lg) + var(--sp-3));
+  padding-inline-start: calc(var(--h-lg) + var(--sp-1));
+  font-size: var(--fs-lg);
+  background: transparent;
+  color: var(--t1);
+  border: 0;
+  border-bottom: var(--hairline) solid var(--line);
+  border-radius: 0;
+}
+.spotlightSearch.spotlightSearch:focus,
+.spotlightSearch.spotlightSearch:focus-within {
+  box-shadow: none;
+  border-color: var(--line);
+}
+.spotlightList.spotlightList { padding: var(--sp-1); }
+.spotlightGroup {
+  composes: eyebrow from global;
+  padding: var(--sp-3) var(--sp-2) var(--sp-1);
+}
+.spotlightAction.spotlightAction {
+  padding: var(--sp-1-5) var(--sp-2);
+  border-radius: var(--r-control);
+  color: var(--t2);
+}
+.spotlightAction.spotlightAction[data-selected] { background: var(--accent-soft); color: var(--t1); }
+.spotlightAction.spotlightAction[data-selected] .spotlightActionSection { color: var(--accent-text); }
+.spotlightActionSection.spotlightActionSection { color: var(--t3); }
+.spotlightActionSection svg { width: var(--icon-md); height: var(--icon-md); }
+.spotlightActionLabel.spotlightActionLabel { font-size: var(--fs-sm); font-weight: var(--fw-medium); color: inherit; }
+.spotlightActionDescription.spotlightActionDescription { font-size: var(--fs-xs); color: var(--t3); }
+.spotlightEmpty.spotlightEmpty {
+  padding: var(--sp-6);
+  font-size: var(--fs-sm);
+  color: var(--t3);
+  text-align: center;
+}
+.spotlightFooter.spotlightFooter {
+  padding: var(--sp-2) var(--sp-3);
+  border-top: var(--hairline) solid var(--line);
+  font-size: var(--fs-xs);
+  color: var(--t3);
+}
+.spotlightAction mark {
+  background: transparent;
+  color: var(--accent-text);
+  font-weight: var(--fw-semibold);
+}
+
+/* ── Dropzone ── */
+.dropzone.dropzone {
+  padding: var(--sp-6);
+  background: var(--s1);
+  border: var(--hairline) dashed var(--line-3);
+  border-radius: var(--r-panel);
+  color: var(--t2);
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.dropzone.dropzone:hover { background: var(--s-hover); }
+.dropzone.dropzone[data-accept] { background: var(--accent-soft); border-color: var(--accent); border-style: solid; color: var(--accent-text); }
+.dropzone.dropzone[data-reject] { background: var(--err-soft); border-color: var(--err); border-style: solid; color: var(--err); }
+.dropzone.dropzone[data-disabled] { background: var(--s3); color: var(--t4); cursor: not-allowed; }

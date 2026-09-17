@@ -27,16 +27,16 @@ import type { ToastFn } from '../App';
 
 // How each verdict reads, and whether it is the app's business to fix it.
 const VERDICT_META: Record<string, { label: string; tone: string; blurb: string }> = {
-  MATCH:            { label: 'Filed',            tone: 'text-emerald-600 dark:text-emerald-400', blurb: 'The sent PDF is in the store, byte for byte.' },
-  MATCH_RERENDER:   { label: 'Filed (re-render)',tone: 'text-emerald-600 dark:text-emerald-400', blurb: 'Same text in the store, saved from a different render.' },
-  MISSING_FOLDER:   { label: 'No folder',        tone: 'text-red-500 dark:text-red-400',         blurb: 'Nothing exists in the store for this opportunity.' },
-  MISSING_REVISION: { label: 'No revision',      tone: 'text-amber-600 dark:text-amber-400',     blurb: 'The folder exists but not this revision.' },
-  MISSING_FILE:     { label: 'Not in folder',    tone: 'text-amber-600 dark:text-amber-400',     blurb: 'Folder and revision exist; the quote is not in them.' },
-  DIFFERENT_COPY:   { label: 'Different copy',   tone: 'text-violet-500 dark:text-violet-400',   blurb: 'A file with this reference is filed but differs — needs your eye.' },
-  UNRESOLVED:       { label: 'No reference',     tone: 'text-[var(--t3)]',                        blurb: 'No Salesforce id or works number to match on.' },
-  ERROR:            { label: 'Check failed',     tone: 'text-[var(--t3)]',                        blurb: 'The comparison itself failed.' },
+  MATCH:            { label: 'Filed',            tone: 'text-ok ', blurb: 'The sent PDF is in the store, byte for byte.' },
+  MATCH_RERENDER:   { label: 'Filed (re-render)',tone: 'text-ok ', blurb: 'Same text in the store, saved from a different render.' },
+  MISSING_FOLDER:   { label: 'No folder',        tone: 'text-err ',         blurb: 'Nothing exists in the store for this opportunity.' },
+  MISSING_REVISION: { label: 'No revision',      tone: 'text-warn ',     blurb: 'The folder exists but not this revision.' },
+  MISSING_FILE:     { label: 'Not in folder',    tone: 'text-warn ',     blurb: 'Folder and revision exist; the quote is not in them.' },
+  DIFFERENT_COPY:   { label: 'Different copy',   tone: 'text-ai ',   blurb: 'A file with this reference is filed but differs — needs your eye.' },
+  UNRESOLVED:       { label: 'No reference',     tone: 'text-fg-3',                        blurb: 'No Salesforce id or works number to match on.' },
+  ERROR:            { label: 'Check failed',     tone: 'text-fg-3',                        blurb: 'The comparison itself failed.' },
 };
-const meta = (v: string) => VERDICT_META[v] || { label: v, tone: 'text-[var(--t3)]', blurb: '' };
+const meta = (v: string) => VERDICT_META[v] || { label: v, tone: 'text-fg-3', blurb: '' };
 
 // Verdict groups, worst first: the point of the page is the top of this list.
 const ORDER: DqVerdict[] = [
@@ -137,7 +137,7 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
   const previewIsFor   = preview && !preview.dryRun ? null : preview;
 
   return (
-    <div className="space-y-[17px]">
+    <div className="space-y-4">
       {/* ── Run the audit ── */}
       <Card>
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -145,7 +145,7 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
             <CardTitle title="D&Q filing audit"
               sub="Compares the quotes you actually sent against what is in the shared store" />
             {result?.generatedAt && (
-              <p className="text-[11px] text-[var(--t3)] mt-1.5">
+              <p className="text-xs text-fg-3 mt-1.5">
                 Last audit {new Date(result.generatedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}
                 {result.months != null && ` · ${result.months} month${result.months === 1 ? '' : 's'} of Sent Items`}
                 {' · '}{plural(result.total, 'quote revision')}
@@ -153,10 +153,10 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <label className="text-[11px] text-[var(--t3)]">Months</label>
+            <label className="text-xs text-fg-3">Months</label>
             <input type="number" min={1} max={24} value={months} disabled={running}
               onChange={e => setMonths(Math.min(24, Math.max(1, Number(e.target.value) || 3)))}
-              className="w-14 text-[12px] text-right bg-[var(--s3)] rounded-md px-2 py-1 ring-1 ring-inset ring-[var(--line-2)] focus:outline-none focus:ring-violet-400 text-[var(--t1)] disabled:opacity-50" />
+              className="w-14 text-sm text-right bg-subtle rounded-md px-2 py-1 ring-1 ring-inset ring-line-2 focus:outline-none focus:ring-ai-line text-fg disabled:opacity-50" />
             <Button tone="primary" Icon={running ? Loader2 : RefreshCw} onClick={runAudit} disabled={running}>
               {running ? 'Auditing…' : 'Run audit'}
             </Button>
@@ -164,12 +164,12 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
         </div>
 
         {running && (
-          <div className="mt-3 rounded-lg bg-[var(--s3)] px-3 py-2">
-            <p className="text-[11.5px] text-[var(--t2)] flex items-center gap-1.5">
+          <div className="mt-3 rounded-lg bg-subtle px-3 py-2">
+            <p className="text-xs text-fg-2 flex items-center gap-1.5">
               <Loader2 className="w-3 h-3 animate-spin shrink-0" />
               {status?.message || 'Working…'}
             </p>
-            <p className="text-[10px] text-[var(--t3)] mt-1">
+            <p className="text-2xs text-fg-3 mt-1">
               Reads months of Sent Items and indexes the store — this takes minutes.
             </p>
           </div>
@@ -179,9 +179,9 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
         {result && result.total > 0 && (
           <div className="mt-3 flex flex-wrap gap-1.5">
             {ORDER.filter(v => result.tally[v]).map(v => (
-              <span key={v} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)]">
+              <span key={v} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-2xs font-medium bg-subtle ring-1 ring-inset ring-line-2">
                 <span className={meta(v).tone}>{meta(v).label}</span>
-                <span className="text-[var(--t2)] font-semibold">{result.tally[v]}</span>
+                <span className="text-fg-2 font-semibold">{result.tally[v]}</span>
               </span>
             ))}
           </div>
@@ -191,10 +191,10 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
       {/* ── The review list ── */}
       {result && result.total > 0 && (
         <Card padded={false}>
-          <div className="px-5 py-3 border-b border-[var(--line)] flex items-center justify-between gap-3 flex-wrap">
+          <div className="px-5 py-3 border-b border-line flex items-center justify-between gap-3 flex-wrap">
             <div>
-              <h3 className="text-[13px] font-semibold tracking-tight">Review</h3>
-              <p className="text-[10.5px] text-[var(--t3)] mt-0.5">
+              <h3 className="text-base font-semibold tracking-tight">Review</h3>
+              <p className="text-2xs text-fg-3 mt-0.5">
                 {result.fileable > 0
                   ? `${plural(result.fileable, 'quote')} could be filed. Tick the ones you want, preview, then file.`
                   : 'Nothing here can be filed automatically.'}
@@ -202,16 +202,16 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
             </div>
             {picked.size > 0 && (
               <div className="flex items-center gap-2">
-                <span className="text-[11px] text-[var(--t2)] font-medium">
+                <span className="text-xs text-fg-2 font-medium">
                   {plural(pickedFileable, 'row')} selected
                 </span>
                 <button onClick={() => { setPicked(new Set()); setPreview(null); }}
-                  className="text-[11px] text-[var(--t3)] hover:text-[var(--t1)] underline">clear</button>
+                  className="text-xs text-fg-3 hover:text-fg underline">clear</button>
               </div>
             )}
           </div>
 
-          <div className="divide-y divide-[var(--line)]">
+          <div className="divide-y divide-line">
             {grouped.map(g => {
               const open = expanded.has(g.verdict);
               const m    = meta(g.verdict);
@@ -223,12 +223,12 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
                       n.has(g.verdict) ? n.delete(g.verdict) : n.add(g.verdict);
                       return n;
                     })}
-                    className="w-full flex items-center gap-2 px-5 py-2 hover:bg-[var(--s3)] transition-colors text-left">
-                    {open ? <ChevronDown className="w-3.5 h-3.5 shrink-0 text-[var(--t3)]" />
-                          : <ChevronRight className="w-3.5 h-3.5 shrink-0 text-[var(--t3)]" />}
-                    <span className={cn('text-[12px] font-semibold', m.tone)}>{m.label}</span>
-                    <span className="text-[11px] text-[var(--t3)]">{g.items.length}</span>
-                    <span className="text-[10.5px] text-[var(--t3)] truncate hidden sm:block ml-1">{m.blurb}</span>
+                    className="w-full flex items-center gap-2 px-5 py-2 hover:bg-subtle transition-colors text-left">
+                    {open ? <ChevronDown className="w-3.5 h-3.5 shrink-0 text-fg-3" />
+                          : <ChevronRight className="w-3.5 h-3.5 shrink-0 text-fg-3" />}
+                    <span className={cn('text-sm font-semibold', m.tone)}>{m.label}</span>
+                    <span className="text-xs text-fg-3">{g.items.length}</span>
+                    <span className="text-2xs text-fg-3 truncate hidden sm:block ml-1">{m.blurb}</span>
                   </button>
 
                   {open && (
@@ -247,32 +247,32 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
       {picked.size > 0 && (
         <Card>
           <div className="flex items-start gap-2.5">
-            <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-[var(--accent-text)]" />
+            <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-accent-text" />
             <div className="min-w-0 flex-1">
-              <h3 className="text-[12.5px] font-semibold text-[var(--t1)]">
+              <h3 className="text-sm font-semibold text-fg">
                 Filing {plural(pickedFileable, 'quote')} into the shared store
               </h3>
-              <p className="text-[10.5px] text-[var(--t3)] mt-0.5 leading-relaxed">
+              <p className="text-2xs text-fg-3 mt-0.5 leading-relaxed">
                 This writes to the D&Q Store everyone uses. Preview first — it checks each destination
                 and reports what it would do without writing anything.
               </p>
 
               {previewIsFor && (
-                <div className="mt-2.5 rounded-lg bg-[var(--s3)] px-3 py-2 max-h-[220px] overflow-y-auto">
-                  <p className="text-[11px] font-semibold text-[var(--t2)] mb-1">
+                <div className="mt-2.5 rounded-lg bg-subtle px-3 py-2 max-h-56 overflow-y-auto">
+                  <p className="text-xs font-semibold text-fg-2 mb-1">
                     {preview!.dryRun ? 'Plan' : 'Result'} · {preview!.considered} considered
                   </p>
                   {preview!.results.map((x, i) => (
-                    <p key={i} className="text-[10.5px] leading-relaxed flex gap-1.5">
+                    <p key={i} className="text-2xs leading-relaxed flex gap-1.5">
                       <span className={cn('shrink-0 font-medium',
-                        x.status === 'filed'      ? 'text-emerald-600 dark:text-emerald-400'
-                        : x.status === 'would-file' ? 'text-[var(--accent-text)]'
-                        : x.status === 'failed'     ? 'text-red-500'
-                        : 'text-[var(--t3)]')}>
+                        x.status === 'filed'      ? 'text-ok '
+                        : x.status === 'would-file' ? 'text-accent-text'
+                        : x.status === 'failed'     ? 'text-err'
+                        : 'text-fg-3')}>
                         {x.status === 'would-file' ? 'would file' : x.status}
                       </span>
-                      <span className="text-[var(--t2)] truncate">{x.label}</span>
-                      <span className="text-[var(--t3)] truncate hidden md:block">{x.detail}</span>
+                      <span className="text-fg-2 truncate">{x.label}</span>
+                      <span className="text-fg-3 truncate hidden md:block">{x.detail}</span>
                     </p>
                   ))}
                 </div>
@@ -290,7 +290,7 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
                   {busy === 'file' ? 'Filing…' : `File ${wouldFile || ''}`.trim()}
                 </Button>
                 {!preview?.dryRun && (
-                  <span className="text-[10.5px] text-[var(--t3)]">Preview before filing.</span>
+                  <span className="text-2xs text-fg-3">Preview before filing.</span>
                 )}
               </div>
             </div>
@@ -301,9 +301,9 @@ export function FilingPage({ toast }: { toast: ToastFn }) {
       {/* Nothing has been run yet */}
       {!running && (!result || result.total === 0) && (
         <Card className="text-center py-10">
-          <FolderTree className="w-7 h-7 mx-auto text-[var(--t3)]" />
-          <p className="text-[13px] font-medium text-[var(--t2)] mt-2">No audit yet</p>
-          <p className="text-[11.5px] text-[var(--t3)] mt-1 max-w-md mx-auto leading-relaxed">
+          <FolderTree className="w-7 h-7 mx-auto text-fg-3" />
+          <p className="text-base font-medium text-fg-2 mt-2">No audit yet</p>
+          <p className="text-xs text-fg-3 mt-1 max-w-md mx-auto leading-relaxed">
             Run the audit to compare the quotes you have sent against the D&Q Store. It reads Outlook and
             SharePoint only — nothing is written until you approve specific rows.
           </p>
@@ -319,31 +319,31 @@ function RowLine({ row, picked, onToggle }: {
   const selectable = row.fileable;
   return (
     <div className={cn('flex items-start gap-2.5 px-5 py-1.5 transition-colors',
-      selectable ? 'hover:bg-[var(--s3)] cursor-pointer' : 'opacity-70')}
+      selectable ? 'hover:bg-subtle cursor-pointer' : 'opacity-70')}
       onClick={selectable ? () => onToggle(row.id) : undefined}>
       <span className={cn('mt-0.5 w-3.5 h-3.5 shrink-0 rounded flex items-center justify-center ring-1 ring-inset transition-colors',
-        !selectable ? 'ring-[var(--line)] bg-[var(--s3)]'
-        : picked    ? 'bg-[var(--accent)] ring-[var(--accent)]'
-                    : 'ring-[var(--line-2)]')}>
-        {picked && <Check className="w-2.5 h-2.5 text-white" />}
+        !selectable ? 'ring-line bg-subtle'
+        : picked    ? 'bg-accent ring-accent'
+                    : 'ring-line-2')}>
+        {picked && <Check className="w-2.5 h-2.5 text-on-accent" />}
       </span>
 
       <div className="min-w-0 flex-1">
-        <p className="text-[11.5px] text-[var(--t1)] truncate">
+        <p className="text-xs text-fg truncate">
           {row.code || row.sfid || row.works || row.attachment}
-          {row.revision && <span className="text-[var(--t3)] ml-1.5">{row.revision}</span>}
+          {row.revision && <span className="text-fg-3 ml-1.5">{row.revision}</span>}
         </p>
-        <p className="text-[10px] text-[var(--t3)] truncate">
+        <p className="text-2xs text-fg-3 truncate">
           {row.sent?.slice(0, 10)}
           {row.timesSent > 1 && ` · sent ${row.timesSent}×`}
           {row.subject && ` · ${row.subject}`}
         </p>
-        {row.detail && <p className="text-[10px] text-[var(--t3)] truncate italic">{row.detail}</p>}
+        {row.detail && <p className="text-2xs text-fg-3 truncate italic">{row.detail}</p>}
       </div>
 
       {row.folderCount > 1 && <Pill tone="warn">{row.folderCount} folders</Pill>}
       {!selectable && row.verdict !== 'MATCH' && row.verdict !== 'MATCH_RERENDER' && (
-        <span className="text-[9.5px] text-[var(--t3)] shrink-0 mt-0.5">needs you</span>
+        <span className="text-2xs text-fg-3 shrink-0 mt-0.5">needs you</span>
       )}
     </div>
   );

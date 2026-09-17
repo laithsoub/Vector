@@ -35,29 +35,29 @@ export class TabErrorBoundary extends React.Component<Props, State> {
 
     return (
       <div className="p-6 w-full">
-        <div className="max-w-xl rounded-xl bg-[var(--s1)] ring-1 ring-inset ring-red-200 dark:ring-red-800/40 p-5 flex flex-col gap-3">
+        <div className="max-w-xl rounded-xl bg-surface ring-1 ring-inset ring-err-line p-5 flex flex-col gap-3">
           <div className="flex flex-col gap-1">
-            <p className="text-[13px] font-semibold text-red-700 dark:text-red-400">
+            <p className="text-base font-semibold text-err ">
               The {this.props.label} tab stopped
             </p>
-            <p className="text-[12px] text-[var(--t2)]">
+            <p className="text-sm text-fg-2">
               The rest of Vector is still running — switch tabs, or try this one again.
             </p>
           </div>
 
-          <pre className="text-[11px] font-mono text-[var(--t3)] bg-[var(--s3)] rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words max-h-40">
+          <pre className="text-xs mono text-fg-3 bg-subtle rounded-lg p-3 overflow-x-auto whitespace-pre-wrap break-words max-h-40">
             {error.message || String(error)}
           </pre>
 
           <div className="flex gap-2">
             <button
               onClick={this.retry}
-              className="h-8 px-3 rounded-lg text-[12px] font-semibold bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors">
+              className="h-8 px-3 rounded-lg text-sm font-semibold bg-accent hover:bg-accent-hover text-on-accent transition-colors">
               Try this tab again
             </button>
             <button
               onClick={() => window.location.reload()}
-              className="h-8 px-3 rounded-lg text-[12px] font-medium ring-1 ring-inset ring-[var(--line-2)] hover:bg-[var(--s3)] transition-colors">
+              className="h-8 px-3 rounded-lg text-sm font-medium ring-1 ring-inset ring-line-2 hover:bg-subtle transition-colors">
               Reload Vector
             </button>
           </div>

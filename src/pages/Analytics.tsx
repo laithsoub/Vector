@@ -30,16 +30,16 @@ export function AnalyticsPage() {
   }, [range]);
 
   if (loading) return (
-    <div className="flex flex-col items-center justify-center py-32 text-[var(--t3)]">
+    <div className="flex flex-col items-center justify-center py-32 text-fg-3">
       <Loader2 className="w-5 h-5 animate-spin" />
-      <p className="text-[12px] mt-3">Loading analytics…</p>
+      <p className="text-sm mt-3">Loading analytics…</p>
     </div>
   );
   if (error) return (
     <Card className="max-w-md mx-auto text-center py-10">
       <AlertCircle className="w-6 h-6 mx-auto" style={{ color: 'var(--err)' }} />
-      <p className="text-[13px] font-semibold mt-3">Couldn't load analytics</p>
-      <p className="text-[11.5px] text-[var(--t3)] mt-1">{error}</p>
+      <p className="text-base font-semibold mt-3">Couldn't load analytics</p>
+      <p className="text-xs text-fg-3 mt-1">{error}</p>
     </Card>
   );
   if (!data) return null;
@@ -54,9 +54,9 @@ export function AnalyticsPage() {
   });
 
   const statusSlices = [
-    { label: 'Successful', value: totals.ok,   color: '#5b8cff' },
-    { label: 'Errors',     value: totals.err,  color: '#f87171' },
-    { label: 'Warnings',   value: totals.warn, color: '#fbbf24' },
+    { label: 'Successful', value: totals.ok,   color: 'var(--chart-1)' },
+    { label: 'Errors',     value: totals.err,  color: 'var(--err)' },
+    { label: 'Warnings',   value: totals.warn, color: 'var(--warn)' },
   ];
 
   const stepTotal = (byStep['Step 1'] || 0) + (byStep['Step 2'] || 0);
@@ -67,13 +67,13 @@ export function AnalyticsPage() {
   const rangeLabel = `${from.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} – ${to.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
 
   return (
-    <div className="space-y-[22px]">
+    <div className="space-y-5">
 
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h2 className="text-[20px] font-semibold tracking-[-0.025em]">Operational health</h2>
-          <p className="text-[12px] text-[var(--t3)] mt-1">
+          <h2 className="text-2xl font-semibold tracking-[-0.025em]">Operational health</h2>
+          <p className="text-sm text-fg-3 mt-1">
             {totals.count.toLocaleString()} runs across {Math.min(range, daily.length)} days
           </p>
         </div>
@@ -90,7 +90,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Hero KPIs */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-[17px]">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <HeroKpi label="Quotes processed"
                  value={totals.count.toLocaleString()}
                  trend={pctChange(totals.count, prevTotals.count)}
@@ -99,13 +99,13 @@ export function AnalyticsPage() {
                  value={`${totals.okPct.toFixed(1)}%`}
                  trend={pctChange(totals.okPct, prevTotals.okPct)}
                  spark={sparkOkPct}
-                 color="#10b981" fill="rgba(16,185,129,0.12)" />
+                 color="var(--ok)" fill="var(--ok-soft)" />
         <HeroKpi label="Avg run time"
                  value={fmtDur(Math.round(totals.avgDur))}
                  trend={pctChange(totals.avgDur, prevTotals.avgDur)}
                  invert
                  spark={daily.map(_ => totals.avgDur)}
-                 color="#7c3aed" fill="rgba(124,58,237,0.12)" />
+                 color="var(--violet)" fill="var(--violet-soft)" />
         <HeroKpi label="Quote value pushed"
                  value={fmtMoney(totals.value)}
                  fullValue={fmtMoneyFull(totals.value)}
@@ -114,14 +114,14 @@ export function AnalyticsPage() {
       </div>
 
       {/* Main chart + status donut */}
-      <div className="grid grid-cols-12 gap-[22px]">
+      <div className="grid grid-cols-12 gap-5">
         <Card className="col-span-12 lg:col-span-8" padded={false}>
-          <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
+          <div className="px-5 py-4 flex items-center justify-between border-b border-line">
             <div>
-              <h3 className="text-[13px] font-semibold tracking-tight">Daily throughput</h3>
-              <p className="text-[11.5px] text-[var(--t3)] mt-0.5">All runs by outcome · hover the chart</p>
+              <h3 className="text-base font-semibold tracking-tight">Daily throughput</h3>
+              <p className="text-xs text-fg-3 mt-0.5">All runs by outcome · hover the chart</p>
             </div>
-            <div className="flex items-center gap-3 text-[10.5px] text-[var(--t2)]">
+            <div className="flex items-center gap-3 text-2xs text-fg-2">
               <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm" style={{ background: 'var(--accent)' }}/>Successful</span>
               <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm" style={{ background: 'var(--warn)' }}/>Warning</span>
               <span className="flex items-center gap-1.5"><i className="w-2 h-2 rounded-sm" style={{ background: 'var(--err)' }}/>Error</span>
@@ -143,7 +143,7 @@ export function AnalyticsPage() {
       </div>
 
       {/* Product breakdown + Step split */}
-      <div className="grid grid-cols-12 gap-[22px]">
+      <div className="grid grid-cols-12 gap-5">
         <Card className="col-span-12 lg:col-span-8">
           <CardTitle title="By product line"
                      sub="Volume and success rate per division" />
@@ -151,7 +151,7 @@ export function AnalyticsPage() {
             .filter(p => p.total > 0)
             .map(p => ({
               label: p.label,
-              color: PRODUCT_COLORS[p.code] || p.color || '#5b8cff',
+              color: PRODUCT_COLORS[p.code] || p.color || 'var(--chart-1)',
               ok: p.ok, err: p.err, warn: p.warn, total: p.total,
             }))} />
         </Card>
@@ -167,10 +167,10 @@ export function AnalyticsPage() {
               return (
                 <div key={s.name}>
                   <div className="flex items-baseline justify-between mb-1.5">
-                    <span className="text-[11.5px] font-medium text-[var(--t1)]">{s.name}</span>
-                    <span className="text-[11px] num text-[var(--t2)]">{s.value} <span className="text-[var(--t4)]">({pct.toFixed(0)}%)</span></span>
+                    <span className="text-xs font-medium text-fg">{s.name}</span>
+                    <span className="text-xs num text-fg-2">{s.value} <span className="text-fg-4">({pct.toFixed(0)}%)</span></span>
                   </div>
-                  <div className="h-1.5 rounded-full bg-[var(--s3)]">
+                  <div className="h-1.5 rounded-full bg-subtle">
                     <div className="h-1.5 rounded-full" style={{ width: `${pct}%`, background: s.color }} />
                   </div>
                 </div>
@@ -178,7 +178,7 @@ export function AnalyticsPage() {
             })}
           </div>
 
-          <div className="grid grid-cols-2 gap-3 mt-5 pt-4 border-t border-[var(--line)]">
+          <div className="grid grid-cols-2 gap-3 mt-5 pt-4 border-t border-line">
             <Stat label="Total items" value={totals.items.toLocaleString()} />
             <Stat label="Avg items/run" value={(totals.count ? totals.items / totals.count : 0).toFixed(1)} />
           </div>
@@ -186,12 +186,12 @@ export function AnalyticsPage() {
       </div>
 
       {/* Customers + Salesman */}
-      <div className="grid grid-cols-12 gap-[22px]">
+      <div className="grid grid-cols-12 gap-5">
         <Card className="col-span-12 lg:col-span-7" padded={false}>
-          <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
+          <div className="px-5 py-4 flex items-center justify-between border-b border-line">
             <div>
-              <h3 className="text-[13px] font-semibold tracking-tight">Top customers</h3>
-              <p className="text-[11.5px] text-[var(--t3)] mt-0.5">By total value of successfully uploaded quotes</p>
+              <h3 className="text-base font-semibold tracking-tight">Top customers</h3>
+              <p className="text-xs text-fg-3 mt-0.5">By total value of successfully uploaded quotes</p>
             </div>
             <Pill tone="neutral">£ value</Pill>
           </div>
@@ -202,10 +202,10 @@ export function AnalyticsPage() {
         </Card>
 
         <Card className="col-span-12 lg:col-span-5" padded={false}>
-          <div className="px-5 py-4 flex items-center justify-between border-b border-[var(--line)]">
+          <div className="px-5 py-4 flex items-center justify-between border-b border-line">
             <div>
-              <h3 className="text-[13px] font-semibold tracking-tight">Inside Sales</h3>
-              <p className="text-[11.5px] text-[var(--t3)] mt-0.5">Quotes credited per salesman</p>
+              <h3 className="text-base font-semibold tracking-tight">Inside Sales</h3>
+              <p className="text-xs text-fg-3 mt-0.5">Quotes credited per salesman</p>
             </div>
           </div>
           <Leaderboard items={bySalesman.slice(0, 8).map(s => ({
@@ -216,16 +216,16 @@ export function AnalyticsPage() {
       </div>
 
       {/* Heatmap + errors */}
-      <div className="grid grid-cols-12 gap-[22px]">
+      <div className="grid grid-cols-12 gap-5">
         <Card className="col-span-12 lg:col-span-6">
           <CardTitle title="Activity heatmap"
                      sub="When the team uploads. Darker = busier." />
           <Heatmap grid={heatmap.grid} hours={heatmap.hours} days={heatmap.days} max={heatmap.max} />
-          <div className="flex items-center gap-1.5 mt-4 text-[10px] text-[var(--t3)]">
+          <div className="flex items-center gap-1.5 mt-4 text-2xs text-fg-3">
             <span>Quiet</span>
             <span className="flex gap-0.5">
               {[0.1, 0.25, 0.45, 0.65, 0.85, 1].map((o, i) => (
-                <span key={i} className="w-3 h-3 rounded-sm" style={{ background: '#5b8cff', opacity: o }} />
+                <span key={i} className="w-3 h-3 rounded-sm" style={{ background: 'var(--chart-1)', opacity: o }} />
               ))}
             </span>
             <span>Busy</span>
@@ -238,19 +238,19 @@ export function AnalyticsPage() {
                      right={<Pill tone="err">{totals.err} errors</Pill>} />
           <div className="space-y-2">
             {errorReasons.length === 0 && (
-              <p className="text-[12px] text-[var(--t3)]">No errors in this range — nice work.</p>
+              <p className="text-sm text-fg-3">No errors in this range — nice work.</p>
             )}
             {errorReasons.map(r => {
               const maxV = errorReasons[0].count;
               return (
                 <div key={r.reason}>
                   <div className="flex items-baseline justify-between mb-1">
-                    <span className="text-[12px] font-medium text-[var(--t1)] truncate">{r.reason}</span>
-                    <span className="text-[11px] num text-[var(--t2)] shrink-0 ml-3">
-                      {r.count} <span className="text-[var(--t4)]">({((r.count / totals.err) * 100).toFixed(0)}%)</span>
+                    <span className="text-sm font-medium text-fg truncate">{r.reason}</span>
+                    <span className="text-xs num text-fg-2 shrink-0 ml-3">
+                      {r.count} <span className="text-fg-4">({((r.count / totals.err) * 100).toFixed(0)}%)</span>
                     </span>
                   </div>
-                  <div className="h-1.5 rounded-full bg-[var(--s3)] overflow-hidden">
+                  <div className="h-1.5 rounded-full bg-subtle overflow-hidden">
                     <div className="h-1.5 rounded-full" style={{ width: `${(r.count / maxV) * 100}%`, background: 'var(--err)' }} />
                   </div>
                 </div>
@@ -266,7 +266,7 @@ export function AnalyticsPage() {
 
 // ────────────────────────────────────────────────────────────────────────────
 function HeroKpi({
-  label, value, fullValue, trend, invert, spark, color = '#5b8cff', fill,
+  label, value, fullValue, trend, invert, spark, color = 'var(--chart-1)', fill,
 }: {
   label: string;
   value: string;
@@ -278,16 +278,16 @@ function HeroKpi({
   fill?: string;
 }) {
   return (
-    <Card className="!rounded-[14px] !p-[17px]">
+    <Card className="!p-4">
       <div className="flex items-baseline justify-between">
-        <p className="text-[10px] font-semibold uppercase tracking-[0.06em] text-[var(--t3)]">{label}</p>
+        <p className="text-2xs font-semibold uppercase tracking-[0.06em] text-fg-3">{label}</p>
         <Trend value={trend} invert={invert} />
       </div>
-      <p className="text-[24px] font-semibold tracking-[-0.03em] num mt-2 leading-none text-[var(--t1)]" title={fullValue}>{value}</p>
+      <p className="text-3xl font-semibold tracking-[-0.03em] num mt-2 leading-none text-fg" title={fullValue}>{value}</p>
       <div className="mt-3">
-        <Sparkline data={spark} width={220} height={28} color={color} fill={fill || `${color}1f`} />
+        <Sparkline data={spark} width={220} height={28} color={color} fill={fill || `color-mix(in srgb, ${color} 12%, transparent)`} />
       </div>
-      <p className="text-[10px] text-[var(--t4)] mt-2">vs previous period</p>
+      <p className="text-2xs text-fg-4 mt-2">vs previous period</p>
     </Card>
   );
 }
@@ -295,8 +295,8 @@ function HeroKpi({
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--t3)]">{label}</p>
-      <p className="text-[18px] font-semibold tracking-tight num mt-0.5 text-[var(--t1)]">{value}</p>
+      <p className="text-2xs font-semibold uppercase tracking-wider text-fg-3">{label}</p>
+      <p className="text-2xl font-semibold tracking-tight num mt-0.5 text-fg">{value}</p>
     </div>
   );
 }
@@ -309,29 +309,29 @@ function Leaderboard({
   barColor: string;
 }) {
   if (items.length === 0) {
-    return <p className="px-5 py-6 text-[11.5px] text-[var(--t3)] text-center">No data yet — Step 1 runs need to populate the customer/salesman fields first.</p>;
+    return <p className="px-5 py-6 text-xs text-fg-3 text-center">No data yet — Step 1 runs need to populate the customer/salesman fields first.</p>;
   }
   return (
     <div>
       {items.map((c, i) => {
         const w = (c.value / (maxValue || 1)) * 100;
         return (
-          <div key={c.name} className="px-5 py-2.5 flex items-center gap-3 border-t border-[var(--line)] first:border-t-0">
+          <div key={c.name} className="px-5 py-2.5 flex items-center gap-3 border-t border-line first:border-t-0">
             {c.avatar ? (
-              <div className="w-7 h-7 rounded-full text-[10px] font-bold flex items-center justify-center shrink-0"
-                style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 50%, #8b5cf6))', color: 'var(--accent-ink)' }}>{c.avatar}</div>
+              <div className="w-7 h-7 rounded-full text-2xs font-semibold flex items-center justify-center shrink-0"
+                style={{ background: 'var(--accent-soft)', color: 'var(--accent-ink)' }}>{c.avatar}</div>
             ) : (
-              <span className="w-5 text-[10.5px] text-[var(--t4)] num text-center font-medium shrink-0">{i + 1}</span>
+              <span className="w-5 text-2xs text-fg-4 num text-center font-medium shrink-0">{i + 1}</span>
             )}
             <div className="min-w-0 flex-1">
-              <p className="text-[12px] font-medium truncate text-[var(--t1)]">{c.name}</p>
-              <div className="h-1 rounded-full bg-[var(--s3)] mt-1.5 overflow-hidden">
+              <p className="text-sm font-medium truncate text-fg">{c.name}</p>
+              <div className="h-1 rounded-full bg-subtle mt-1.5 overflow-hidden">
                 <div className="h-1 rounded-full" style={{ width: `${w}%`, background: barColor }} />
               </div>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-[12px] num font-semibold text-[var(--t1)]">{c.primary}</p>
-              <p className="text-[10px] text-[var(--t4)] num">{c.secondary}</p>
+              <p className="text-sm num font-semibold text-fg">{c.primary}</p>
+              <p className="text-2xs text-fg-4 num">{c.secondary}</p>
             </div>
           </div>
         );

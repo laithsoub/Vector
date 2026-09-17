@@ -34,6 +34,7 @@ export default defineConfig({
           vendor: ['react', 'react-dom'],
           charts: ['recharts'],
           motion: ['motion'],
+          mantine: ['@mantine/core', '@mantine/hooks', '@mantine/modals', '@mantine/notifications', '@mantine/spotlight'],
         },
       },
     },

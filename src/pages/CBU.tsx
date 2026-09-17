@@ -34,18 +34,18 @@ export function CbuPage() {
 
   const tab = (id: View, label: string, Icon: typeof Sliders) => (
     <button key={id} onClick={() => setView(id)}
-      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all${
+      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all${
         view === id
-          ? ' bg-[var(--s2)] text-[var(--t1)] shadow-sm'
-          : ' text-[var(--t3)] hover:text-[var(--t1)]'}`}>
+          ? ' bg-raised text-fg '
+          : ' text-fg-3 hover:text-fg'}`}>
       <Icon className="w-3.5 h-3.5"/>
       {label}
     </button>
   );
 
   return (
-    <div className="space-y-[17px]">
-      <div className="inline-flex items-center gap-1 p-[3px] rounded-[var(--r-md)] bg-[var(--s3)]">
+    <div className="space-y-4">
+      <div className="inline-flex items-center gap-1 p-0.5 rounded-panel bg-subtle">
         {tab('sizer',   'Sizer', Sliders)}
         {tab('refs',    'Past quotes', History)}
         {tab('modules', 'Modules', Boxes)}

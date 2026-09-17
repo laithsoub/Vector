@@ -52,12 +52,12 @@ const gbp = (n: number) => '£' + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, 
 function NumInput({ label, value, onChange }: { label: string; value: number; onChange: (n: number) => void }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <label className="text-[12px] text-[var(--t2)] flex-1">{label}</label>
+      <label className="text-sm text-fg-2 flex-1">{label}</label>
       <input
         type="number" min={0} value={value || ''}
         onChange={e => onChange(Math.max(0, parseInt(e.target.value) || 0))}
         placeholder="0"
-        className="w-20 text-right text-[12.5px] font-mono bg-[var(--s3)] border border-[var(--line-2)] rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-violet-400 text-[var(--t1)] placeholder:text-[var(--t3)]"
+        className="w-20 text-right text-sm mono bg-subtle border border-line-2 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-ai-line text-fg placeholder:text-fg-3"
       />
     </div>
   );
@@ -66,11 +66,11 @@ function NumInput({ label, value, onChange }: { label: string; value: number; on
 function Toggle({ label, value, onChange }: { label: string; value: boolean; onChange: (v: boolean) => void }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <label className="text-[12px] text-[var(--t2)] flex-1">{label}</label>
+      <label className="text-sm text-fg-2 flex-1">{label}</label>
       <button onClick={() => onChange(!value)}
         style={{ background: value ? 'var(--accent)' : 'var(--line-3)' }}
-        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400 focus:ring-offset-1">
-        <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform', value ? 'translate-x-4' : 'translate-x-1')} />
+        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ai-line focus:ring-offset-1">
+        <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-surface transition-transform', value ? 'translate-x-4' : 'translate-x-1')} />
       </button>
     </div>
   );
@@ -78,9 +78,9 @@ function Toggle({ label, value, onChange }: { label: string; value: boolean; onC
 
 function RRow({ label, value, dim = false, bold = false }: { label: string; value: string; dim?: boolean; bold?: boolean }) {
   return (
-    <div className={cn('flex items-center justify-between py-1 border-b border-[var(--line)] last:border-0', dim && 'opacity-35')}>
-      <span className={cn('text-[12px]', bold ? 'font-semibold text-[var(--t1)]' : 'text-[var(--t2)]')}>{label}</span>
-      <span className={cn('text-[12.5px] font-mono', bold ? 'font-bold text-[var(--t1)]' : 'text-[var(--t2)]')}>{value}</span>
+    <div className={cn('flex items-center justify-between py-1 border-b border-line last:border-0', dim && 'opacity-35')}>
+      <span className={cn('text-sm', bold ? 'font-semibold text-fg' : 'text-fg-2')}>{label}</span>
+      <span className={cn('text-sm mono', bold ? 'font-semibold text-fg' : 'text-fg-2')}>{value}</span>
     </div>
   );
 }
@@ -141,57 +141,57 @@ function CGLineCalc() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-[22px]">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
       {/* ── Inputs ── */}
-      <div className="bg-[var(--s1)] rounded-xl ring-1 ring-[var(--line-2)] p-5 space-y-3.5">
-        <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-widest">Inputs</p>
+      <div className="bg-surface rounded-xl ring-1 ring-line-2 p-5 space-y-3.5">
+        <p className="text-2xs font-semibold text-fg-3 uppercase tracking-widest">Inputs</p>
         <NumInput label="Number of panels" value={panels} onChange={setPanels} />
         <NumInput label="Number of luminaires" value={lumis} onChange={setLumis} />
         <Toggle label="Include CG Vision PC Software" value={sw} onChange={setSw} />
         <Toggle label="Central London site" value={cl} onChange={setCl} />
-        <div className="pt-1 border-t border-[var(--line)]">
+        <div className="pt-1 border-t border-line">
           <input type="text" placeholder="Reference (optional)" value={ref} onChange={e => setRef(e.target.value)}
-            className="w-full text-[12px] bg-[var(--s3)] border border-[var(--line-2)] rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-400 text-[var(--t2)] placeholder:text-[var(--t3)]" />
+            className="w-full text-sm bg-subtle border border-line-2 rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-ai-line text-fg-2 placeholder:text-fg-3" />
         </div>
         <div className="flex gap-2 pt-0.5">
           <button onClick={exportPdf} disabled={!result || exporting || overMax}
-            className={cn('flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[12px] font-semibold transition-colors',
-              result && !exporting && !overMax ? 'bg-violet-600 hover:bg-violet-700 text-white' : 'bg-[var(--s3)] text-[var(--t3)] cursor-not-allowed')}>
+            className={cn('flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-sm font-semibold transition-colors',
+              result && !exporting && !overMax ? 'bg-ai hover:bg-ai text-on-status' : 'bg-subtle text-fg-3 cursor-not-allowed')}>
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
             {exporting ? 'Generating…' : 'Export PDF'}
           </button>
           <button onClick={copyText} disabled={!result}
-            className={cn('flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold transition-colors ring-1 ring-inset',
-              result ? 'bg-[var(--s2)] ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)]' : 'bg-[var(--s1)] ring-[var(--line)] text-[var(--t4)] cursor-not-allowed')}>
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+            className={cn('flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-sm font-semibold transition-colors ring-1 ring-inset',
+              result ? 'bg-raised ring-line-2 text-fg-2 hover:bg-subtle' : 'bg-surface ring-line text-fg-4 cursor-not-allowed')}>
+            {copied ? <Check className="w-3.5 h-3.5 text-ok" /> : <Copy className="w-3.5 h-3.5" />}
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
         {exportErr && (
-          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 ring-1 ring-red-200 dark:ring-red-700/40">
-            <AlertCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
-            <p className="text-[11.5px] text-red-700 dark:text-red-300">{exportErr}</p>
+          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-err-soft ring-1 ring-err-line ">
+            <AlertCircle className="w-3.5 h-3.5 text-err mt-0.5 shrink-0" />
+            <p className="text-xs text-err ">{exportErr}</p>
           </div>
         )}
         {overMax && (
-          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 ring-1 ring-amber-200 dark:ring-amber-700/40">
-            <AlertCircle className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
-            <p className="text-[11.5px] text-amber-700 dark:text-amber-300">CG Line+ calculator covers up to 15 panels. Contact the service team for larger installations.</p>
+          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-warn-soft ring-1 ring-warn-line ">
+            <AlertCircle className="w-3.5 h-3.5 text-warn mt-0.5 shrink-0" />
+            <p className="text-xs text-warn ">CG Line+ calculator covers up to 15 panels. Contact the service team for larger installations.</p>
           </div>
         )}
       </div>
 
       {/* ── Results ── */}
-      <div className="bg-[var(--s1)] rounded-xl ring-1 ring-[var(--line-2)] p-5">
-        <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-widest mb-3">Breakdown</p>
+      <div className="bg-surface rounded-xl ring-1 ring-line-2 p-5">
+        <p className="text-2xs font-semibold text-fg-3 uppercase tracking-widest mb-3">Breakdown</p>
         {!result ? (
           <div className="flex items-center justify-center h-40">
-            <p className="text-[12px] text-[var(--t3)]">Enter panel count to calculate.</p>
+            <p className="text-sm text-fg-3">Enter panel count to calculate.</p>
           </div>
         ) : (
           <>
-            <div className="mb-3 px-2.5 py-1 bg-violet-50 dark:bg-violet-900/20 rounded-lg">
-              <span className="text-[11px] font-semibold text-violet-600 dark:text-violet-300">Tier: {result.tier.label}</span>
+            <div className="mb-3 px-2.5 py-1 bg-ai-soft rounded-lg">
+              <span className="text-xs font-semibold text-ai ">Tier: {result.tier.label}</span>
             </div>
             <div className="space-y-0">
               <RRow label={`Panels  ${panels} × ${gbp(t!.pr)}`}    value={gbp(result.pt)} />
@@ -199,16 +199,16 @@ function CGLineCalc() {
               <RRow label="CG Vision PC Software" value={sw ? gbp(result.st) : '—'} dim={!sw} />
               <RRow label="Central London"         value={cl ? gbp(result.clc) : '—'} dim={!cl} />
             </div>
-            <div className="mt-2 pt-2 border-t border-[var(--line-2)] space-y-0">
+            <div className="mt-2 pt-2 border-t border-line-2 space-y-0">
               <RRow label="Sub-Total" value={gbp(result.sub)} bold />
-              {result.capped && <p className="text-[10.5px] text-amber-600 dark:text-amber-400 py-1">Minimum day rate applied ({gbp(CG_DAY)})</p>}
+              {result.capped && <p className="text-2xs text-warn py-1">Minimum day rate applied ({gbp(CG_DAY)})</p>}
             </div>
-            <div className="mt-3 pt-3 border-t-2 border-violet-200 dark:border-violet-700/50 flex items-end justify-between">
+            <div className="mt-3 pt-3 border-t-2 border-ai-line flex items-end justify-between">
               <div>
-                <p className="text-[12px] font-semibold text-[var(--t2)]">Total Commissioning Value</p>
-                <p className="text-[10px] text-[var(--t3)] mt-0.5">Ex VAT · Min. {gbp(CG_MIN_NOTE)}</p>
+                <p className="text-sm font-semibold text-fg-2">Total Commissioning Value</p>
+                <p className="text-2xs text-fg-3 mt-0.5">Ex VAT · Min. {gbp(CG_MIN_NOTE)}</p>
               </div>
-              <span className="text-[20px] font-bold text-violet-600 dark:text-violet-400 num">{gbp(result.total)}</span>
+              <span className="text-2xl font-semibold text-ai num">{gbp(result.total)}</span>
             </div>
           </>
         )}
@@ -275,52 +275,52 @@ function EasicheckCalc() {
   }
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-[22px]">
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
       {/* ── Inputs ── */}
-      <div className="bg-[var(--s1)] rounded-xl ring-1 ring-[var(--line-2)] p-5 space-y-3.5">
-        <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-widest">Inputs</p>
+      <div className="bg-surface rounded-xl ring-1 ring-line-2 p-5 space-y-3.5">
+        <p className="text-2xs font-semibold text-fg-3 uppercase tracking-widest">Inputs</p>
         <NumInput label="Number of panels" value={panels} onChange={setPanels} />
         <NumInput label="Number of luminaries" value={lumis} onChange={setLumis} />
         <NumInput label="Number of network cards" value={cards} onChange={setCards} />
         <Toggle label="Include PC Software" value={sw} onChange={setSw} />
         <Toggle label="Central London site" value={cl} onChange={setCl} />
-        <div className="pt-1 border-t border-[var(--line)]">
+        <div className="pt-1 border-t border-line">
           <input type="text" placeholder="Reference (optional)" value={ref} onChange={e => setRef(e.target.value)}
-            className="w-full text-[12px] bg-[var(--s3)] border border-[var(--line-2)] rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-violet-400 text-[var(--t2)] placeholder:text-[var(--t3)]" />
+            className="w-full text-sm bg-subtle border border-line-2 rounded-md px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-ai-line text-fg-2 placeholder:text-fg-3" />
         </div>
         <div className="flex gap-2 pt-0.5">
           <button onClick={exportPdf} disabled={!result || exporting}
-            className={cn('flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-[12px] font-semibold transition-colors',
-              result && !exporting ? 'bg-violet-600 hover:bg-violet-700 text-white' : 'bg-[var(--s3)] text-[var(--t3)] cursor-not-allowed')}>
+            className={cn('flex-1 flex items-center justify-center gap-1.5 h-8 rounded-lg text-sm font-semibold transition-colors',
+              result && !exporting ? 'bg-ai hover:bg-ai text-on-status' : 'bg-subtle text-fg-3 cursor-not-allowed')}>
             {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Printer className="w-3.5 h-3.5" />}
             {exporting ? 'Generating…' : 'Export PDF'}
           </button>
           <button onClick={copyText} disabled={!result}
-            className={cn('flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-[12px] font-semibold transition-colors ring-1 ring-inset',
-              result ? 'bg-[var(--s2)] ring-[var(--line-2)] text-[var(--t2)] hover:bg-[var(--s3)]' : 'bg-[var(--s1)] ring-[var(--line)] text-[var(--t4)] cursor-not-allowed')}>
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+            className={cn('flex items-center justify-center gap-1.5 h-8 px-3 rounded-lg text-sm font-semibold transition-colors ring-1 ring-inset',
+              result ? 'bg-raised ring-line-2 text-fg-2 hover:bg-subtle' : 'bg-surface ring-line text-fg-4 cursor-not-allowed')}>
+            {copied ? <Check className="w-3.5 h-3.5 text-ok" /> : <Copy className="w-3.5 h-3.5" />}
             {copied ? 'Copied!' : 'Copy'}
           </button>
         </div>
         {exportErr && (
-          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-50 dark:bg-red-900/20 ring-1 ring-red-200 dark:ring-red-700/40">
-            <AlertCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 shrink-0" />
-            <p className="text-[11.5px] text-red-700 dark:text-red-300">{exportErr}</p>
+          <div className="flex items-start gap-2 p-2.5 rounded-lg bg-err-soft ring-1 ring-err-line ">
+            <AlertCircle className="w-3.5 h-3.5 text-err mt-0.5 shrink-0" />
+            <p className="text-xs text-err ">{exportErr}</p>
           </div>
         )}
       </div>
 
       {/* ── Results ── */}
-      <div className="bg-[var(--s1)] rounded-xl ring-1 ring-[var(--line-2)] p-5">
-        <p className="text-[10.5px] font-semibold text-[var(--t3)] uppercase tracking-widest mb-3">Breakdown</p>
+      <div className="bg-surface rounded-xl ring-1 ring-line-2 p-5">
+        <p className="text-2xs font-semibold text-fg-3 uppercase tracking-widest mb-3">Breakdown</p>
         {!result ? (
           <div className="flex items-center justify-center h-40">
-            <p className="text-[12px] text-[var(--t3)]">Enter panel count to calculate.</p>
+            <p className="text-sm text-fg-3">Enter panel count to calculate.</p>
           </div>
         ) : (
           <>
-            <div className="mb-3 px-2.5 py-1 bg-violet-50 dark:bg-violet-900/20 rounded-lg">
-              <span className="text-[11px] font-semibold text-violet-600 dark:text-violet-300">Tier: {result.tier.label}</span>
+            <div className="mb-3 px-2.5 py-1 bg-ai-soft rounded-lg">
+              <span className="text-xs font-semibold text-ai ">Tier: {result.tier.label}</span>
             </div>
             <div className="space-y-0">
               <RRow label={`Panels  ${panels} × ${gbp(t!.pr)}`}    value={gbp(result.pt)} />
@@ -329,16 +329,16 @@ function EasicheckCalc() {
               <RRow label="PC Software" value={sw ? gbp(result.st) : '—'} dim={!sw} />
               <RRow label="Central London" value={cl ? gbp(result.clc) : '—'} dim={!cl} />
             </div>
-            <div className="mt-2 pt-2 border-t border-[var(--line-2)] space-y-0">
+            <div className="mt-2 pt-2 border-t border-line-2 space-y-0">
               <RRow label="Sub-Total" value={gbp(result.sub)} bold />
-              {result.capped && <p className="text-[10.5px] text-amber-600 dark:text-amber-400 py-1">Minimum day rate applied ({gbp(EC_DAY)})</p>}
+              {result.capped && <p className="text-2xs text-warn py-1">Minimum day rate applied ({gbp(EC_DAY)})</p>}
             </div>
-            <div className="mt-3 pt-3 border-t-2 border-violet-200 dark:border-violet-700/50 flex items-end justify-between">
+            <div className="mt-3 pt-3 border-t-2 border-ai-line flex items-end justify-between">
               <div>
-                <p className="text-[12px] font-semibold text-[var(--t2)]">Total Commissioning Value</p>
-                <p className="text-[10px] text-[var(--t3)] mt-0.5">Ex VAT · Min. {gbp(EC_MIN_NOTE)}</p>
+                <p className="text-sm font-semibold text-fg-2">Total Commissioning Value</p>
+                <p className="text-2xs text-fg-3 mt-0.5">Ex VAT · Min. {gbp(EC_MIN_NOTE)}</p>
               </div>
-              <span className="text-[20px] font-bold text-violet-600 dark:text-violet-400 num">{gbp(result.total)}</span>
+              <span className="text-2xl font-semibold text-ai num">{gbp(result.total)}</span>
             </div>
           </>
         )}
@@ -352,16 +352,16 @@ function EasicheckCalc() {
 export function CommissionPage() {
   const [tab, setTab] = useState<'cg' | 'easicheck'>('cg');
   return (
-    <div className="space-y-[22px]">
+    <div className="space-y-5">
       {/* Sub-tabs */}
-      <div className="flex items-center gap-1 bg-[var(--s3)] rounded-[var(--r-md)] p-[3px] w-fit">
+      <div className="flex items-center gap-1 bg-subtle rounded-panel p-0.5 w-fit">
         {(['cg', 'easicheck'] as const).map(id => (
           <button key={id} onClick={() => setTab(id)}
             className={cn(
-              'px-4 py-1.5 rounded-lg text-[12.5px] font-semibold transition-all',
+              'px-4 py-1.5 rounded-lg text-sm font-semibold transition-all',
               tab === id
-                ? 'bg-[var(--s1)] text-[var(--t1)] shadow-sm'
-                : 'text-[var(--t3)] hover:text-[var(--t1)]'
+                ? 'bg-surface text-fg '
+                : 'text-fg-3 hover:text-fg'
             )}>
             {id === 'cg' ? 'CG Line+' : 'Easicheck'}
           </button>
@@ -372,7 +372,7 @@ export function CommissionPage() {
       {tab === 'cg' ? <CGLineCalc /> : <EasicheckCalc />}
 
       {/* Day rate info footer */}
-      <div className="text-[10.5px] text-[var(--t3)] space-y-0.5">
+      <div className="text-2xs text-fg-3 space-y-0.5">
         {tab === 'cg'
           ? <p>CG Line+ base day rate: {gbp(CG_DAY)} (inc. cover) · Standard: {gbp(896.28)} · Central London +£75</p>
           : <p>Easicheck base day rate: {gbp(EC_DAY)} · Central London +£75 · Min. commission: {gbp(EC_MIN_NOTE)}</p>

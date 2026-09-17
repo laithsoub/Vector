@@ -9,13 +9,14 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
-import { useHotkeys } from '@mantine/hooks';
-import { Spotlight, spotlight } from '@mantine/spotlight';
 
 import { cn } from './lib/cn';
 import { api } from './lib/api';
-import { VectorMantine } from './lib/mantine';
-import { notify } from './lib/notify';
+import {
+  VectorProvider, CommandPalette, ScreenScope, useAppHotkeys, useFormHotkeys, notify, openPalette,
+  Badge, Button, EmptyState, IconButton, Indicator, Menu, Modal, Segmented, Shortcut, Textarea, Tooltip,
+  type PaletteGroup, type ShortcutName,
+} from './ui';
 import { failed } from './lib/errors';
 import { openExternal, isTauri } from './lib/shell';
 import { CancelDock } from './components/CancelDock';
@@ -39,6 +40,8 @@ const CrmPage        = React.lazy(() => import('./pages/Crm').then(m => ({ defau
 const ELInfoPage     = React.lazy(() => import('./pages/ELInfo').then(m => ({ default: m.ELInfoPage })));
 const FentonKBPage   = React.lazy(() => import('./pages/FentonKB').then(m => ({ default: m.FentonKBPage })));
 const TodoPage       = React.lazy(() => import('./pages/Todo').then(m => ({ default: m.TodoPage })));
+// Component gallery for the v3 redesign. Opened with ?ui-sample or #ui-sample.
+const UiSamplePage   = React.lazy(() => import('./pages/UiSample').then(m => ({ default: m.UiSamplePage })));
 // AI Assistant + Tools pages are lazy-imported below, gated on STRIPPED. In the
 // stripped ship build that gate is a compile-time `true`, so Rollup dead-code-
 // eliminates their code from the bundle; locally (full app) they load normally.
@@ -178,67 +181,54 @@ function Sidebar({
   setHovered: (v: boolean) => void;
 }) {
   const { t } = useLang();
-  // Active-nav item: layered surface + inset accent bar on the left edge.
-  const activeShadow = { boxShadow: 'inset 2px 0 0 var(--accent)' };
+  // Active item: weight + a 2px ink rule on the leading edge. No filled pill.
   const navBtn = (active: boolean, locked: boolean) => cn(
-    'w-full flex items-center gap-[11px] px-2.5 py-[7px] rounded-[var(--r-xs)] text-[12.5px] cursor-pointer transition-colors',
+    'relative w-full h-h-sm flex items-center gap-2.5 px-2 rounded-control text-sm transition-colors duration-fast',
     active
-      ? 'bg-[var(--s3)] text-[var(--t1)] font-semibold'
-      : cn('font-[450] hover:bg-[var(--s3)] hover:text-[var(--t1)]',
-           locked ? 'text-[var(--t3)]' : 'text-[var(--t2)]'),
+      ? 'bg-subtle text-fg font-medium before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-signal'
+      : cn('hover:bg-hover hover:text-fg', locked ? 'text-fg-4' : 'text-fg-2'),
   );
   return (
     <aside
       onMouseEnter={() => { if (!pinned) setHovered(true); }}
       onMouseLeave={() => { if (!pinned) setHovered(false); }}
       className={cn(
-        'w-[238px] h-full flex flex-col border-r border-[var(--line)] bg-[var(--s1)] transition-transform duration-200 ease-out',
-        pinned ? 'shrink-0 relative' : 'absolute inset-y-0 left-0 z-50 shadow-2xl',
+        'w-sidebar h-full flex flex-col border-r border-line bg-page transition-transform',
+        pinned ? 'shrink-0 relative' : 'absolute inset-y-0 left-0 z-sidebar shadow-float',
         !pinned && !hovered && '-translate-x-full',
       )}>
-      <div className="shrink-0 flex items-center gap-2.5 pt-[26px] px-[18px] pb-[18px]">
-        <div className="w-[26px] h-[26px] shrink-0 rounded-[var(--r-xs)] flex items-center justify-center"
-          style={{ background: 'var(--accent)' }}>
-          <span className="text-[14px] font-bold leading-none tracking-[-0.06em] select-none" style={{ color: 'var(--accent-ink)' }}>V</span>
+      <div className="shrink-0 h-header flex items-center gap-2 px-4 border-b border-line">
+        <div className="w-5 h-5 shrink-0 rounded-control bg-accent text-on-accent flex items-center justify-center ring-1 ring-signal ring-offset-1 ring-offset-page">
+          <span className="text-xs font-semibold leading-none select-none">V</span>
         </div>
-        <div className="leading-[1.15] min-w-0 flex-1">
-          <p className="text-[13.5px] font-semibold tracking-[-0.02em] truncate">Vector</p>
-        </div>
-        <span className="shrink-0 text-[10px] text-[var(--t4)] num">v3.0</span>
-        <button aria-label={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
-          onClick={() => { setPinned(!pinned); setHovered(false); }}
-          title={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
-          className={cn(
-            'shrink-0 w-7 h-7 rounded-[8px] flex items-center justify-center transition-colors',
-            pinned
-              ? 'text-[var(--t3)] hover:bg-[var(--s3)] hover:text-[var(--t1)]'
-              : 'text-[var(--accent-text)] bg-[var(--accent-soft)]',
-          )}>
-          {pinned ? <Pin className="w-3.5 h-3.5" /> : <PinOff className="w-3.5 h-3.5" />}
-        </button>
+        <p className="flex-1 min-w-0 text-base font-semibold tracking-tight truncate">Vector</p>
+        <span className="shrink-0 mono text-2xs text-fg-4">v3</span>
+        <IconButton size="sm" icon={pinned ? Pin : PinOff} active={!pinned}
+          label={pinned ? 'Unpin — auto-hide sidebar' : 'Pin sidebar open'}
+          onClick={() => { setPinned(!pinned); setHovered(false); }} />
       </div>
 
-      <nav className="flex-1 overflow-y-auto py-[18px] px-3 flex flex-col gap-[26px] vec-scroll">
+      <nav className="flex-1 overflow-y-auto py-4 px-2 flex flex-col gap-5">
         {Object.entries(NAV_STRUCTURE).map(([key, sec]) => (
           <div key={key} className="flex flex-col gap-px">
-            <div className="px-2.5 pb-[9px] text-[9.5px] font-bold tracking-[0.15em] uppercase text-[var(--t4)]">
-              {t[sec.labelKey]}
-            </div>
+            <div className="eyebrow px-2 pb-1.5">{t[sec.labelKey]}</div>
             {sec.items.map(it => {
               const active = it.id === tab;
               const locked = isLocked(it.id);
               const badge = it.id === 'Todo' ? todoOpen : it.id === 'Inbox' ? inboxUnread : 0;
               return (
-                <button aria-label={locked ? 'Coming soon' : undefined} key={it.id} onClick={() => setTab(it.id)}
+                <button key={it.id} onClick={() => setTab(it.id)}
+                  aria-current={active ? 'page' : undefined}
+                  aria-label={locked ? `${t[it.labelKey]} — coming soon` : undefined}
                   title={locked ? 'Coming soon' : undefined}
-                  style={active ? activeShadow : undefined}
                   className={navBtn(active, locked)}>
-                  <it.Icon className="w-4 h-4 shrink-0" style={active ? undefined : { opacity: 0.68 }} strokeWidth={1.7} />
+                  <it.Icon className={cn('w-4 h-4 shrink-0', active ? 'text-accent-text' : 'text-fg-3')} strokeWidth={1.75} />
                   <span className="flex-1 text-left truncate">{t[it.labelKey]}</span>
-                  {locked && <Lock className="w-3 h-3 shrink-0 opacity-50" />}
+                  {locked && <Lock className="w-3 h-3 shrink-0 text-fg-4" />}
                   {!locked && badge > 0 && (
-                    <span className="min-w-[18px] h-[18px] px-[5px] rounded-[5px] text-[10px] font-semibold num flex items-center justify-center shrink-0 border border-[var(--line-2)]"
-                      style={{ background: 'var(--s3)', color: 'var(--t2)' }}>{badge}</span>
+                    <span className={cn('mono text-2xs shrink-0 inline-flex items-center gap-1', active ? 'text-fg' : 'text-fg-2')}>
+                      {it.id === 'Inbox' && <span className="w-1.5 h-1.5 rounded-full bg-signal" />}{badge}
+                    </span>
                   )}
                 </button>
               );
@@ -247,19 +237,20 @@ function Sidebar({
         ))}
       </nav>
 
-      <div className="px-2.5 pb-3 pt-2 border-t border-[var(--line)] flex flex-col gap-0.5">
+      <div className="shrink-0 px-2 py-2 border-t border-line flex flex-col gap-1">
         <button onClick={() => setTab('Settings')}
-          style={tab === 'Settings' ? activeShadow : undefined}
+          aria-current={tab === 'Settings' ? 'page' : undefined}
           className={navBtn(tab === 'Settings', false)}>
-          <SettingsIcon className="w-[17px] h-[17px] shrink-0" strokeWidth={1.7} />
+          <SettingsIcon className={cn('w-4 h-4 shrink-0', tab === 'Settings' ? 'text-accent-text' : 'text-fg-3')} strokeWidth={1.75} />
           <span className="flex-1 text-left">{t.settings}</span>
         </button>
-        <div className="flex items-center gap-2.5 px-2.5 pt-2.5 pb-1 min-w-0">
-          <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-semibold shrink-0"
-            style={{ background: 'linear-gradient(140deg, var(--accent), color-mix(in oklab, var(--accent) 50%, #8b5cf6))', color: 'var(--accent-ink)' }}>{userInitials}</div>
+        <div className="flex items-center gap-2.5 px-2 py-1.5 min-w-0">
+          <div className="w-6 h-6 rounded-full bg-accent-soft text-accent-text flex items-center justify-center text-2xs font-semibold shrink-0">
+            {userInitials}
+          </div>
           <div className="min-w-0 flex-1 leading-tight">
-            <p className="text-[12px] font-medium truncate">{userName || (userEmail ? userEmail.split('@')[0] : 'Not connected')}</p>
-            <p className="text-[10px] text-[var(--t3)] truncate mt-0.5">{userEmail || '—'}</p>
+            <p className="text-sm font-medium truncate">{userName || (userEmail ? userEmail.split('@')[0] : 'Not connected')}</p>
+            <p className="text-2xs text-fg-3 truncate">{userEmail || '—'}</p>
           </div>
         </div>
       </div>
@@ -269,11 +260,10 @@ function Sidebar({
 
 // ─── Header ──────────────────────────────────────────────────────────────────
 function Header({
-  tab, setTab, dark, setDark, connected, userName, sessionElapsed,
+  tab, dark, setDark, connected, userName, sessionElapsed,
   onConnect, connecting, notifs, hasNew, clearNew, onFeedback,
 }: {
   tab: TabId;
-  setTab: (t: TabId) => void;
   dark: boolean;
   setDark: (fn: (d: boolean) => boolean) => void;
   connected: boolean | null;
@@ -289,86 +279,67 @@ function Header({
   const keys = TITLE_KEYS[tab];
   const { t: tr } = useLang();
   const cur = { t: tr[keys.t] as string, s: tr[keys.s] as string };
-  const [notifOpen, setNotifOpen] = useState(false);
-  const notifRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (notifRef.current && !notifRef.current.contains(e.target as Node)) setNotifOpen(false); };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
+  const connectLabel = connecting ? tr.connecting : (userName || 'Click to connect to JOE');
 
-  const iconBtn = 'w-7 h-7 shrink-0 rounded-[var(--r-xs)] flex items-center justify-center text-[var(--t3)] hover:bg-[var(--s3)] hover:text-[var(--t1)] transition-colors';
   return (
-    <header className="shrink-0 flex items-end gap-[18px] pt-[26px] px-[30px] pb-4 border-b border-[var(--line)] z-[5]"
-      style={{ minHeight: 'var(--header-h)' }}>
-      <div className="min-w-0">
-        <h1 className="text-[21px] font-semibold leading-[1.15] tracking-[-0.028em]">{cur.t}</h1>
-        <p className="text-[12.5px] text-[var(--t3)] mt-[5px] leading-[1.35] max-w-[62ch] truncate">{cur.s}</p>
+    <header className="shrink-0 h-header flex items-center gap-3 px-page border-b border-line bg-page">
+      <div className="min-w-0 flex-1 flex items-baseline gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight truncate shrink-0 max-w-full">{cur.t}</h1>
+        <p className="hidden xl:block text-sm text-fg-3 truncate min-w-0">{cur.s}</p>
       </div>
 
-      <div className="flex-1" />
+      <button onClick={openPalette}
+        className="hidden lg:flex shrink-0 items-center gap-2 h-h-sm pl-2.5 pr-1.5 w-48 rounded-control border border-line-2 bg-surface text-sm text-fg-4 hover:border-line-3 transition-colors">
+        <Search className="w-3.5 h-3.5" strokeWidth={1.75} />
+        <span className="flex-1 text-left">Jump to…</span>
+        <Shortcut keys="palette" className="signal-keys" />
+      </button>
 
       {sessionElapsed && (
-        <div className="hidden lg:flex items-center gap-1.5 text-[11.5px] text-[var(--t3)] num pr-0.5">
-          <Clock className="w-[13px] h-[13px]" />
-          {sessionElapsed}
-        </div>
+        <Tooltip label="Time in this session">
+          <span className="hidden 2xl:flex shrink-0 items-center gap-1.5 mono text-xs text-fg-3 whitespace-nowrap">
+            <Clock className="w-3 h-3" strokeWidth={1.75} />
+            {sessionElapsed}
+          </span>
+        </Tooltip>
       )}
 
-      <button aria-label={connecting ? tr.connecting : (userName || 'Click to connect to JOE')} onClick={onConnect} disabled={connecting}
-        style={connected && !connecting
-          ? { border: '1px solid color-mix(in oklab, var(--ok) 32%, transparent)', background: 'var(--ok-soft)', color: 'var(--ok)' }
-          : undefined}
-        className={cn(
-          'h-8 px-[11px] rounded-[9px] text-[11.5px] font-semibold flex items-center gap-[7px] transition-colors border',
-          connecting
-            ? 'border-[var(--line-2)] bg-[var(--s2)] text-[var(--t3)] cursor-not-allowed'
-            : !connected && 'border-[var(--line-2)] bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s-hover)]',
-        )}
-        title={connecting ? tr.connecting : (userName || 'Click to connect to JOE')}>
-        {connecting
-          ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          : <span className="w-1.5 h-1.5 rounded-full" style={{ background: connected ? 'var(--ok)' : 'var(--t3)' }} />}
-        {connecting ? tr.connecting : connected ? (userName ? userName.split(' ')[0] : tr.connected) : tr.connectJoe}
-        {connected && !connecting && <RefreshCw className="w-3 h-3 opacity-60" />}
-      </button>
+      <Button tone="secondary" className="shrink-0" onClick={onConnect} disabled={connecting} hint={connectLabel} aria-label={connectLabel}
+        icon={connecting
+          ? <Loader2 className="animate-spin" />
+          : <span className={cn('w-1.5 h-1.5 rounded-full', connected ? 'bg-ok' : 'bg-fg-4')} />}
+        trailing={connected && !connecting ? <RefreshCw className="w-3 h-3 text-fg-4" strokeWidth={1.75} /> : undefined}>
+        {connecting ? tr.connecting : connected ? (userName ? userName.split(',')[0].split(' ')[0] : tr.connected) : tr.connectJoe}
+      </Button>
 
-      <button aria-label="Send feedback" onClick={onFeedback} title="Send feedback"
-        className="h-8 px-[11px] rounded-[9px] text-[11.5px] font-medium flex items-center gap-[7px] border border-[var(--line-2)] bg-[var(--s2)] text-[var(--t2)] hover:bg-[var(--s-hover)] hover:text-[var(--t1)] transition-colors">
-        <MessageSquarePlus className="w-3.5 h-3.5" />
-        <span className="hidden sm:inline">Feedback</span>
-      </button>
+      <IconButton icon={MessageSquarePlus} label="Send feedback" onClick={onFeedback} />
 
-      <button aria-label="Toggle theme" onClick={() => setDark((d: boolean) => !d)} title="Toggle theme" className={iconBtn}>
-        {dark ? <Sun className="w-[15px] h-[15px]" /> : <Moon className="w-[15px] h-[15px]" />}
-      </button>
+      <IconButton icon={dark ? Sun : Moon} label={dark ? 'Light theme' : 'Dark theme'} shortcut="theme"
+        onClick={() => setDark((d: boolean) => !d)} />
 
-      <div ref={notifRef} className="relative">
-        <button onClick={() => { setNotifOpen(o => !o); clearNew(); }} className={cn(iconBtn, 'relative')}>
-          <Bell className="w-[15px] h-[15px]" />
-          {hasNew && <span className="absolute top-1.5 right-2 w-1.5 h-1.5 rounded-full bg-[var(--err)] border-[1.5px] border-[var(--s2)]" />}
-        </button>
-        <AnimatePresence>
-          {notifOpen && (
-            <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
-              className="absolute right-0 top-10 w-72 rounded-xl z-50 overflow-hidden v3-pop bg-[var(--s2)] border border-[var(--line)]">
-              <p className="px-4 py-2.5 text-[10px] font-semibold text-[var(--t3)] uppercase tracking-widest border-b border-[var(--line)]">Activity</p>
-              <div className="max-h-60 overflow-y-auto vec-scroll">
-                {notifs.length === 0
-                  ? <p className="px-4 py-5 text-[11.5px] text-[var(--t3)] text-center">No recent activity</p>
-                  : notifs.map(t => (
-                    <div key={t.id} className="flex items-start gap-2 px-4 py-2 border-b border-[var(--line)] last:border-0">
-                      {t.type === 'ok'  ? <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--ok)' }} /> :
-                       t.type === 'err' ? <AlertCircle  className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--err)' }} /> :
-                                          <Info         className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: 'var(--accent)' }} />}
-                      <p className="text-[11.5px] text-[var(--t2)]">{t.msg}</p>
-                    </div>
-                  ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
+      <Menu position="bottom-end" width="var(--popover-w)" onOpen={clearNew}>
+        <Menu.Target>
+          <Indicator disabled={!hasNew} size={6} offset={7} color="err" withBorder={false}>
+            <IconButton icon={Bell} label="Activity" />
+          </Indicator>
+        </Menu.Target>
+        <Menu.Dropdown>
+          <Menu.Label>Activity</Menu.Label>
+          <div className="max-h-72 overflow-y-auto">
+            {notifs.length === 0
+              ? <EmptyState compact title="No recent activity" />
+              : notifs.map(n => (
+                <div key={n.id} className="flex items-start gap-2 px-2 py-1.5 border-t border-line first:border-0">
+                  {n.type === 'ok'   ? <CheckCircle2  className="w-3.5 h-3.5 mt-0.5 shrink-0 text-ok" /> :
+                   n.type === 'err'  ? <AlertCircle   className="w-3.5 h-3.5 mt-0.5 shrink-0 text-err" /> :
+                   n.type === 'warn' ? <AlertCircle   className="w-3.5 h-3.5 mt-0.5 shrink-0 text-warn" /> :
+                                       <Info          className="w-3.5 h-3.5 mt-0.5 shrink-0 text-accent-text" />}
+                  <p className="text-sm text-fg-2 leading-snug">{n.msg}</p>
+                </div>
+              ))}
+          </div>
+        </Menu.Dropdown>
+      </Menu>
     </header>
   );
 }
@@ -382,31 +353,22 @@ function SplashScreen({
   connecting: boolean;
 }) {
   return (
-    <div className="h-screen flex flex-col items-center justify-center bg-[var(--bg)] relative select-none">
-      {/* Logo */}
-      <div className="w-20 h-20 rounded-3xl bg-[var(--accent)] flex items-center justify-center mb-5 shadow-xl ring-4 ring-[var(--accent-line)]">
-        <span className="text-white text-[40px] font-black leading-none tracking-tighter">V</span>
+    <div className="h-screen flex flex-col items-center justify-center bg-page relative select-none">
+      <div className="w-10 h-10 rounded-panel bg-accent text-on-accent flex items-center justify-center mb-4">
+        <span className="text-2xl font-semibold leading-none">V</span>
       </div>
-      <h1 className="text-[26px] font-bold tracking-tight text-[var(--t1)]">Vector</h1>
-      <p className="text-[12.5px] text-[var(--t3)] mt-1 mb-10">Quote Automation · v2.0</p>
+      <h1 className="text-3xl font-semibold tracking-tight text-fg">Vector</h1>
+      <p className="mono text-xs text-fg-3 mt-1 mb-8">Quote automation · v3</p>
 
-      <button
-        onClick={onConnect}
-        disabled={connecting}
-        className="h-11 px-8 rounded-xl text-[13.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 disabled:opacity-60 flex items-center gap-2.5 transition-colors shadow-sm">
-        {connecting
-          ? <Loader2 className="w-4 h-4 animate-spin" />
-          : <span className="w-2 h-2 rounded-full bg-emerald-400 shrink-0" />}
+      <Button tone="primary" size="md" onClick={onConnect} loading={connecting}
+        icon={<span className="w-1.5 h-1.5 rounded-full bg-on-accent" />}>
         {connecting ? 'Connecting…' : 'Connect to JOE'}
-      </button>
-
-      <button
-        onClick={onSkip}
-        className="mt-4 text-[11.5px] text-[var(--t3)] hover:text-[var(--t2)] transition-colors underline-offset-2 hover:underline">
+      </Button>
+      <Button tone="ghost" size="xs" className="mt-2" onClick={onSkip}>
         Skip — enter without connection
-      </button>
+      </Button>
 
-      <p className="absolute bottom-8 left-0 right-0 text-center text-[11px] text-[var(--t4)] px-8">
+      <p className="absolute bottom-8 left-0 right-0 text-center text-xs text-fg-4 px-8">
         Connects to the Eaton JOE SharePoint environment.
         Make sure you're on the Eaton network or VPN.
       </p>
@@ -414,49 +376,35 @@ function SplashScreen({
   );
 }
 
-// ─── Keyboard shortcuts modal ────────────────────────────────────────────────
-const SHORTCUTS = [
-  { key: 'Ctrl + K',  desc: 'Command palette — jump to any screen' },
-  { key: 'Alt + 1',   desc: 'Dashboard' },
-  { key: 'Alt + 2',   desc: 'Ask Vector' },
-  { key: 'Alt + 3',   desc: 'Inbox' },
-  { key: 'Alt + 4',   desc: 'History' },
-  { key: 'Alt + 5',   desc: 'Analytics' },
-  { key: 'Alt + 6',   desc: 'Job report' },
-  { key: '?',         desc: 'Toggle this panel' },
-  { key: 'Esc',       desc: 'Close any modal / panel' },
+// ─── Keyboard shortcuts sheet ────────────────────────────────────────────────
+const SHORTCUT_SHEET: { keys: ShortcutName | string; desc: string }[] = [
+  { keys: 'palette',     desc: 'Command palette — jump to any screen' },
+  { keys: 'goDashboard', desc: 'Dashboard' },
+  { keys: 'goAssistant', desc: 'Ask Vector' },
+  { keys: 'goInbox',     desc: 'Inbox' },
+  { keys: 'goHistory',   desc: 'History' },
+  { keys: 'goAnalytics', desc: 'Analytics' },
+  { keys: 'goReport',    desc: 'Job report' },
+  { keys: 'save',        desc: 'Save on the current screen' },
+  { keys: 'submit',      desc: 'Submit the open form' },
+  { keys: 'theme',       desc: 'Switch light / dark' },
+  { keys: 'help',        desc: 'Toggle this panel' },
+  { keys: 'close',       desc: 'Close any dialog or panel' },
 ];
 
-function ShortcutsModal({ onClose }: { onClose: () => void }) {
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape' || e.key === '?') onClose(); };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [onClose]);
+function ShortcutsModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm"
-      onClick={onClose}>
-      <motion.div initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.94 }}
-        onClick={e => e.stopPropagation()}
-        className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-[var(--line-2)] p-5 w-80">
-        <div className="flex items-center gap-2 mb-4">
-          <Keyboard className="w-4 h-4 text-[var(--t3)]" />
-          <span className="text-[13px] font-semibold flex-1">Keyboard Shortcuts</span>
-          <button aria-label="Close" onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        <div className="space-y-1.5">
-          {SHORTCUTS.map(s => (
-            <div key={s.key} className="flex items-center justify-between py-1 border-b border-[var(--line)] last:border-0">
-              <span className="text-[12px] text-[var(--t2)]">{s.desc}</span>
-              <kbd className="px-2 py-0.5 rounded-md bg-[var(--s3)] text-[10.5px] font-mono text-[var(--t2)] border border-[var(--line-2)]">{s.key}</kbd>
-            </div>
-          ))}
-        </div>
-        <p className="mt-3 text-[10.5px] text-[var(--t3)] text-center">Press <kbd className="px-1.5 py-0.5 rounded bg-[var(--s3)] text-[10px] font-mono border border-[var(--line-2)]">?</kbd> anytime to toggle</p>
-      </motion.div>
-    </div>
+    <Modal opened={opened} onClose={onClose} size="var(--modal-sm)"
+      title={<span className="flex items-center gap-2"><Keyboard className="w-4 h-4 text-fg-3" strokeWidth={1.75} />Keyboard shortcuts</span>}>
+      <div className="flex flex-col">
+        {SHORTCUT_SHEET.map(s => (
+          <div key={s.desc} className="flex items-center justify-between gap-4 py-1.5 border-b border-line last:border-0">
+            <span className="text-sm text-fg-2">{s.desc}</span>
+            <Shortcut keys={s.keys} />
+          </div>
+        ))}
+      </div>
+    </Modal>
   );
 }
 
@@ -534,26 +482,26 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
             animate={{ opacity: 1, scale: 1,    y: 0  }}
             exit={{   opacity: 0, scale: 0.93, y: 12  }}
             transition={{ duration: 0.15 }}
-            className="fixed bottom-16 right-5 w-[340px] h-[420px] z-[9998] flex flex-col
-                       bg-[var(--s1)] rounded-2xl shadow-2xl
-                       ring-1 ring-[var(--line-2)] overflow-hidden">
+            className="fixed bottom-16 right-5 w-80 h-104 z-modal flex flex-col
+                       bg-surface rounded-2xl 
+                       ring-1 ring-line-2 overflow-hidden">
 
             {/* Header */}
-            <div className="flex items-center gap-2 px-3.5 py-2 border-b border-[var(--line)] shrink-0">
-              <div className="w-5 h-5 rounded-md bg-[var(--accent)] flex items-center justify-center shrink-0">
-                <span className="text-white text-[11px] font-black leading-none">V</span>
+            <div className="flex items-center gap-2 px-3.5 py-2 border-b border-line shrink-0">
+              <div className="w-5 h-5 rounded-md bg-accent flex items-center justify-center shrink-0">
+                <span className="text-on-accent text-xs font-semibold leading-none">V</span>
               </div>
-              <span className="flex-1 text-[12px] font-semibold">Ask Vector</span>
+              <span className="flex-1 text-sm font-semibold">Ask Vector</span>
               <button onClick={() => { onOpenFull(); setOpen(false); }}
-                className="text-[10.5px] text-[var(--accent-text)] hover:text-[var(--accent-text)] font-medium mr-1">
+                className="text-2xs text-accent-text hover:text-accent-text font-medium mr-1">
                 Full view →
               </button>
               <button aria-label="Clear chat" onClick={() => setMsgs([])} title="Clear chat"
-                className="w-5 h-5 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
+                className="w-5 h-5 flex items-center justify-center text-fg-3 hover:text-fg">
                 <RefreshCw className="w-3 h-3" />
               </button>
               <button aria-label="Close" onClick={() => setOpen(false)}
-                className="w-5 h-5 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
+                className="w-5 h-5 flex items-center justify-center text-fg-3 hover:text-fg">
                 <X className="w-3 h-3" />
               </button>
             </div>
@@ -562,27 +510,27 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
             <div ref={bodyRef} className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
               {msgs.length === 0 && (
                 <div className="h-full flex flex-col items-center justify-center gap-2 text-center px-4">
-                  <div className="w-9 h-9 rounded-xl bg-[var(--accent-soft)] flex items-center justify-center">
-                    <Sparkles className="w-4 h-4 text-[var(--accent-text)]" />
+                  <div className="w-9 h-9 rounded-xl bg-accent-soft flex items-center justify-center">
+                    <Sparkles className="w-4 h-4 text-accent-text" />
                   </div>
-                  <p className="text-[11.5px] font-medium text-[var(--t2)]">How can I help?</p>
-                  <p className="text-[10.5px] text-[var(--t3)] leading-snug">Ask anything about quotes, specs, or projects.</p>
+                  <p className="text-xs font-medium text-fg-2">How can I help?</p>
+                  <p className="text-2xs text-fg-3 leading-snug">Ask anything about quotes, specs, or projects.</p>
                 </div>
               )}
               {msgs.map((m, i) => (
                 <div key={i} className={cn('flex', m.role === 'user' ? 'justify-end' : 'justify-start')}>
                   <div className={cn(
-                    'max-w-[85%] px-2.5 py-1.5 rounded-xl text-[11.5px] leading-relaxed whitespace-pre-wrap break-words',
+                    'max-w-[85%] px-2.5 py-1.5 rounded-xl text-xs leading-relaxed whitespace-pre-wrap break-words',
                     m.role === 'user'
-                      ? 'bg-[var(--accent)] text-white rounded-br-sm'
-                      : 'bg-[var(--s3)] text-[var(--t1)] rounded-bl-sm',
+                      ? 'bg-accent text-on-accent rounded-br-sm'
+                      : 'bg-subtle text-fg rounded-bl-sm',
                   )}>{m.text}</div>
                 </div>
               ))}
               {loading && (
                 <div className="flex justify-start">
-                  <div className="bg-[var(--s3)] px-2.5 py-2 rounded-xl rounded-bl-sm">
-                    <Loader2 className="w-3 h-3 text-[var(--t3)] animate-spin" />
+                  <div className="bg-subtle px-2.5 py-2 rounded-xl rounded-bl-sm">
+                    <Loader2 className="w-3 h-3 text-fg-3 animate-spin" />
                   </div>
                 </div>
               )}
@@ -590,16 +538,16 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
 
             {/* Escalation banner */}
             {shouldEscalate && (
-              <div className="px-3 py-1.5 bg-[var(--accent-soft)] border-t border-[var(--accent-line)] flex items-center gap-2 shrink-0">
-                <Sparkles className="w-3 h-3 text-[var(--accent-text)] shrink-0" />
-                <p className="text-[10.5px] text-[var(--accent-text)] flex-1">Getting complex — try full view.</p>
+              <div className="px-3 py-1.5 bg-accent-soft border-t border-accent-line flex items-center gap-2 shrink-0">
+                <Sparkles className="w-3 h-3 text-accent-text shrink-0" />
+                <p className="text-2xs text-accent-text flex-1">Getting complex — try full view.</p>
                 <button onClick={() => { onOpenFull(); setOpen(false); }}
-                  className="text-[10.5px] font-semibold text-[var(--accent-text)] hover:text-[var(--accent-text)] whitespace-nowrap">Open →</button>
+                  className="text-2xs font-semibold text-accent-text hover:text-accent-text whitespace-nowrap">Open →</button>
               </div>
             )}
 
             {/* Input */}
-            <div className="px-3 py-2 border-t border-[var(--line)] shrink-0 flex gap-2 items-end">
+            <div className="px-3 py-2 border-t border-line shrink-0 flex gap-2 items-end">
               <textarea
                 ref={inputRef}
                 rows={2}
@@ -607,14 +555,14 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
                 placeholder="Ask anything… (Enter to send)"
-                className="flex-1 resize-none text-[11.5px] bg-transparent outline-none text-[var(--t1)] placeholder:text-[var(--t3)] leading-relaxed py-0.5"
+                className="flex-1 resize-none text-xs bg-transparent outline-none text-fg placeholder:text-fg-3 leading-relaxed py-0.5"
               />
               <button aria-label="Send message" onClick={send} disabled={!input.trim() || loading}
                 className={cn(
                   'w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-colors mb-0.5',
                   input.trim() && !loading
-                    ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]'
-                    : 'bg-[var(--s3)] text-[var(--t3)] cursor-not-allowed',
+                    ? 'bg-accent text-on-accent hover:bg-accent-hover'
+                    : 'bg-subtle text-fg-3 cursor-not-allowed',
                 )}>
                 <Send className="w-3 h-3" />
               </button>
@@ -632,11 +580,11 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
             exit={{   opacity: 0, y: 16, scale: 0.8 }}
             transition={{ duration: 0.15 }}
             className={cn(
-              'fixed bottom-8 left-1/2 -translate-x-1/2 z-[9997] pointer-events-none',
-              'w-14 h-14 rounded-full flex items-center justify-center transition-colors duration-100',
+              'fixed bottom-8 left-1/2 -translate-x-1/2 z-modal pointer-events-none',
+              'w-14 h-14 rounded-full flex items-center justify-center transition-colors duration-fast',
               overDismiss
-                ? 'bg-red-500 text-white shadow-lg shadow-red-500/30'
-                : 'bg-white/90 dark:bg-[var(--s2)] backdrop-blur text-[var(--t3)] ring-1 ring-[var(--line-2)]',
+                ? 'bg-err text-on-status '
+                : 'bg-surface text-fg-3 ring-1 ring-line-2',
             )}>
             <X className="w-5 h-5" />
           </motion.div>
@@ -655,15 +603,15 @@ function FloatingAssistant({ onOpenFull }: { onOpenFull: () => void }) {
         whileTap={!isDragging ? { scale: 0.9 } : {}}
         onClick={() => { if (dragMoved.current) { dragMoved.current = false; return; } setOpen(o => !o); }}
         className={cn(
-          'w-9 h-9 rounded-xl bg-[var(--accent)] text-white shadow-lg z-[9999]',
-          'flex items-center justify-center hover:bg-[var(--accent-hover)] transition-colors',
+          'w-9 h-9 rounded-xl bg-accent text-on-accent z-modal',
+          'flex items-center justify-center hover:bg-accent-hover transition-colors',
           isDragging ? 'cursor-grabbing opacity-80' : 'cursor-grab',
         )}>
         {open
           ? <X className="w-4 h-4" />
-          : <span className="text-[15px] font-black leading-none tracking-tighter select-none">V</span>}
+          : <span className="text-lg font-semibold leading-none tracking-tighter select-none">V</span>}
         {hasUnread && !open && (
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-[var(--s1)]" />
+          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-err ring-2 ring-surface" />
         )}
       </motion.button>
     </>
@@ -683,30 +631,11 @@ function fmtElapsed(iso: string | null) {
 // ─── Coming Soon (locked feature wall) ───────────────────────────────────────
 function ComingSoon({ title, desc }: { title: string; desc: string }) {
   return (
-    <div className="relative h-full min-h-[460px] w-full overflow-hidden rounded-[18px] border border-[var(--line)]">
-      {/* Blurred faux content behind the wall */}
-      <div aria-hidden className="absolute inset-0 blur-[7px] opacity-40 pointer-events-none select-none p-[26px]">
-        <div className="h-[34px] w-1/3 rounded-[10px] bg-[var(--s3)] mb-[18px]" />
-        <div className="grid grid-cols-3 gap-4 mb-[18px]">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div key={i} className="h-[110px] rounded-[14px] bg-[var(--s2)] border border-[var(--line)]" />
-          ))}
-        </div>
-        <div className="h-[180px] rounded-[14px] bg-[var(--s2)] border border-[var(--line)]" />
-      </div>
-      {/* Overlay card */}
-      <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[2px]"
-        style={{ background: 'color-mix(in oklab, var(--bg) 45%, transparent)' }}>
-        <div className="text-center max-w-[400px] px-9 py-[38px] rounded-[20px] v3-pop bg-[var(--s2)] border border-[var(--line)]">
-          <div className="w-[52px] h-[52px] mx-auto rounded-[15px] bg-[var(--accent-soft)] text-[var(--accent-text)] flex items-center justify-center mb-4">
-            <Rocket className="w-6 h-6" />
-          </div>
-          <div className="inline-flex items-center gap-1.5 px-[11px] py-1 rounded-full bg-[var(--s3)] border border-[var(--line)] text-[10px] font-semibold tracking-wide uppercase text-[var(--t2)] mb-3.5 whitespace-nowrap">
-            <Lock className="w-3 h-3" /> Coming soon
-          </div>
-          <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-[var(--t1)]">{title}</h2>
-          <p className="text-[12.5px] text-[var(--t2)] mt-2.5 leading-relaxed">{desc}</p>
-        </div>
+    <div className="h-full min-h-112 w-full flex items-center justify-center border border-dashed border-line-2 rounded-panel">
+      <div className="text-center max-w-96 px-8">
+        <Badge tone="neutral" leftSection={<Lock className="w-3 h-3" />}>Coming soon</Badge>
+        <h2 className="mt-3 text-2xl font-semibold tracking-tight text-fg">{title}</h2>
+        <p className="text-sm text-fg-2 mt-2 leading-relaxed">{desc}</p>
       </div>
     </div>
   );
@@ -714,26 +643,21 @@ function ComingSoon({ title, desc }: { title: string; desc: string }) {
 
 // ─── Feedback modal ──────────────────────────────────────────────────────────
 const FEEDBACK_CATEGORIES = ['Bug', 'Idea', 'Question', 'Other'] as const;
+type FeedbackCategory = typeof FEEDBACK_CATEGORIES[number];
 
 function FeedbackModal({
-  onClose, currentTab, userName, userEmail, toast,
+  opened, onClose, currentTab, userName, userEmail, toast,
 }: {
+  opened: boolean;
   onClose: () => void;
   currentTab: TabId;
   userName: string | null;
   userEmail: string | null;
   toast: ToastFn;
 }) {
-  const [category, setCategory] = useState<string>('Idea');
+  const [category, setCategory] = useState<FeedbackCategory>('Idea');
   const [message,  setMessage]  = useState('');
   const [sending,  setSending]  = useState(false);
-  const taRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { setTimeout(() => taRef.current?.focus(), 120); }, []);
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [onClose]);
 
   async function submit() {
     const msg = message.trim();
@@ -741,71 +665,43 @@ function FeedbackModal({
     setSending(true);
     try {
       const r = await api.feedback({ message: msg, category, page: currentTab, userName, userEmail });
-      if (r.ok) { toast('ok', 'Feedback sent — thank you'); onClose(); }
+      if (r.ok) { toast('ok', 'Feedback sent — thank you'); setMessage(''); onClose(); }
       else      { toast('err', failed('send your feedback', r.error)); }
     } catch (e: any) {
       toast('err', failed('send your feedback', e));
     }
     setSending(false);
   }
+  useFormHotkeys({ onSubmit: submit, enabled: opened });
 
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <motion.div initial={{ opacity: 0, scale: 0.94 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.94 }}
-        onClick={e => e.stopPropagation()}
-        className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-[var(--line-2)] p-5 w-[400px]">
-        <div className="flex items-center gap-2 mb-4">
-          <MessageSquarePlus className="w-4 h-4 text-[var(--accent-text)]" />
-          <span className="text-[13px] font-semibold flex-1">Send feedback</span>
-          <button aria-label="Close" onClick={onClose} className="w-6 h-6 flex items-center justify-center text-[var(--t3)] hover:text-[var(--t1)]">
-            <X className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="flex gap-1.5 mb-3">
-          {FEEDBACK_CATEGORIES.map(c => (
-            <button key={c} onClick={() => setCategory(c)}
-              className={cn(
-                'px-2.5 py-1 rounded-lg text-[11.5px] font-medium ring-1 ring-inset transition-colors',
-                category === c
-                  ? 'bg-[var(--t1)] text-[var(--bg)] ring-transparent'
-                  : 'bg-[var(--s1)] text-[var(--t2)] ring-[var(--line-2)] hover:bg-[var(--s3)]',
-              )}>{c}</button>
-          ))}
-        </div>
-
-        <textarea
-          ref={taRef}
-          rows={5}
+    <Modal opened={opened} onClose={onClose} size="var(--modal-sm)"
+      title={<span className="flex items-center gap-2"><MessageSquarePlus className="w-4 h-4 text-fg-3" strokeWidth={1.75} />Send feedback</span>}>
+      <div className="flex flex-col gap-3">
+        <Segmented value={category} onChange={setCategory} data={[...FEEDBACK_CATEGORIES]} fullWidth />
+        <Textarea
+          data-autofocus
+          minRows={5}
           value={message}
-          onChange={e => setMessage(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } }}
+          onChange={e => setMessage(e.currentTarget.value)}
           placeholder="What's working, what's broken, what you'd love to see…"
-          className="w-full resize-none text-[12.5px] rounded-xl bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] p-3 outline-none focus:ring-[var(--accent-line)] text-[var(--t1)] placeholder:text-[var(--t3)] leading-relaxed"
         />
-
-        <div className="flex items-center justify-between mt-4">
-          <span className="text-[10.5px] text-[var(--t3)]">Goes to the Vector team</span>
-          <button onClick={submit} disabled={!message.trim() || sending}
-            className={cn(
-              'h-9 px-4 rounded-xl text-[12.5px] font-semibold flex items-center gap-2 transition-colors',
-              message.trim() && !sending
-                ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)]'
-                : 'bg-[var(--s3)] text-[var(--t3)] cursor-not-allowed',
-            )}>
-            {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-            {sending ? 'Sending…' : 'Send'}
-          </button>
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <span className="text-xs text-fg-3">Goes to the Vector team</span>
+          <Button tone="primary" icon={Send} onClick={submit} loading={sending}
+            disabled={!message.trim()} shortcut="submit">
+            Send
+          </Button>
         </div>
-      </motion.div>
-    </div>
+      </div>
+    </Modal>
   );
 }
 
 // ─── First-run welcome modal ─────────────────────────────────────────────────
 const WELCOME_KEY = 'vector_welcome_seen_v1';
 
-function WelcomeModal({ onClose }: { onClose: () => void }) {
+function WelcomeModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
   const steps = [
     { Icon: Zap,               title: 'Connect to JOE',  body: 'Hit “Connect to JOE” (top bar) while on the Eaton network or VPN to sync your quotes.' },
     { Icon: LayoutDashboard,   title: 'Process quotes',  body: 'Drop PDFs on the Dashboard to auto-extract, file, and upload to the D&Q Store.' },
@@ -813,37 +709,34 @@ function WelcomeModal({ onClose }: { onClose: () => void }) {
     { Icon: MessageSquarePlus, title: 'Send feedback',   body: 'Use the feedback button (top bar) anytime — it reaches the team directly.' },
   ];
   return (
-    <div className="fixed inset-0 z-[10001] flex items-center justify-center bg-black/55 backdrop-blur-sm">
-      <motion.div initial={{ opacity: 0, scale: 0.94, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.94 }}
-        className="bg-[var(--s1)] rounded-2xl shadow-2xl ring-1 ring-[var(--line-2)] p-6 w-[440px]">
-        <div className="flex flex-col items-center text-center mb-5">
-          <div className="w-14 h-14 rounded-2xl bg-[var(--accent)] flex items-center justify-center mb-3 shadow-lg ring-4 ring-[var(--accent-line)]">
-            <span className="text-white text-[28px] font-black leading-none tracking-tighter">V</span>
+    <Modal opened={opened} onClose={onClose} size="var(--modal-sm)" withCloseButton={false}>
+      <div className="flex flex-col gap-5">
+        <div>
+          <div className="w-8 h-8 rounded-panel bg-accent text-on-accent flex items-center justify-center mb-3">
+            <span className="text-lg font-semibold leading-none">V</span>
           </div>
-          <h2 className="text-[18px] font-bold tracking-tight text-[var(--t1)]">Welcome to Vector</h2>
-          <p className="text-[12px] text-[var(--t3)] mt-1">Eaton Quote &amp; PMO automation · v2.0</p>
+          <h2 className="text-2xl font-semibold tracking-tight text-fg">Welcome to Vector</h2>
+          <p className="text-sm text-fg-3 mt-1">Eaton Quote &amp; PMO automation</p>
         </div>
 
-        <div className="space-y-2.5 mb-6">
-          {steps.map(s => (
-            <div key={s.title} className="flex items-start gap-3 p-2.5 rounded-xl bg-[var(--s3)]">
-              <div className="w-8 h-8 rounded-lg bg-[var(--s1)] ring-1 ring-[var(--line-2)] flex items-center justify-center shrink-0">
-                <s.Icon className="w-4 h-4 text-[var(--accent-text)]" />
-              </div>
+        <ol className="flex flex-col">
+          {steps.map((s, i) => (
+            <li key={s.title} className="flex items-start gap-3 py-2.5 border-t border-line">
+              <span className="mono text-xs text-fg-4 w-4 pt-0.5">{i + 1}</span>
+              <s.Icon className="w-4 h-4 mt-0.5 text-fg-3 shrink-0" strokeWidth={1.75} />
               <div className="min-w-0">
-                <p className="text-[12.5px] font-semibold text-[var(--t1)]">{s.title}</p>
-                <p className="text-[11.5px] text-[var(--t3)] leading-snug mt-0.5">{s.body}</p>
+                <p className="text-sm font-medium text-fg">{s.title}</p>
+                <p className="text-xs text-fg-3 leading-snug mt-0.5">{s.body}</p>
               </div>
-            </div>
+            </li>
           ))}
-        </div>
+        </ol>
 
-        <button onClick={onClose}
-          className="w-full h-11 rounded-xl text-[13.5px] font-semibold bg-[var(--t1)] text-[var(--bg)] hover:opacity-90 transition-colors">
+        <Button tone="primary" size="md" fullWidth onClick={onClose} data-autofocus>
           Get started
-        </button>
-      </motion.div>
-    </div>
+        </Button>
+      </div>
+    </Modal>
   );
 }
 
@@ -865,13 +758,22 @@ const VALID_TABS: TabId[] = [
 // pages from here rather than inside each one keeps the 16 page files free of
 // layout boilerplate — change a number here and that screen re-frames.
 // 0 = full-bleed: the page owns the whole area (Assistant's chat, Inbox's panes).
+// Values are in --sp-4 units (16px steps), so the frame stays on the grid.
 const PAGE_FRAME: Record<TabId, number> = {
-  Dashboard: 1240, Assistant: 0,    Inbox: 0,     Todo: 1240,
-  CRM:       1240, ELInfo:    1100, Fenton: 1180, History: 1240,
-  Analytics: 1240, Report:    1100, LSD:    1240, PMO:     1100,
-  CBU:       1140, Commission: 1000, Schematics: 1240, Filing: 960,
-  Docs:       960, Settings:   680,
+  Dashboard: 80, Assistant: 0,  Inbox: 0,   Todo: 80,
+  CRM:       80, ELInfo:    70, Fenton: 74, History: 80,
+  Analytics: 80, Report:    70, LSD:    80, PMO:     70,
+  CBU:       72, Commission: 64, Schematics: 80, Filing: 60,
+  Docs:      60, Settings:   64,
 };
+
+const TAB_SHORTCUT: Partial<Record<TabId, ShortcutName>> = {
+  Dashboard: 'goDashboard', Assistant: 'goAssistant', Inbox: 'goInbox',
+  History: 'goHistory', Analytics: 'goAnalytics', Report: 'goReport',
+};
+
+const uiSample = typeof window !== 'undefined' &&
+  (/(^|[?&])ui-sample(=|&|$)/.test(window.location.search) || window.location.hash === '#ui-sample');
 
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
@@ -942,11 +844,11 @@ export default function App() {
   const embedMode = typeof window !== 'undefined' && /(^|[?&])embed=1(&|$)/.test(window.location.search);
   if (embedMode) {
     return (
-      <VectorMantine dark={dark}>
+      <VectorProvider dark={dark}>
         <LangCtx.Provider value={{ lang, t: tCurrent, setLang: saveLang }}>
           <OverlayPage toast={toast} />
         </LangCtx.Provider>
-      </VectorMantine>
+      </VectorProvider>
     );
   }
 
@@ -1041,41 +943,47 @@ export default function App() {
   // Keyboard shortcuts. useHotkeys already ignores INPUT/TEXTAREA/SELECT, so the
   // hand-rolled tag check is gone, and `mod+` is Ctrl on Windows / ⌘ on macOS.
   // Ctrl+K opens the command palette now rather than jumping to a single tab.
-  useHotkeys([
-    ['mod+K',   () => spotlight.open()],
-    ['shift+/', () => setShortcutsOpen(o => !o)],
-    ['alt+1',   () => go('Dashboard')],
-    ['alt+2',   () => go('Assistant')],
-    ['alt+3',   () => go('Inbox')],
-    ['alt+4',   () => go('History')],
-    ['alt+5',   () => go('Analytics')],
-    ['alt+6',   () => go('Report')],
-  ]);
+  // Ctrl+K is bound by the palette itself (it must work from inside a field).
+  useAppHotkeys({
+    help:        () => setShortcutsOpen(o => !o),
+    theme:       () => setDark(d => !d),
+    goDashboard: () => go('Dashboard'),
+    goAssistant: () => go('Assistant'),
+    goInbox:     () => go('Inbox'),
+    goHistory:   () => go('History'),
+    goAnalytics: () => go('Analytics'),
+    goReport:    () => go('Report'),
+  });
 
-  // Palette actions come from the same NAV_STRUCTURE the sidebar renders, so a
+  // Palette groups come from the same NAV_STRUCTURE the sidebar renders, so a
   // new tab shows up in both or in neither — they cannot drift apart.
-  const spotlightActions = React.useMemo(() => [
+  const paletteGroups = React.useMemo<PaletteGroup[]>(() => [
     ...Object.values(NAV_STRUCTURE).map(group => ({
       group: tCurrent[group.labelKey] as string,
       actions: group.items.map(({ id, Icon, labelKey }) => ({
         id,
         label: tCurrent[labelKey] as string,
         description: tCurrent[TITLE_KEYS[id].s] as string,
-        leftSection: <Icon className="w-[15px] h-[15px]" strokeWidth={1.9} />,
-        onClick: () => go(id),
+        icon: Icon,
+        shortcut: TAB_SHORTCUT[id],
+        keywords: [id],
+        onRun: () => go(id),
       })),
     })),
     {
       group: 'Workspace',
-      actions: [{
-        id: 'Settings',
-        label: tCurrent.settings as string,
-        description: tCurrent.sub_settings as string,
-        leftSection: <SettingsIcon className="w-[15px] h-[15px]" strokeWidth={1.9} />,
-        onClick: () => go('Settings'),
-      }],
+      actions: [
+        { id: 'Settings', label: tCurrent.settings as string, description: tCurrent.sub_settings as string,
+          icon: SettingsIcon, onRun: () => go('Settings') },
+        { id: 'theme', label: dark ? 'Switch to light theme' : 'Switch to dark theme',
+          icon: dark ? Sun : Moon, shortcut: 'theme', onRun: () => setDark(d => !d) },
+        { id: 'shortcuts', label: 'Keyboard shortcuts', icon: Keyboard, shortcut: 'help',
+          onRun: () => setShortcutsOpen(true) },
+        { id: 'feedback', label: 'Send feedback', icon: MessageSquarePlus,
+          onRun: () => setFeedbackOpen(true) },
+      ],
     },
-  ], [tCurrent, go]);
+  ], [tCurrent, go, dark]);
 
   // In the packaged Tauri app the whole UI is one WebView2 window, where a plain
   // <a target="_blank"> (or any external link) navigates that single window
@@ -1105,29 +1013,21 @@ export default function App() {
     : '—';
 
   return (
-    <VectorMantine dark={dark}>
+    <VectorProvider dark={dark}>
     <LangCtx.Provider value={{ lang, t: tCurrent, setLang: saveLang }}>
-      <Spotlight
-        actions={spotlightActions}
-        nothingFound="Nothing matches that"
-        highlightQuery
-        limit={8}
-        scrollAreaProps={{ type: 'never' }}
-        searchProps={{
-          placeholder: 'Jump to a screen…',
-          leftSection: <Search className="w-4 h-4" />,
-        }}
-      />
+      <CommandPalette groups={paletteGroups} />
       <CancelDock />
 
-      {/* ── Splash screen — shown until first successful connection or skipped ── */}
-      {!splashDone ? (
+      {uiSample ? (
+        <React.Suspense fallback={null}>
+          <UiSamplePage dark={dark} setDark={setDark} />
+        </React.Suspense>
+      ) : !splashDone ? (
         <SplashScreen onConnect={onConnect} onSkip={() => setSplashDone(true)} connecting={connecting} />
       ) : (
 
       <>
-      <div className="flex h-screen min-h-0 relative text-[var(--t1)]"
-        style={{ backgroundColor: 'var(--bg)', backgroundImage: 'radial-gradient(120% 90% at 100% 0%, var(--bg-grad) 0%, var(--bg) 55%)' }}>
+      <div className="flex h-screen min-h-0 relative bg-page text-fg">
         {/* Auto-hide hover trigger — thin rail at the left edge when unpinned */}
         {!sidebarPinned && !sidebarHover && (
           <div className="absolute inset-y-0 left-0 w-2.5 z-40" onMouseEnter={() => setSidebarHover(true)} />
@@ -1141,7 +1041,7 @@ export default function App() {
 
         <div className="flex-1 flex flex-col min-w-0">
           <Header
-            tab={tab} setTab={setTab} dark={dark} setDark={setDark}
+            tab={tab} dark={dark} setDark={setDark}
             connected={connected} userName={userName} sessionElapsed={elapsed}
             onConnect={onConnect}
             connecting={connecting}
@@ -1153,9 +1053,10 @@ export default function App() {
             {VALID_TABS.map(t => {
               const active  = t === tab;
               const isInbox = t === 'Inbox';
-              const frame   = PAGE_FRAME[t] ?? 1240;
+              const frame   = PAGE_FRAME[t] ?? 80;
               return (
-                <div key={t}
+                <ScreenScope key={t} active={active}>
+                <div
                   className={cn('flex-1 min-h-0', !isInbox && 'overflow-y-auto')}
                   style={active ? undefined : { display: 'none' }}>
                   {/* Locked features show a Coming Soon wall — their real page never mounts */}
@@ -1168,7 +1069,7 @@ export default function App() {
                     </div>
                   ) : visited.has(t) && (isInbox ? (
                     <TabErrorBoundary label="Inbox">
-                      <React.Suspense fallback={<div className="flex items-center justify-center h-full text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
+                      <React.Suspense fallback={<div className="flex items-center justify-center h-full text-fg-3"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
                         <InboxPage toast={toast} setTab={t2 => setTab(t2 as TabId)} onUnreadCount={setInboxUnread} />
                       </React.Suspense>
                     </TabErrorBoundary>
@@ -1177,10 +1078,10 @@ export default function App() {
                     // padding inside it, so the column itself lands on `frame`.
                     <div className="w-full mx-auto"
                       style={frame
-                        ? { padding: 'var(--pad-page)', maxWidth: `calc(${frame}px + var(--pad-page) * 2)` }
+                        ? { padding: 'var(--pad-page)', maxWidth: `calc(var(--sp-4) * ${frame} + var(--pad-page) * 2)` }
                         : undefined}>
                       <TabErrorBoundary label={t}>
-                      <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-[var(--t3)]"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
+                      <React.Suspense fallback={<div className="flex items-center justify-center py-20 text-fg-3"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
                       {t === 'Analytics'  && <AnalyticsPage />}
                       {t === 'Report'     && <ReportPage      toast={toast} />}
@@ -1205,26 +1106,24 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                </ScreenScope>
               );
             })}
           </main>
         </div>
       </div>
 
-      <AnimatePresence>
-        {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-        {feedbackOpen && (
-          <FeedbackModal
-            onClose={() => setFeedbackOpen(false)}
-            currentTab={tab} userName={userName} userEmail={userEmail} toast={toast}
-          />
-        )}
-        {welcomeOpen && <WelcomeModal onClose={dismissWelcome} />}
-      </AnimatePresence>
+      <ShortcutsModal opened={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <FeedbackModal
+        opened={feedbackOpen}
+        onClose={() => setFeedbackOpen(false)}
+        currentTab={tab} userName={userName} userEmail={userEmail} toast={toast}
+      />
+      <WelcomeModal opened={welcomeOpen} onClose={dismissWelcome} />
       </>
 
       )}
     </LangCtx.Provider>
-    </VectorMantine>
+    </VectorProvider>
   );
 }
