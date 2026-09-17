@@ -8,6 +8,7 @@ import {
 
 import { cn } from '../lib/cn';
 import { Card, Pill, Button } from '../lib/ui';
+import { confirmAsync } from '../lib/notify';
 import { failed } from '../lib/errors';
 import type { ToastFn } from '../App';
 
@@ -124,7 +125,11 @@ function PmoForm({ toast }: { toast: ToastFn }) {
       });
       const data = await resp.json().catch(() => ({}));
       if (resp.status === 409 && data.exists) {
-        if (window.confirm(`A file with that name is already in the PMO folder:\n\n${data.path}\n\nReplace it?`)) {
+        if (await confirmAsync({
+          title: 'File already exists',
+          message: `A file with that name is already in the PMO folder:\n\n${data.path}\n\nReplace it?`,
+          confirmLabel: 'Replace file', danger: true,
+        })) {
           setSaving(false);
           return saveToFolder(true);
         }

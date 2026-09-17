@@ -4,6 +4,7 @@ import { BookOpen, FileText, Download, Plus, X, Loader2, Trash2 } from 'lucide-r
 import { cn } from '../lib/cn';
 import { Card, Pill, Button } from '../lib/ui';
 import { api, type UserDoc } from '../lib/api';
+import { confirmAsync } from '../lib/notify';
 import { failed } from '../lib/errors';
 import type { ToastFn } from '../App';
 
@@ -78,7 +79,11 @@ export function DocsPage({ toast }: { toast: ToastFn }) {
   }
 
   async function del(d: UserDoc) {
-    if (!confirm(`Remove "${d.title}"?`)) return;
+    if (!await confirmAsync({
+      title: 'Remove document',
+      message: `Remove "${d.title}" from your documents?`,
+      confirmLabel: 'Remove', danger: true,
+    })) return;
     if (viewing === `user:${d.id}`) setViewing(null);
     try { await api.docsUserDelete(d.id); toast('info', `"${d.title}" removed from your documents`); load(); }
     catch (e: any) { toast('err', failed(`remove "${d.title}"`, e)); }

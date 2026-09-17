@@ -143,3 +143,133 @@ html:not(.dark) [class*="border-ink-200"] { border-color: #c8c5d6; }
 html:not(.dark) [class*="ring-ink-100"]   { --tw-ring-color: #d8d6e2; }
 html:not(.dark) [class*="ring-ink-200"]   { --tw-ring-color: #c8c5d6; }
 html:not(.dark) [class*="ring-ink-300"]   { --tw-ring-color: #b6b2c8; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MANTINE, WEARING THE v2 SKIN
+   Mantine ships the behaviour (stacking toasts, Ctrl+K palette, confirm
+   dialogs). Everything visual is dragged back onto the tokens above so a
+   Mantine control is indistinguishable from a hand-written one.
+
+   Why these selectors: Mantine defines its size steps on the component's own
+   generated class (.m_…), never on :root, so a :root override would never
+   reach them. The static classes below sit later in source order at equal
+   specificity, which wins. Heights are the canvas's 28 / 30 / 34.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.mantine-Button-root {
+  --button-height-xs: 28px;  --button-padding-x-xs: 10px;
+  --button-height-sm: 30px;  --button-padding-x-sm: 11px;
+  --button-height-md: 34px;  --button-padding-x-md: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+}
+.mantine-Input-wrapper {
+  --input-height-xs: 28px;
+  --input-height-sm: 30px;
+  --input-height-md: 34px;
+}
+/* Input surface. Mantine's default variant reads the RAW palette
+   (--mantine-color-dark-6 / dark-4), not the semantic --mantine-color-default,
+   so remapping the semantic vars alone still leaves every field on Mantine's
+   stock #2e2e2e. Setting the control's own vars is narrower than hijacking the
+   whole dark palette, and lands on exactly the tokens lib/ui's TextInput uses
+   — so a Mantine field and a hand-written one are the same object. */
+.mantine-Input-input {
+  --input-bg:                var(--s1);
+  --input-bd:                var(--line-2);
+  --input-bd-focus:          var(--accent-line);
+  --input-placeholder-color: var(--t4);
+  color: var(--t1);
+}
+
+/* Toasts — the canvas's popover: layered surface, hairline, deep pop shadow. */
+.mantine-Notification-root {
+  background: var(--s2);
+  border-color: var(--line);
+  box-shadow: var(--pop-sh);
+  padding: 12px 14px;
+}
+/* Mantine fills the icon chip with solid colour. The canvas uses a soft tinted
+   square with a coloured glyph (same idiom as the step chips), so match that. */
+.mantine-Notification-icon {
+  width: 22px; height: 22px; margin-right: 11px;
+  border-radius: var(--r-xs);
+  background: color-mix(in oklab, var(--notification-color) 14%, transparent);
+  color: var(--notification-color);
+}
+.mantine-Notification-title       { font-size: 12px; font-weight: 600; color: var(--t1); }
+.mantine-Notification-description { font-size: 12px; line-height: 1.45; color: var(--t2); }
+
+/* Command palette (Ctrl+K) */
+.mantine-Spotlight-content { background: var(--s1); border: 1px solid var(--line-2); box-shadow: var(--pop-sh); }
+.mantine-Spotlight-search {
+  height: 46px; padding-inline: 14px; font-size: 13px;
+  background: transparent; color: var(--t1);
+  border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+}
+.mantine-Spotlight-actionsList { padding: 6px; }
+.mantine-Spotlight-action {
+  border-radius: var(--r-sm); padding: 8px 10px; font-size: 12px; color: var(--t2);
+}
+.mantine-Spotlight-action[data-selected] { background: var(--accent-soft); color: var(--accent-text); }
+.mantine-Spotlight-actionLabel       { font-size: 12px; font-weight: 500; }
+.mantine-Spotlight-actionDescription { font-size: 10.5px; color: var(--t3); }
+.mantine-Spotlight-actionsGroup {
+  padding: 8px 10px 4px; font-size: 9.5px; font-weight: 700;
+  letter-spacing: .15em; text-transform: uppercase; color: var(--t4);
+}
+.mantine-Spotlight-empty { padding: 22px; font-size: 12px; color: var(--t3); text-align: center; }
+/* Mantine highlights the typed query in yellow by default, which is the one
+   colour the v2 palette does not contain. Use the accent instead. */
+.mantine-Spotlight-action mark {
+  background: var(--accent-soft); color: var(--accent-text);
+  border-radius: 3px; padding: 0 2px;
+}
+
+/* Dropdown surfaces — Menu (EL Pricer match feedback) and Select (LSD deal
+   header). Both render in a portal, so they inherit nothing from the card they
+   belong to and have to be handed the tokens explicitly. */
+.mantine-Menu-dropdown,
+.mantine-Select-dropdown {
+  padding: 5px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-md);
+  background: var(--s1);
+  box-shadow: var(--pop-sh);
+}
+.mantine-Menu-item,
+.mantine-Select-option {
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: var(--t2);
+}
+.mantine-Menu-item[data-hovered],
+.mantine-Menu-item:hover,
+.mantine-Select-option[data-combobox-active],
+.mantine-Select-option:hover { background: var(--s3); color: var(--t1); }
+.mantine-Select-option[data-combobox-selected] {
+  background: var(--accent-soft); color: var(--accent-text); font-weight: 500;
+}
+.mantine-Menu-label {
+  padding: 7px 9px 4px; font-size: 10.5px; color: var(--t3);
+}
+.mantine-Menu-divider { border-color: var(--line); }
+
+/* Checkbox — the LSD "keep the first draft" opt-in sits beside 10px caption
+   text, so it stays small and square on the accent. */
+.mantine-Checkbox-input {
+  background-color: var(--s1);
+  border-color: var(--line-3);
+  cursor: pointer;
+}
+.mantine-Checkbox-input:checked {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+.mantine-Checkbox-label { padding-inline-start: 8px; cursor: pointer; }
+
+/* Confirm dialogs */
+.mantine-Modal-content { background: var(--s1); box-shadow: var(--pop-sh); }
+.mantine-Modal-header  { background: var(--s1); border-bottom: 1px solid var(--line); padding: 14px 18px; min-height: 0; }
+.mantine-Modal-title   { font-size: 13.5px; font-weight: 600; color: var(--t1); letter-spacing: -0.012em; }
+.mantine-Modal-body    { padding: 16px 18px 18px; }

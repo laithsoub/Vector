@@ -1,6 +1,7 @@
 // ─── Schematics — Eaton EL Material Pricer (unified input) ───────────────────
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, FileText, Sparkles, Copy, AlertTriangle, X, Loader2, ChevronDown, ChevronUp, RotateCcw, ClipboardList, History, Trash2, Image as ImageIcon, FileSpreadsheet, MoreHorizontal, Check, RefreshCw, Paperclip, Plus } from 'lucide-react';
+import { Menu, TextInput } from '@mantine/core';
 import { Card, CardTitle, Button, fmtGBP } from '../lib/ui';
 import { cn } from '../lib/cn';
 import { failed, plural } from '../lib/errors';
@@ -119,13 +120,6 @@ function ItemMenu({
   const [open, setOpen]             = useState(false);
   const [correcting, setCorrecting] = useState(false);
   const [input, setInput]           = useState('');
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) { setOpen(false); setCorrecting(false); } };
-    document.addEventListener('mousedown', h);
-    return () => document.removeEventListener('mousedown', h);
-  }, []);
 
   function markCorrect() { setOpen(false); }
 
@@ -140,52 +134,72 @@ function ItemMenu({
   }
 
   return (
-    <div ref={ref} className="relative">
-      <button aria-label="Feedback on this match"
-        onClick={() => setOpen(o => !o)}
-        title="Feedback on this match"
-        className="w-5 h-5 rounded flex items-center justify-center text-amber-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors">
-        <MoreHorizontal className="w-3.5 h-3.5" />
-      </button>
-      {open && (
-        <div className="absolute right-0 top-6 z-30 w-52 bg-[var(--s1)] rounded-lg shadow-lg ring-1 ring-inset ring-[var(--line-2)] py-1 text-[12px]">
-          {item.original_input && item.original_input !== item.cat_no && (
-            <div className="px-3 py-1.5 border-b border-[var(--line)] text-[10.5px] text-[var(--t3)]">
-              Input: <span className="font-mono text-[var(--t2)]">{item.original_input}</span>
-              <br />Matched: <span className="font-mono text-[var(--accent-text)]">{item.cat_no}</span>
-            </div>
-          )}
-          <button
-            onClick={markCorrect}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--s3)] text-emerald-700 dark:text-emerald-400">
-            <Check className="w-3.5 h-3.5" /> This match is correct
-          </button>
-          <button
-            onClick={() => setCorrecting(true)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--s3)] text-[var(--t2)]">
-            <MoreHorizontal className="w-3.5 h-3.5" /> Wrong — enter correct catalogue no
-          </button>
-          <button
-            onClick={() => { onRetry(item.original_input || item.cat_no); setOpen(false); }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--s3)] text-[var(--t2)]">
-            <RefreshCw className="w-3.5 h-3.5" /> Try again with original
-          </button>
-          {correcting && (
-            <div className="px-3 py-2 border-t border-[var(--line)] flex gap-1.5">
-              <input
-                autoFocus
+    // Mantine Menu owns the outside-click, Escape handling and positioning this
+    // used to hand-roll with a ref and a document mousedown listener — and it
+    // flips the dropdown when the row sits near the bottom of the table.
+    <Menu
+      opened={open}
+      onChange={o => { setOpen(o); if (!o) setCorrecting(false); }}
+      position="bottom-end" width={215} shadow="md" withinPortal
+    >
+      <Menu.Target>
+        <button aria-label="Feedback on this match" title="Feedback on this match"
+          style={{ color: 'var(--warn)' }}
+          className="w-5 h-5 rounded flex items-center justify-center transition-colors hover:bg-[var(--warn-soft)]">
+          <MoreHorizontal className="w-3.5 h-3.5" />
+        </button>
+      </Menu.Target>
+
+      <Menu.Dropdown>
+        {item.original_input && item.original_input !== item.cat_no && (
+          <Menu.Label>
+            Input: <span className="font-mono text-[var(--t2)]">{item.original_input}</span>
+            <br />Matched: <span className="font-mono text-[var(--accent-text)]">{item.cat_no}</span>
+          </Menu.Label>
+        )}
+        <Menu.Item leftSection={<Check className="w-3.5 h-3.5" />}
+                   style={{ color: 'var(--ok)' }}
+                   onClick={markCorrect}>
+          This match is correct
+        </Menu.Item>
+        {/* Keeps the dropdown open — the correction field lives inside it. */}
+        <Menu.Item leftSection={<MoreHorizontal className="w-3.5 h-3.5" />}
+                   closeMenuOnClick={false}
+                   onClick={() => setCorrecting(true)}>
+          Wrong — enter correct catalogue no
+        </Menu.Item>
+        <Menu.Item leftSection={<RefreshCw className="w-3.5 h-3.5" />}
+                   onClick={() => { onRetry(item.original_input || item.cat_no); setOpen(false); }}>
+          Try again with original
+        </Menu.Item>
+
+        {correcting && (
+          <>
+            <Menu.Divider />
+            <div className="px-2 py-2 flex gap-1.5">
+              <TextInput
+                autoFocus size="xs" className="flex-1 mono"
                 value={input}
-                onChange={e => setInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') saveCorrection(); if (e.key === 'Escape') setCorrecting(false); }}
+                onChange={e => setInput(e.currentTarget.value)}
+                // Menu treats letter keys as type-ahead for its own items, so the
+                // field has to keep its keystrokes to itself.
+                onKeyDown={e => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter')  saveCorrection();
+                  if (e.key === 'Escape') setCorrecting(false);
+                }}
                 placeholder="e.g. IP65LEDCGS"
-                className="flex-1 h-7 px-2 rounded bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[11.5px] font-mono focus:outline-none focus:ring-[var(--accent-line)]"
               />
-              <button onClick={saveCorrection} className="h-7 px-2 rounded bg-[var(--accent)] text-white text-[11px] hover:bg-[var(--accent-hover)]">Save</button>
+              <button onClick={saveCorrection}
+                style={{ background: 'var(--accent)' }}
+                className="h-7 px-2 rounded text-white text-[11px] transition-opacity hover:opacity-90">
+                Save
+              </button>
             </div>
-          )}
-        </div>
-      )}
-    </div>
+          </>
+        )}
+      </Menu.Dropdown>
+    </Menu>
   );
 }
 
@@ -223,7 +237,8 @@ function PriceListBar({ plv, toast }: {
           </p>
         </div>
         <button onClick={confirm} disabled={acking}
-          className="shrink-0 text-[10.5px] font-semibold px-2 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-60 transition-colors">
+          style={{ background: 'var(--warn)' }}
+          className="shrink-0 text-[10.5px] font-semibold px-2 py-1 rounded-md text-white disabled:opacity-60 transition-colors hover:opacity-90">
           {acking ? 'Saving…' : 'Got it'}
         </button>
       </div>
@@ -984,9 +999,9 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                   ) : a.kind === 'image' ? (
                     <ImageIcon className="w-4 h-4 text-[var(--accent-text)]" />
                   ) : a.kind === 'excel' ? (
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                    <FileSpreadsheet className="w-4 h-4" style={{ color: 'var(--ok)' }} />
                   ) : (
-                    <FileText className="w-4 h-4 text-rose-500" />
+                    <FileText className="w-4 h-4" style={{ color: 'var(--err)' }} />
                   )}
                   <div className="min-w-0">
                     <p className="text-[var(--t1)] font-medium truncate max-w-[180px]">{a.name}</p>
@@ -994,7 +1009,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                   </div>
                   <button aria-label="Remove attachment"
                     onClick={() => removeAttachment(a.id)}
-                    className="ml-1 text-[var(--t4)] hover:text-red-500 transition-colors">
+                    className="ml-1 text-[var(--t4)] transition-colors hover:text-[var(--err)]">
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -1159,11 +1174,12 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
               <CardTitle title="Material Schedule" sub={`${pricelistName(plv)} NTP`} />
             </div>
             <div className="flex items-center gap-2">
-              <input
+              <TextInput
                 value={projectName}
-                onChange={e => setProjectName(e.target.value)}
+                onChange={e => setProjectName(e.currentTarget.value)}
                 placeholder="Project name…"
-                className="h-8 px-3 rounded-lg bg-[var(--s3)] ring-1 ring-inset ring-[var(--line-2)] text-[12px] focus:outline-none focus:ring-[var(--accent-line)] w-48"
+                size="sm"
+                className="w-48"
               />
               <Button tone="ghost" Icon={Copy} size="sm" onClick={copyEmail}>
                 Copy email

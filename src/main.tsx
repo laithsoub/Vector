@@ -1,6 +1,14 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+// Mantine's stylesheets load BEFORE index.css on purpose. Mantine styles every
+// control through a class (.m_…), Tailwind's preflight resets bare elements
+// (button, input), so Mantine wins on specificity and keeps its controls intact;
+// our Tailwind utilities, being later in source order, still override Mantine at
+// equal specificity. Swap the order and preflight strips every Mantine control.
+import '@mantine/core/styles.css';
+import '@mantine/notifications/styles.css';
+import '@mantine/spotlight/styles.css';
 import './index.css';
 
 // The packaged app loads twice:

@@ -15,6 +15,7 @@ import { cn } from '../lib/cn';
 import { openExternal, isTauri } from '../lib/shell';
 import { Card, Pill, Button, fmtMoneyFull, relTime } from '../lib/ui';
 import { api } from '../lib/api';
+import { confirmAsync } from '../lib/notify';
 import { failed, plural } from '../lib/errors';
 import type { CrmSyncStatus, CrmQuoteHit } from '../lib/api';
 import type {
@@ -863,7 +864,11 @@ function CompanyDetail({ id, toast, onBack }: { id: number; toast: ToastFn; onBa
         <Button tone="outline" size="sm" Icon={Pencil} onClick={() => setEditing(true)}>Edit</Button>
         <Button tone="ghost" size="sm" Icon={Trash2}
           onClick={async () => {
-            if (!confirm(`Delete "${company.name}" and its contacts/facts? Quotes in history are not affected.`)) return;
+            if (!await confirmAsync({
+              title: 'Delete account',
+              message: `Delete "${company.name}" and its contacts and facts?\n\nQuotes in history are not affected.`,
+              confirmLabel: 'Delete account', danger: true,
+            })) return;
             await api.crmDeleteCompany(id); toast('ok', `Account "${company.name}" deleted`); onBack();
           }}>Delete</Button>
       </div>

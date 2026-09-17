@@ -3,14 +3,19 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   LayoutDashboard, History as HistoryIcon, BarChart3,
   ClipboardList, Calculator, BookOpen, Settings as SettingsIcon,
-  Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X,
+  Sparkles, Zap, Sun, Moon, Bell, Clock, CheckCircle2, AlertCircle, Info, X, Search,
   Loader2, RefreshCw, Mail, Send, Keyboard, Users, Gauge, Pin, PinOff,
   Lock, MessageSquarePlus, Rocket, Megaphone, ListTodo, Lightbulb, Tags, FolderTree,
 } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue } from 'motion/react';
 
+import { useHotkeys } from '@mantine/hooks';
+import { Spotlight, spotlight } from '@mantine/spotlight';
+
 import { cn } from './lib/cn';
 import { api } from './lib/api';
+import { VectorMantine } from './lib/mantine';
+import { notify } from './lib/notify';
 import { failed } from './lib/errors';
 import { openExternal, isTauri } from './lib/shell';
 import { CancelDock } from './components/CancelDock';
@@ -154,32 +159,6 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
 export type ToastFn = (type: 'ok' | 'err' | 'info' | 'warn', msg: string) => void;
 interface Toast { id: number; type: 'ok' | 'err' | 'info' | 'warn'; msg: string; }
 let _tid = 0;
-
-// ─── Toast list ──────────────────────────────────────────────────────────────
-function ToastList({ toasts, remove }: { toasts: Toast[]; remove: (id: number) => void }) {
-  return (
-    <div className="fixed bottom-5 right-5 space-y-2 z-50 pointer-events-none">
-      <AnimatePresence>
-        {toasts.map(t => (
-          <motion.div key={t.id}
-            initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
-            className={cn(
-              'pointer-events-auto flex items-center gap-2.5 px-3.5 py-2 rounded-lg shadow-lg ring-1 ring-inset text-[12px] max-w-xs',
-              t.type === 'ok'   ? 'bg-[var(--s2)] ring-emerald-200 dark:ring-emerald-700/40 text-emerald-700 dark:text-emerald-300' :
-              t.type === 'err'  ? 'bg-[var(--s2)] ring-red-200 dark:ring-red-700/40 text-red-700 dark:text-red-300' :
-                                  'bg-[var(--s2)] ring-[var(--line-2)] text-[var(--t2)]',
-            )}>
-            {t.type === 'ok'  ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0" /> :
-             t.type === 'err' ? <AlertCircle  className="w-3.5 h-3.5 shrink-0" /> :
-                                <Info         className="w-3.5 h-3.5 shrink-0" />}
-            <span className="flex-1">{t.msg}</span>
-            <button aria-label="Dismiss notification" onClick={() => remove(t.id)} className="opacity-40 hover:opacity-100"><X className="w-3 h-3" /></button>
-          </motion.div>
-        ))}
-      </AnimatePresence>
-    </div>
-  );
-}
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 function Sidebar({
@@ -404,7 +383,6 @@ function SplashScreen({
 }) {
   return (
     <div className="h-screen flex flex-col items-center justify-center bg-[var(--bg)] relative select-none">
-      <ToastList toasts={[]} remove={() => {}} />
       {/* Logo */}
       <div className="w-20 h-20 rounded-3xl bg-[var(--accent)] flex items-center justify-center mb-5 shadow-xl ring-4 ring-[var(--accent-line)]">
         <span className="text-white text-[40px] font-black leading-none tracking-tighter">V</span>
@@ -438,7 +416,7 @@ function SplashScreen({
 
 // ─── Keyboard shortcuts modal ────────────────────────────────────────────────
 const SHORTCUTS = [
-  { key: 'Ctrl + K',  desc: 'Open Ask Vector' },
+  { key: 'Ctrl + K',  desc: 'Command palette — jump to any screen' },
   { key: 'Alt + 1',   desc: 'Dashboard' },
   { key: 'Alt + 2',   desc: 'Ask Vector' },
   { key: 'Alt + 3',   desc: 'Inbox' },
@@ -946,46 +924,29 @@ export default function App() {
   const saveLang = (l: Lang) => { setLangState(l); localStorage.setItem('mu_lang', l); };
   const tCurrent = T[lang];
 
-  // Toasts
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  // Toasts. Mantine owns the on-screen stack now — it can update a toast in
+  // place ("Uploading…" → "Uploaded"), which an array of fire-and-forget divs
+  // could not. We keep a short local history only to fill the header's bell.
   const [recentNotifs, setRecentNotifs] = useState<Toast[]>([]);
   const [hasNew, setHasNew] = useState(false);
   const toast: ToastFn = useCallback((type, msg) => {
-    const t: Toast = { id: ++_tid, type, msg };
-    setToasts(p => [...p, t]);
-    setRecentNotifs(p => [t, ...p].slice(0, 20));
+    notify(type, msg);
+    setRecentNotifs(p => [{ id: ++_tid, type, msg }, ...p].slice(0, 20));
     setHasNew(true);
-    setTimeout(() => setToasts(p => p.filter(x => x.id !== t.id)), 5000);
   }, []);
 
   // Embed mode — used by outlook_overlay.py (PyWebView companion). Renders
-  // only the Overlay page (no sidebar, no header, no splash). Toasts still
-  // bubble up to the standard toast layer at the bottom of the window.
+  // only the Overlay page (no sidebar, no header, no splash). Toasts come from
+  // the same Mantine layer as the main window, so there is no second
+  // hand-rolled stack to keep in sync.
   const embedMode = typeof window !== 'undefined' && /(^|[?&])embed=1(&|$)/.test(window.location.search);
   if (embedMode) {
     return (
-      <LangCtx.Provider value={{ lang, t: tCurrent, setLang: saveLang }}>
-        <OverlayPage toast={toast} />
-        {/* Toast layer */}
-        <div className="fixed bottom-2 left-2 right-2 z-50 flex flex-col gap-1 pointer-events-none">
-          <AnimatePresence>
-            {toasts.map(t => (
-              <motion.div key={t.id}
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                className={cn(
-                  'pointer-events-auto px-3 py-1.5 rounded-lg text-[11px] font-medium shadow ring-1 ring-inset',
-                  t.type === 'ok'   ? 'bg-emerald-500 text-white ring-emerald-600' :
-                  t.type === 'err'  ? 'bg-red-500 text-white ring-red-600' :
-                                      'bg-amber-500 text-white ring-amber-600',
-                )}>
-                {t.msg}
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </div>
-      </LangCtx.Provider>
+      <VectorMantine dark={dark}>
+        <LangCtx.Provider value={{ lang, t: tCurrent, setLang: saveLang }}>
+          <OverlayPage toast={toast} />
+        </LangCtx.Provider>
+      </VectorMantine>
     );
   }
 
@@ -1070,32 +1031,51 @@ export default function App() {
     setConnecting(false);
   }
 
-  // Keyboard shortcuts
-  useEffect(() => {
-    const workflowTabs: TabId[] = ['Dashboard', 'Assistant', 'Inbox', 'History', 'Analytics', 'Report'];
-    const h = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName;
-      if (['INPUT', 'TEXTAREA'].includes(tag)) return;
-      // ? → shortcuts modal
-      if (e.key === '?' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        setShortcutsOpen(o => !o); return;
-      }
-      // ⌘K / Ctrl+K → AI Assistant (locked for team rollout)
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        if (isLocked('Assistant')) toast('info', 'Ask Vector is coming soon');
-        else setTab('Assistant');
-        return;
-      }
-      // Alt+1..5 → workflow tabs
-      if (e.altKey && e.key >= '1' && e.key <= '5') {
-        const idx = parseInt(e.key) - 1;
-        if (workflowTabs[idx]) { e.preventDefault(); setTab(workflowTabs[idx]); }
-      }
-    };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
+  // One way into a tab, used by both the hotkeys and the palette, so a locked
+  // tab explains itself instead of silently doing nothing.
+  const go = useCallback((t: TabId) => {
+    if (isLocked(t)) { toast('info', `${COMING_SOON[t]?.title ?? t} is coming soon`); return; }
+    setTab(t);
   }, [setTab, toast]);
+
+  // Keyboard shortcuts. useHotkeys already ignores INPUT/TEXTAREA/SELECT, so the
+  // hand-rolled tag check is gone, and `mod+` is Ctrl on Windows / ⌘ on macOS.
+  // Ctrl+K opens the command palette now rather than jumping to a single tab.
+  useHotkeys([
+    ['mod+K',   () => spotlight.open()],
+    ['shift+/', () => setShortcutsOpen(o => !o)],
+    ['alt+1',   () => go('Dashboard')],
+    ['alt+2',   () => go('Assistant')],
+    ['alt+3',   () => go('Inbox')],
+    ['alt+4',   () => go('History')],
+    ['alt+5',   () => go('Analytics')],
+    ['alt+6',   () => go('Report')],
+  ]);
+
+  // Palette actions come from the same NAV_STRUCTURE the sidebar renders, so a
+  // new tab shows up in both or in neither — they cannot drift apart.
+  const spotlightActions = React.useMemo(() => [
+    ...Object.values(NAV_STRUCTURE).map(group => ({
+      group: tCurrent[group.labelKey] as string,
+      actions: group.items.map(({ id, Icon, labelKey }) => ({
+        id,
+        label: tCurrent[labelKey] as string,
+        description: tCurrent[TITLE_KEYS[id].s] as string,
+        leftSection: <Icon className="w-[15px] h-[15px]" strokeWidth={1.9} />,
+        onClick: () => go(id),
+      })),
+    })),
+    {
+      group: 'Workspace',
+      actions: [{
+        id: 'Settings',
+        label: tCurrent.settings as string,
+        description: tCurrent.sub_settings as string,
+        leftSection: <SettingsIcon className="w-[15px] h-[15px]" strokeWidth={1.9} />,
+        onClick: () => go('Settings'),
+      }],
+    },
+  ], [tCurrent, go]);
 
   // In the packaged Tauri app the whole UI is one WebView2 window, where a plain
   // <a target="_blank"> (or any external link) navigates that single window
@@ -1125,8 +1105,19 @@ export default function App() {
     : '—';
 
   return (
+    <VectorMantine dark={dark}>
     <LangCtx.Provider value={{ lang, t: tCurrent, setLang: saveLang }}>
-      <ToastList toasts={toasts} remove={id => setToasts(p => p.filter(t => t.id !== id))} />
+      <Spotlight
+        actions={spotlightActions}
+        nothingFound="Nothing matches that"
+        highlightQuery
+        limit={8}
+        scrollAreaProps={{ type: 'never' }}
+        searchProps={{
+          placeholder: 'Jump to a screen…',
+          leftSection: <Search className="w-4 h-4" />,
+        }}
+      />
       <CancelDock />
 
       {/* ── Splash screen — shown until first successful connection or skipped ── */}
@@ -1234,5 +1225,6 @@ export default function App() {
 
       )}
     </LangCtx.Provider>
+    </VectorMantine>
   );
 }

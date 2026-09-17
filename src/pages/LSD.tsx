@@ -15,6 +15,8 @@ import {
   Mail, History, Plus, Minus, ArrowRight,
 } from 'lucide-react';
 
+import { Checkbox, Select } from '@mantine/core';
+
 import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, Button, relTime } from '../lib/ui';
 import { api } from '../lib/api';
@@ -1094,20 +1096,20 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
               </div>
 
               <Field label="Half-year">
-                <select value={meta.half} onChange={e => set('half')(e.target.value)}
-                  className="w-full h-[34px] px-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)]">
-                  <option value="auto">Auto</option>
-                  <option value="H1">H1 · 3.5%</option>
-                  <option value="H2">H2 · 6%</option>
-                </select>
+                <Select size="md" value={meta.half} onChange={v => set('half')(v ?? 'auto')}
+                  data={[
+                    { value: 'auto', label: 'Auto' },
+                    { value: 'H1',   label: 'H1 · 3.5%' },
+                    { value: 'H2',   label: 'H2 · 6%' },
+                  ]} />
               </Field>
               <Field label="APRC">
-                <select value={meta.aprc} onChange={e => set('aprc')(e.target.value)}
-                  className="w-full h-[34px] px-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)]">
-                  <option value="auto">Auto</option>
-                  <option value="525">525 · EUR</option>
-                  <option value="530-535">530-535 · USD</option>
-                </select>
+                <Select size="md" value={meta.aprc} onChange={v => set('aprc')(v ?? 'auto')}
+                  data={[
+                    { value: 'auto',    label: 'Auto' },
+                    { value: '525',     label: '525 · EUR' },
+                    { value: '530-535', label: '530-535 · USD' },
+                  ]} />
               </Field>
               <Field label="Ledger">
                 <TextInput value={meta.ledger} onChange={e => set('ledger')(e.target.value)} />
@@ -1117,18 +1119,21 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 <TextInput value={meta.revision || ''} onChange={e => set('revision')(e.target.value)}
                            placeholder="R4" />
               </Field>
-              <label className="col-span-2 flex items-start gap-2 cursor-pointer pt-1">
-                <input type="checkbox" checked={!!meta.baseline}
-                       onChange={e => setMeta(m => ({ ...m, baseline: e.target.checked }))}
-                       className="mt-0.5 accent-[var(--accent)]" />
-                <span className="text-[10px] text-[var(--t3)] leading-relaxed">
-                  <span className="text-[var(--t2)] font-medium">Keep the first draft ("as pasted")</span> —
-                  a second Working File beside the final one, holding the master with nothing but
-                  the transaction in it: every column still its own formula, no discount decided,
-                  nothing corrected. Open it when a number looks wrong — what it shows is the
-                  model's, what differs in the final one is Vector's.
-                </span>
-              </label>
+              <Checkbox
+                className="col-span-2 pt-1"
+                size="xs"
+                checked={!!meta.baseline}
+                onChange={e => setMeta(m => ({ ...m, baseline: e.currentTarget.checked }))}
+                label={
+                  <span className="text-[10px] text-[var(--t3)] leading-relaxed">
+                    <span className="text-[var(--t2)] font-medium">Keep the first draft ("as pasted")</span> —
+                    a second Working File beside the final one, holding the master with nothing but
+                    the transaction in it: every column still its own formula, no discount decided,
+                    nothing corrected. Open it when a number looks wrong — what it shows is the
+                    model's, what differs in the final one is Vector's.
+                  </span>
+                }
+              />
               <p className="text-[10px] text-[var(--t3)] leading-relaxed self-end pb-1.5 col-span-2">
                 Auto reads the half-year from the export's date and the APRC from the
                 pricing-group mix — FIRE in USD, EL in EUR. A revision writes into the same
@@ -1162,19 +1167,15 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
               {showReg && <>
               <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
                 <Field label="BU">
-                  <select value={meta.bu || ''} onChange={e => set('bu')(e.target.value)}
-                    className="w-full h-[34px] px-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)]">
-                    <option value="">Auto</option>
-                    <option value="EL">EL</option>
-                    <option value="FIRE">FIRE</option>
-                    <option value="CBS">CBS</option>
-                  </select>
+                  {/* Blank means "let the engine decide", which is a cleared
+                      field, not a value — hence clearable + placeholder. */}
+                  <Select size="md" clearable placeholder="Auto"
+                    value={meta.bu || null} onChange={v => set('bu')(v ?? '')}
+                    data={['EL', 'FIRE', 'CBS']} />
                 </Field>
                 <Field label="Status">
-                  <select value={meta.status || 'Priced'} onChange={e => set('status')(e.target.value)}
-                    className="w-full h-[34px] px-2 rounded-[9px] text-[12px] bg-[var(--s1)] border border-[var(--line-2)] text-[var(--t1)]">
-                    {STATUSES.map(x => <option key={x} value={x}>{x}</option>)}
-                  </select>
+                  <Select size="md" data={STATUSES}
+                    value={meta.status || 'Priced'} onChange={v => set('status')(v ?? 'Priced')} />
                 </Field>
                 <Field label="CPQ updated">
                   <TextInput value={meta.cpq_updated || ''} onChange={e => set('cpq_updated')(e.target.value)}
