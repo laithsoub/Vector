@@ -48,6 +48,18 @@ ADDRESSABLE band (target 40%); against Notification-UL's 35% there is no band.
 A line that still lands below its target — carried, or held down by a customer
 reference — is PRICED THAT WAY and flagged for approval, not raised to hide it.
 
+THE APPROVER'S REWORK — "rpi_target" (Kiran on W262232081E, 2026-09-17). An
+approver who has seen the summary sends the case back against a number: "rework
+to maintain margins above 43% and RPI 4-5%". Pass his ceiling as `rpi_target`
+and the case is re-priced to land on it — see `_rework_prices` for the shape and
+why the obvious solve is wrong. In short: the lines the customer HAS a price
+history for go to last year + the case rate and nothing more, the lines he has
+none for carry the move, and the target-E2E floor still holds every one of them,
+so the margin never pays for the RPI. `rpi_basis` says WHICH of the working
+file's three RPI readings the ceiling is on (`_rpi_readings`); the default is the
+one the approval mail prints, because that is the only one the approver was sent.
+A case already inside the ceiling is left exactly as the rule priced it.
+
 THE OLD RULE — "e2e" (LSD Daily Work Procedure, 2026-08-05; pass rule="e2e" in
 the job to get it back). Measured on 165 case models / 2148 priced lines, it
 reproduced the analyst's own number on 42% of lines and 58% of lines with no
@@ -109,6 +121,8 @@ job.json:
      "project": "MOPA Project", "transaction": "W262168503E", "crm": "...",
      "ledger": "R2321", "half": "H1"|"H2"|"auto", "aprc": "525"|"530-535"|"auto",
      "rule": "requested" (default) | "e2e",
+     "rpi_target": 0.045,            rework the case to an approver's RPI ceiling
+     "rpi_basis": "pivot" (default) | "ledger" | "price",   which reading that is
      "baseline": false               skip the "as pasted" copy (default: write it)}
 
 `preview` needs no Excel — it prices the lines and returns them as JSON.
@@ -816,6 +830,114 @@ def _variance(lines, price_key):
     return ag, ae
 
 
+def _rpi_readings(lines, price_key):
+    """The THREE RPI numbers the working file shows off the same ledger. They are
+    not interchangeable and an approver's target has to name one:
+
+        pivot   AE / (T - AE)   the summary PIVOT, and so THE APPROVAL MAIL'S
+                                'Total RPI %' column - the only one the approver
+                                was actually sent;
+        ledger  AE / (T - AG)   the ledger totals row AF11, `summary.total_rpi`;
+        price   AG / (T - AG)   header K6 'Overall RPI' - price variance ONLY, so
+                                it is the real increase to THIS customer.
+
+    On W262232081E as Dalia sent it: 13.0% / 11.8% / 2.5%. Kiran asked for "RPI
+    4-5%" against the 13.0%.
+    """
+    net = sum((l.get(price_key) or 0) * (l.get("qty") or 0) for l in lines)
+    ag, ae = _variance(lines, price_key)
+    return {
+        "net": net,
+        "pv_value": ag,
+        "rpi_value": ae,
+        "pivot": ae / (net - ae) if abs(net - ae) > EPS else None,
+        "ledger": ae / (net - ag) if abs(net - ag) > EPS else None,
+        "price": ag / (net - ag) if abs(net - ag) > EPS else None,
+    }
+
+
+# Which reading `rpi_target` is measured on. The approver reads the mail, so the
+# mail's basis is the default.
+RPI_BASES = ("pivot", "ledger", "price")
+
+
+def _rework_prices(lines, country_rate, rate):
+    """The reworked unit price for every line, at one trial `country_rate`.
+
+    THE SHAPE OF THE REWORK (Kiran on W262232081E, 2026-09-17: "rework to
+    maintain margins above 43% and RPI 4-5%"). Do NOT solve the whole book down
+    with `_rpi_target` at a low rate: mix variance does not move with price, so
+    the solve pays for the mix offset out of the lines that DO have customer
+    history and pushes them UNDER last year's price. On that case it cut KYR's
+    four known materials 20-25% and turned the price variance negative (-3.4%)
+    while their standing agreement says +2.5%. The customer sees his own four
+    prices; he never sees the mix. So:
+
+      1 a line with a PY CUSTOMER AVERAGE is SET at last year x (1 + rate) - the
+        case rate, exception included. The customer's own reference is honoured
+        and the price variance stays positive;
+      2 a line with a COUNTRY AVERAGE only is set at that average x (1 + r), and
+        `r` is the single scalar solved to land the total on target. These are
+        the lines carrying the mix, and the ones the customer has no reference
+        for;
+      3 a line with no prior-year reference at all keeps the rule's price - there
+        is nothing to measure it against, so moving it buys no RPI;
+      4 every line WITHOUT a customer reference is then clamped at its target E2E
+        by the existing floor, so the margin never pays for the RPI. Laith's own
+        note on these customers: "even if RPI has boomed, most importantly,
+        margin can't go low... it doesn't make sense to keep RPI within limits
+        and go with low margin."
+
+    A carried line is never touched: its price was approved when it was set.
+    Returns {id(line): price} so the caller can apply or just measure it."""
+    out = {}
+    for l in lines:
+        if l.get("carried") or l.get("unit_net") is None:
+            out[id(l)] = l.get("unit_net")
+            continue
+        if l.get("cust_avg"):
+            price = l["cust_avg"] * (1 + rate)
+        elif l.get("ctry_avg"):
+            price = l["ctry_avg"] * (1 + country_rate)
+            # (4) the target-E2E clamp, the same floor the rule applies.
+            if l.get("net_at_target") and l.get("qty"):
+                price = max(price, l["net_at_target"] / l["qty"])
+        else:
+            price = l["unit_net"]
+        out[id(l)] = price
+    return out
+
+
+def _solve_country_rate(lines, target, rate, basis="pivot"):
+    """The scalar the country-average lines move on to land `target`.
+
+    Bisection, not algebra: the target-E2E clamp in `_rework_prices` is a max(),
+    so the total is piecewise-linear in `r` rather than linear. It IS monotonic
+    in `r`, which is all bisection needs. Returns (rate, achieved, reachable)."""
+    def at(r):
+        trial = _rework_prices(lines, r, rate)
+        probe = [dict(l, unit_net=trial[id(l)]) for l in lines]
+        return _rpi_readings(probe, "unit_net")[basis]
+
+    lo, hi = -0.90, 0.90
+    lo_v, hi_v = at(lo), at(hi)
+    if lo_v is None or hi_v is None:
+        return None, None, False
+    # Nothing to solve: the clamps hold the whole book, so `r` cannot reach it.
+    if target < lo_v - EPS:
+        return lo, lo_v, False
+    if target > hi_v + EPS:
+        return hi, hi_v, False
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        if at(mid) < target:
+            lo = mid
+        else:
+            hi = mid
+    r = (lo + hi) / 2
+    return r, at(r), True
+
+
 def _by_group(lines):
     """The mail's table: one row per pricing group, in the order the groups first
     appear on the transaction. Add. Discount is derived from the totals, not
@@ -937,6 +1059,50 @@ def price_lines(lines, ref, meta):
     rule = str(meta.get("rule") or "requested").strip().lower()
     if rule not in ("requested", "e2e"):
         rule = "requested"
+
+    # ── the approver's rework ────────────────────────────────────────────────
+    # `rpi_target` is a CEILING an approver put on the case after seeing it, not
+    # a number to price to: a quote already under it is left exactly where the
+    # rule put it. Hitting it needs every line at once (see _rework_prices), so
+    # the case is priced by the rule first, the scalar is solved off that, and
+    # then the whole thing is re-priced with the scalar fixed — which keeps every
+    # flag, every floor and every carry in the one loop below rather than
+    # patching numbers afterwards.
+    rework = meta.get("_rework")
+    if rework is None and meta.get("rpi_target") is not None:
+        target = float(meta["rpi_target"])
+        basis = str(meta.get("rpi_basis") or "pivot").strip().lower()
+        if basis not in RPI_BASES:
+            basis = "pivot"
+        plain = dict(meta)
+        plain["rpi_target"] = None
+        base_out, _ = price_lines(lines, ref, plain)
+        before = _rpi_readings(base_out, "unit_net")
+        r, achieved, reachable = _solve_country_rate(base_out, target, rate, basis)
+        if before[basis] is None or before[basis] <= target + EPS:
+            # Already inside the approver's band. Reworking down from here would
+            # give away price nobody asked for.
+            rework = {"target": target, "basis": basis, "applied": False,
+                      "before": before[basis], "achieved": before[basis],
+                      "country_rate": None, "reachable": True,
+                      "why": "already at or under the target - left as priced"}
+        elif r is None:
+            rework = {"target": target, "basis": basis, "applied": False,
+                      "before": before[basis], "achieved": before[basis],
+                      "country_rate": None, "reachable": False,
+                      "why": "no line carries a prior-year country average, so no "
+                             "price moves this reading"}
+        else:
+            rework = {"target": target, "basis": basis, "applied": True,
+                      "before": before[basis], "achieved": achieved,
+                      "country_rate": r, "reachable": reachable,
+                      "why": None if reachable else
+                             ("the target E2E floor holds the country lines up - "
+                              "this is as low as the reading goes without selling "
+                              "under the margin")}
+        meta = dict(meta)
+        meta["_rework"] = rework
+
     # Prices carried forward from the previous revision, keyed on material.
     carry = meta.get("_carry") or {}
     carry_label = meta.get("_carry_label") or "the previous revision"
@@ -1124,6 +1290,25 @@ def price_lines(lines, ref, meta):
             binds = f"RPI {exc['rate']:.1%} floor" if exc else f"RPI {half} floor"
             raised = True
 
+        # ── the approver's rework ────────────────────────────────────────────
+        # Same two branches as the solve (see _rework_prices), applied here so the
+        # E2E floor below, the flags and the carry all still run over the result.
+        # This SETS the price rather than lifting it: bringing the reading down is
+        # the whole point, so a line above its branch comes down to it.
+        reworked = None
+        if rework and rework.get("applied") and carried is None and unit_net is not None:
+            if cust_avg:
+                reworked = cust_avg * (1 + rate)
+            elif ctry_avg:
+                reworked = ctry_avg * (1 + rework["country_rate"])
+            if reworked is not None:
+                unit_net = reworked
+                add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
+                binds = (f"reworked to {rework['target']:.1%} RPI - "
+                         + ("last year on this customer"
+                            if cust_avg else "the ledger average"))
+                raised = False
+
         # ── the E2E floor ────────────────────────────────────────────────────
         # The requested rule alone will price a line at cost — EFM-APS100 on
         # W262223256E came out at 80.00 against a 79.63 cost, an E2E of 0.5%, and
@@ -1223,6 +1408,20 @@ def price_lines(lines, ref, meta):
             # and the engine says so rather than reporting a margin it cannot see.
             flags.append(("verify", "no cost - not on the transaction and the Trigger sheet "
                                     "has none for this material, so this line carries no E2E"))
+        if reworked is not None:
+            # An approver moved this price, so every one of these lines is a
+            # decision somebody has to own — say what it was measured against and
+            # what it does to the price the customer has already been shown.
+            was = rpi_before
+            flags.append(("info" if cust_avg else "verify",
+                          f"reworked to hold the case at {rework['target']:.1%} RPI: "
+                          + (f"last year on this customer {cust_avg:,.4f} + {rate:.1%}"
+                             if cust_avg else
+                             f"the {ctry_avg:,.4f} ledger average "
+                             f"{rework['country_rate']:+.1%}")
+                          + (f", {reworked / ln['requested'] - 1:+.1%} on what was requested"
+                             if ln.get("requested") else "")
+                          + (f" - it read {was:.1%} as priced" if was is not None else "")))
         if raised:
             flags.append(("action" if exc else "info",
                           f"raised to last year's price + {exc['rate']:.1%} ({rpi_mode}) - "
@@ -1346,6 +1545,9 @@ def price_lines(lines, ref, meta):
                                    and ctry_avg * (1 + rate) < cost),
             "txn_list": txn_list,
             "e2e_floor": e2e_floor, "floored": floored, "e2e_band": band,
+            # What the approver's rework set this line to, before the E2E floor
+            # had its say — None on a case nobody reworked.
+            "reworked": reworked,
             "add_disc": add_disc, "unit_net": unit_net, "total_net": total_net,
             "e2e": e2e, "binds": binds, "raised": raised, "severity": sev,
             "carried": carried is not None,
@@ -1454,6 +1656,15 @@ def price_lines(lines, ref, meta):
                                            and l["e2e"] >= l["target_e2e"] - 1e-6)}
                         for l in sorted(out, key=lambda x: -abs(x["rpi_value"] or 0))[:3]
                         if l["rpi_value"]],
+        # All three readings at the proposed price, because an approver's target
+        # names one of them and `total_rpi` above is only the ledger's.
+        "rpi_readings": {k: (round(v, 4) if isinstance(v, float) and k in RPI_BASES
+                             else round(v, 2) if isinstance(v, float) else v)
+                         for k, v in _rpi_readings(out, "unit_net").items()},
+        # Set only when the case was reworked to an approver's ceiling.
+        "rework": ({k: v for k, v in rework.items() if not k.startswith("_")}
+                   if rework else None),
+        "reworked": sum(1 for l in out if l.get("reworked") is not None),
         # Everything the approval mail needs, in its own shape.
         "at_target": at_target,
         "groups": _by_group(out),
@@ -2344,6 +2555,18 @@ def main():
                 else f"Overall E2E {summary['overall_e2e']:.1%}")
         if summary.get("total_rpi") is not None:
             log(f"Total RPI {summary['total_rpi']:.1%}")
+        rw = summary.get("rework")
+        if rw and rw.get("applied"):
+            log(f"Reworked to the approver's {rw['target']:.1%} ceiling on the "
+                f"{rw['basis']} reading: {rw['before']:.1%} → {rw['achieved']:.1%}, "
+                f"{summary['reworked']} line(s) moved. Lines with history went to "
+                f"last year + {summary['rpi_rate']:.1%}; the rest to the ledger "
+                f"average {rw['country_rate']:+.1%}.",
+                "warn" if not rw.get("reachable") else "info")
+            if not rw.get("reachable"):
+                log(f"{rw['why']}.", "warn")
+        elif rw:
+            log(f"Not reworked: {rw['why']}.")
         if summary.get("carried"):
             log(f"{summary['carried']} line(s) held at the price from "
                 f"{meta.get('_carry_label')}, {summary['lines'] - summary['carried']} "

@@ -71,6 +71,9 @@ export interface LsdLine {
   cust_avg: number | null; cust_qty: number | null;
   ctry_avg: number | null; ctry_qty: number | null;
   rpi_floor: number | null; rpi_before: number | null; rpi_after: number | null;
+  // What an approver's RPI ceiling set this line to, before the target-E2E floor
+  // had its say. Null on a case nobody reworked.
+  reworked?: number | null;
   add_disc: number; unit_net: number | null; total_net: number | null;
   e2e: number | null; binds: string; raised: boolean;
   severity: 'action' | 'verify' | 'info' | 'ok'; flags: string;
@@ -111,6 +114,23 @@ export interface LsdSummary {
   rpi_drivers?: Array<{ material: string; rpi_value: number; share: number | null;
                         ctry_avg: number | null; cost: number | null;
                         unit_net: number | null; ref_below_cost: boolean }>;
+  // All three RPI readings the working file carries off the same ledger, at the
+  // proposed price: `pivot` is what the approval mail prints, `ledger` is the
+  // totals row AF11 (the same number as `total_rpi`), `price` is header K6 — the
+  // real increase to this customer, with no mix in it.
+  rpi_readings?: { net: number; pv_value: number; rpi_value: number;
+                   pivot: number | null; ledger: number | null; price: number | null };
+  // Set only when an approver's ceiling was applied. `applied: false` means the
+  // case was already under it, or nothing in it could move the reading.
+  rework?: {
+    target: number; basis: 'pivot' | 'ledger' | 'price'; applied: boolean;
+    before: number | null; achieved: number | null;
+    // What the no-history lines moved on to get there.
+    country_rate: number | null;
+    // False when the target E2E floor stopped the solve short of the ceiling.
+    reachable: boolean; why: string | null;
+  } | null;
+  reworked?: number;
   // The two stages the approval mail quotes. `at_target` is the CUSTOMER's
   // requested price and what it would land; the table is the proposed price.
   at_target?: { target_price: number; e2e: number | null; rpi_pct: number | null;
@@ -286,6 +306,17 @@ export interface LsdMeta {
   // is written on every build; set false to skip it (a 7 MB copy and an extra
   // Excel pass).
   baseline?: boolean;
+  // An approver's RPI CEILING, as a fraction — Kiran sending a case back with
+  // "rework to RPI 4-5%" is 0.045. The case is re-priced to land on it: lines
+  // this customer has a prior-year price for go to last year + the case rate and
+  // no further, the lines he has no reference for carry the move, and the target
+  // E2E still floors every one of them. Blank leaves the rule alone, and a case
+  // already under the ceiling is never given away down to it.
+  rpi_target?: number | null;
+  // Which of the working file's three RPI readings that ceiling is on. The
+  // default is the one the approval mail prints, because it is the only one the
+  // approver was sent.
+  rpi_basis?: 'pivot' | 'ledger' | 'price';
   // Register fields. They ride along with the build, which registers the case
   // as soon as it is written; `register: false` builds without registering.
   bu?: string; status?: string; sales_name?: string; cpq_updated?: string;

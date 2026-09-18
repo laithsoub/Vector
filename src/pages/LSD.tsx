@@ -15,7 +15,7 @@ import {
   Mail, History, Plus, Minus, ArrowRight,
 } from 'lucide-react';
 
-import { Checkbox, EmptyState, Select, IconButton as UiIconButton } from '../ui';
+import { Checkbox, EmptyState, PercentInput, Select, IconButton as UiIconButton } from '../ui';
 
 import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, Button, relTime } from '../lib/ui';
@@ -57,6 +57,8 @@ const SEV: Record<LsdLine['severity'], { label: string; color: string; bg: strin
 const EMPTY: Omit<LsdMeta, 'file'> = {
   customer: '', customer_name: '', country: '', project: '', transaction: '', crm: '',
   half: 'auto', aprc: 'auto', ledger: 'R2321', revision: '', baseline: true,
+  // Blank unless an approver sent the case back against a number.
+  rpi_target: null,
   // These never touch the price — they are the daily register's own columns,
   // filled here because this is the only moment anyone knows them.
   bu: '', status: 'Priced', sales_name: '', cpq_updated: '', notes: '', rpi_comment: '',
@@ -1104,6 +1106,21 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                 <TextInput value={meta.revision || ''} onChange={e => set('revision')(e.target.value)}
                            placeholder="R4" />
               </Field>
+              {/* An approver's ceiling, typed in the percent he wrote it in.
+                  Blank is the normal case — the rule decides the RPI. */}
+              <div className="col-span-2">
+                <Field label="Approver's RPI ceiling"
+                       hint="Blank unless the case came back against a number.">
+                  <PercentInput
+                    value={meta.rpi_target == null ? '' : meta.rpi_target * 100}
+                    onChange={v => setMeta(m => ({
+                      ...m,
+                      rpi_target: v === '' || v == null ? null : Number(v) / 100,
+                    }))}
+                    min={0} max={100} step={0.5}
+                    placeholder="4.5" />
+                </Field>
+              </div>
               <Checkbox
                 className="col-span-2 pt-1"
                 size="xs"
@@ -1435,6 +1452,38 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                     {pct(s.rpi_exception.standard, 1)}: {s.rpi_exception.why}.{' '}
                     The rate itself still needs approving.
                   </span>
+                </div>
+              )}
+
+              {/* An approver moved this case off the rule, so the panel says what
+                  the number was, what it is, and which lines paid for it. */}
+              {s.rework && (
+                <div className="mt-3 flex items-start gap-2 rounded-panel border border-line-2
+                                bg-surface px-3 py-2.5 text-xs text-fg leading-relaxed">
+                  <Info className="w-3.5 h-3.5 shrink-0 mt-0.5"
+                        style={{ color: s.rework.applied ? 'var(--accent)' : 'var(--t2)' }} />
+                  {s.rework.applied ? (
+                    <span>
+                      <b>Reworked to the approver's {pct(s.rework.target, 1)} ceiling</b> —{' '}
+                      {pct(s.rework.before, 1)} → <b>{pct(s.rework.achieved, 1)}</b> on the{' '}
+                      {s.rework.basis === 'pivot' ? 'mail’s' : s.rework.basis} reading,{' '}
+                      {plural(s.reworked || 0, 'line')} moved. Lines this customer has a price
+                      history for went to last year{' '}
+                      + {pct(s.rpi_exception?.rate ?? s.rpi_rate, 1)} and no further; the{' '}
+                      {pct(s.rework.country_rate, 1)} came off the lines he has no reference
+                      for. Margin held at {pct(s.overall_e2e, 1)}
+                      {s.rpi_readings?.price != null && <>, real increase on this customer{' '}
+                        {pct(s.rpi_readings.price, 1)}</>}.
+                      {!s.rework.reachable && (
+                        <> <b>It does not reach the ceiling</b> — {s.rework.why}.</>
+                      )}
+                    </span>
+                  ) : (
+                    <span>
+                      <b>Not reworked</b> to the {pct(s.rework.target, 1)} ceiling —{' '}
+                      {s.rework.why}.
+                    </span>
+                  )}
                 </div>
               )}
 
