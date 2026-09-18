@@ -173,8 +173,16 @@ RPI_EXCEPTIONS = (
         "why": ("agreed fixed price for the year and the delivery invoices in "
                 "January, so the increase negotiated from September is 2.5%, "
                 "not the H2 6%"),
+        # The agreed prices themselves — see load_customer_book. The file is the
+        # analyst's own order summary, kept out of the repo with the rest of
+        # data/; drop a newer cut in beside it and the newest wins.
+        "book": "KYR order*.xlsx",
     },
 )
+
+# Where a customer fixed-price book is looked for: `<masterdir>/books/`, then
+# `<masterdir>/`. A job can name one outright with `customer_book`.
+BOOK_DIRS = ("books", "")
 
 # The band Dalia will come down to when the target E2E cannot be held, quoted by
 # her on W262223256E: "E2E for Addressable should be at least 35%-37%". It is a
@@ -293,15 +301,119 @@ def rpi_exception(meta):
     three letters does not qualify. The date decides too: the September rule does
     not apply to a June transaction being re-run today, which is why this reads
     the transaction's own date and not the clock."""
+    exc = customer_group(meta)
+    when = meta.get("as_of") or _dt.date.today()
+    return exc if (exc and when.month >= exc["from_month"]) else None
+
+
+def customer_group(meta):
+    """The standing-customer entry this transaction belongs to, WITHOUT the date
+    test — the entry also names the accounts that are one commercial customer and
+    the fixed-price book they share, and neither of those starts in September.
+    `rpi_exception` is this plus the date."""
     cust = canon(meta.get("customer"))
     name = re.sub(r"[^a-z0-9 ]+", " ", str(meta.get("customer_name") or "").lower())
     name = re.sub(r"\s+", " ", name).strip()
-    when = meta.get("as_of") or _dt.date.today()
     for exc in RPI_EXCEPTIONS:
-        hit = (cust and cust in exc["customers"]) or (
-            name and any(re.search(rf"\b{re.escape(n)}\b", name) for n in exc["names"]))
-        if hit and when.month >= exc["from_month"]:
+        if (cust and cust in exc["customers"]) or (
+                name and any(re.search(rf"\b{re.escape(n)}\b", name) for n in exc["names"])):
             return exc
+    return None
+
+
+# ─── the customer's own fixed-price book ─────────────────────────────────────
+# WHY THIS EXISTS. The ledger's `W PY CUSTOMER AVERAGE` comes off 'PV 2025 ' —
+# LAST year. A fixed-price customer's agreement runs the CURRENT year, so a
+# material they have bought three times this year and never in 2025 shows a BLANK
+# W: the engine reads "no customer history", the whole price lands in mix
+# variance, and nothing stops a price being quoted UNDER what they have already
+# paid. On W262232081E (KYR) 11 of 20 lines were in the book and 6 of them read
+# as no-history — `EFGVS11-PLUS` among them, bought on FIVE orders this year at
+# 4,376.31 — and reworking the case to an approver's RPI ceiling cut 52,436 USD
+# off prices the customer already knew, that one by 62%.
+#
+# The book is the analyst's own order summary for the customer (Dalia's "KYR
+# order - JAN to SEP 2026.xlsx"): a sheet per entity, a block per transaction,
+# and SAP No / Description / Pricing Group / QTY / Unit Net Price under each. It
+# is the AGREED price, not a statistic, so it outranks the prior-year average.
+#
+# It is ONE book across every account in the group. KYR quotes under 1270464
+# (FZCO) are priced off the 586252 (Egypt) sheet, and reading them as two
+# customers is what hid the history in the first place.
+def _book_price_rows(ws):
+    """(transaction, title, sap, qty, price) for every priced row on a sheet."""
+    entity, txn, title = None, None, None
+    for row in ws.iter_rows(values_only=True):
+        cells = (list(row) + [None] * 5)[:5]
+        a, desc, group, qty, price = cells
+        if a is None or not str(a).strip():
+            continue
+        head = str(a).strip()
+        if head.lower() == "sap no":
+            continue
+        # A transaction block opens with its W-number and the project beside it.
+        if re.fullmatch(r"W\d{6,}E\d*", head, re.I):
+            txn, title = head, str(desc or "").strip()
+            continue
+        # A lone cell on its own row names the account the block belongs to.
+        if all(c is None or str(c).strip() == "" for c in (desc, group, qty, price)):
+            entity = head
+            continue
+        if txn and isinstance(price, (int, float)):
+            yield (txn, title, entity, canon(head),
+                   qty if isinstance(qty, (int, float)) else 0.0, float(price))
+
+
+def load_customer_book(path):
+    """Read a fixed-price book into {material: {...}}.
+
+    A material bought more than once at more than one price keeps the LATEST it
+    was invoiced at — the book is ordered oldest-first, and a renegotiated price
+    supersedes rather than averages. `paid` is the whole history, because what
+    an approver argues with is "they paid this, N times"."""
+    import openpyxl
+    wb = openpyxl.load_workbook(path, data_only=True)
+    prices, orders, entities = {}, [], []
+    try:
+        for ws in wb.worksheets:
+            for txn, title, entity, mat, qty, price in _book_price_rows(ws):
+                if txn not in orders:
+                    orders.append(txn)
+                if entity and entity not in entities:
+                    entities.append(entity)
+                rec = prices.setdefault(mat, {"material": mat, "price": None, "paid": []})
+                rec["paid"].append({"transaction": txn, "project": title,
+                                    "entity": entity, "qty": qty, "price": price})
+                rec["price"] = price                      # latest block wins
+    finally:
+        wb.close()
+    for rec in prices.values():
+        seen = [p["price"] for p in rec["paid"]]
+        rec["orders"] = len(rec["paid"])
+        rec["low"] = min(seen)
+        rec["high"] = max(seen)
+        # A price that never moved is the agreed one and can be quoted as such;
+        # one that has moved is a negotiation the analyst has to look at.
+        rec["firm"] = (rec["high"] - rec["low"]) <= max(0.01, rec["high"] * 1e-4)
+    return {"path": path, "prices": prices, "orders": orders, "entities": entities}
+
+
+def find_customer_book(meta, exc):
+    """The book file for this customer, or None. `customer_book` in the job wins;
+    otherwise the group's own glob is resolved against the master's folder."""
+    named = str(meta.get("customer_book") or "").strip()
+    if named:
+        return named if os.path.exists(named) else None
+    if not (exc and exc.get("book")):
+        return None
+    import glob as _glob
+    base = os.path.dirname(os.path.abspath(str(meta.get("master") or "")))
+    for sub in BOOK_DIRS:
+        hits = [p for p in _glob.glob(os.path.join(base, sub, exc["book"]))
+                if not os.path.basename(p).startswith("~$")]
+        if hits:
+            # Newest cut wins, so dropping a fresher export in is the whole update.
+            return max(hits, key=os.path.getmtime)
     return None
 
 
@@ -895,7 +1007,13 @@ def _rework_prices(lines, country_rate, rate):
         if l.get("carried") or l.get("unit_net") is None:
             out[id(l)] = l.get("unit_net")
             continue
-        if l.get("cust_avg"):
+        # (0) AN AGREED PRICE IS NOT A LEVER. A line in the customer's own
+        # fixed-price book is held there — the RPI is not theirs to pay for, and
+        # quoting under a price they have already been invoiced at this year
+        # reopens the agreement. See load_customer_book.
+        if l.get("book_price"):
+            price = max(l["book_price"] * (1 + rate), l["book_price"])
+        elif l.get("cust_avg"):
             price = l["cust_avg"] * (1 + rate)
         elif l.get("ctry_avg"):
             price = l["ctry_avg"] * (1 + country_rate)
@@ -906,6 +1024,26 @@ def _rework_prices(lines, country_rate, rate):
             price = l["unit_net"]
         out[id(l)] = price
     return out
+
+
+def _book_rpi(lines):
+    """The increase against what the customer has ACTUALLY PAID this year, over
+    the lines their book covers. Same ratio shape as the ledger's RPI so the two
+    can be read side by side — but measured on the agreed price rather than on a
+    prior-year average the customer never saw. None when nothing is covered."""
+    covered = [l for l in lines if l.get("book_price") and l.get("unit_net") is not None]
+    if not covered:
+        return None
+    net = sum(l["unit_net"] * (l["qty"] or 0) for l in covered)
+    var = sum((l["unit_net"] - l["book_price"]) * (l["qty"] or 0) for l in covered)
+    return round(var / (net - var), 4) if abs(net - var) > EPS else None
+
+
+def _book_floor(l):
+    """The price this customer has ALREADY PAID for the line this year, and so
+    the hard floor under everything: the rule, the RPI solve and an approver's
+    rework alike. Nothing in the engine may quote under it."""
+    return l.get("book_price") or None
 
 
 def _solve_country_rate(lines, target, rate, basis="pivot"):
@@ -1056,6 +1194,20 @@ def price_lines(lines, ref, meta):
     exc = rpi_exception(meta)
     if exc:
         rate = exc["rate"]
+    # The customer's agreed prices. Loaded off the standing-customer entry, which
+    # is matched WITHOUT the date test — the book covers the whole year, and it
+    # names every account that is one commercial customer, so a quote under the
+    # sibling number reads the same prices. Failure to load is reported, never
+    # fatal: a case still prices without it, just without the guard.
+    group = customer_group(meta)
+    book, book_err = meta.get("_book"), None
+    if book is None:
+        book_path = find_customer_book(meta, group)
+        if book_path:
+            try:
+                book = load_customer_book(book_path)
+            except Exception as e:                      # noqa: BLE001 - reported
+                book, book_err = None, f"{os.path.basename(book_path)}: {e}"
     rule = str(meta.get("rule") or "requested").strip().lower()
     if rule not in ("requested", "e2e"):
         rule = "requested"
@@ -1076,6 +1228,7 @@ def price_lines(lines, ref, meta):
             basis = "pivot"
         plain = dict(meta)
         plain["rpi_target"] = None
+        plain["_book"] = book            # loaded once, not per pass
         base_out, _ = price_lines(lines, ref, plain)
         before = _rpi_readings(base_out, "unit_net")
         r, achieved, reachable = _solve_country_rate(base_out, target, rate, basis)
@@ -1093,13 +1246,24 @@ def price_lines(lines, ref, meta):
                       "why": "no line carries a prior-year country average, so no "
                              "price moves this reading"}
         else:
+            # WHAT STOPPED IT, when it stopped short. The book comes first: it is
+            # a commitment to the customer, where the E2E floor is our own margin
+            # rule, and an approver told the two apart needs to know which he is
+            # being asked to move.
+            held = sum(1 for l in base_out if l.get("book_price"))
+            why = None
+            if not reachable:
+                why = ("the target E2E floor holds the country lines up - this is "
+                       "as low as the reading goes without selling under the margin")
+                if held:
+                    why = (f"{held} line(s) are at prices this customer has already "
+                           f"been invoiced this year and cannot be cut - the reading "
+                           f"cannot reach the target without reopening the agreed "
+                           f"price list")
             rework = {"target": target, "basis": basis, "applied": True,
                       "before": before[basis], "achieved": achieved,
                       "country_rate": r, "reachable": reachable,
-                      "why": None if reachable else
-                             ("the target E2E floor holds the country lines up - "
-                              "this is as low as the reading goes without selling "
-                              "under the margin")}
+                      "book_held": held, "why": why}
         meta = dict(meta)
         meta["_rework"] = rework
 
@@ -1269,9 +1433,23 @@ def price_lines(lines, ref, meta):
             cust_avg = cust_avg / fx if cust_avg else cust_avg
             ctry_avg = ctry_avg / fx if ctry_avg else ctry_avg
 
+        # What this customer has actually paid for this material THIS year. It is
+        # an agreed price, not an average, so it outranks the prior-year lookup
+        # above — including on the lines where that lookup came back blank, which
+        # is most of them (the book is the current year, 'PV 2025 ' is not).
+        bk = (book["prices"].get(mat) if book else None)
+        book_price = bk["price"] if bk else None
+
         rpi_before = _rpi_pct(unit_net, cust_avg, ctry_avg, qty, ctry_qty, cust_qty) if unit_net else None
         if carried is not None:
             rpi_floor, rpi_mode = None, f"held from {carry_label}"
+        elif book_price:
+            # The agreed price plus whatever increase is negotiated for the year —
+            # the same shape as the customer-average gate, off a number that is
+            # current and agreed rather than last year's mean.
+            rpi_floor = book_price * (1 + rate)
+            rpi_mode = (f"the fixed-price book x (1 + {rate:.1%}) - "
+                        f"{bk['orders']} order(s) at {book_price:,.4f}")
         elif rule == "requested":
             rpi_floor, rpi_mode = _rpi_gate(cust_avg, ctry_avg, qty, ctry_qty, rate)
         else:
@@ -1297,7 +1475,9 @@ def price_lines(lines, ref, meta):
         # the whole point, so a line above its branch comes down to it.
         reworked = None
         if rework and rework.get("applied") and carried is None and unit_net is not None:
-            if cust_avg:
+            if book_price:
+                reworked = max(book_price * (1 + rate), book_price)
+            elif cust_avg:
                 reworked = cust_avg * (1 + rate)
             elif ctry_avg:
                 reworked = ctry_avg * (1 + rework["country_rate"])
@@ -1305,8 +1485,9 @@ def price_lines(lines, ref, meta):
                 unit_net = reworked
                 add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
                 binds = (f"reworked to {rework['target']:.1%} RPI - "
-                         + ("last year on this customer"
-                            if cust_avg else "the ledger average"))
+                         + ("the fixed-price book" if book_price else
+                            "last year on this customer" if cust_avg else
+                            "the ledger average"))
                 raised = False
 
         # ── the E2E floor ────────────────────────────────────────────────────
@@ -1324,8 +1505,13 @@ def price_lines(lines, ref, meta):
         # outranks the target. The COUNTRY average (Y) does not: every line on
         # W262223256E has one, and all three of her comments are on lines that do.
         # Carried revision lines keep their approved price, same as the RPI floor.
+        #
+        # A FIXED-PRICE BOOK ENTRY IS A CUSTOMER REFERENCE and takes the same
+        # carve-out: raising a line above the price the customer is already
+        # invoiced at, to chase a margin target, is reopening the agreement from
+        # our side. The hard floor below still holds it at the agreed price.
         e2e_floor = None
-        if (carried is None and unit_std and not cust_avg
+        if (carried is None and unit_std and not cust_avg and not book_price
                 and net_at_tgt is not None and qty):
             e2e_floor = net_at_tgt / qty
         if e2e_floor is not None and unit_net is not None and e2e_floor > unit_net + 1e-6:
@@ -1335,6 +1521,17 @@ def price_lines(lines, ref, meta):
             floored = True
         else:
             floored = False
+
+        # ── THE GUARD: never under a price they have already paid ────────────
+        # Last, so it survives the rule, the RPI gate, the E2E floor and an
+        # approver's rework alike. A carried line is exempt: that price was
+        # quoted to this customer and accepted, and the carry rule owns it.
+        book_guard = False
+        if book_price and carried is None and unit_net is not None and unit_net < book_price - 1e-6:
+            unit_net = book_price
+            add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
+            binds = "the fixed-price book"
+            book_guard = True
 
         rpi_after = _rpi_pct(unit_net, cust_avg, ctry_avg, qty, ctry_qty, cust_qty) if unit_net else None
         total_net = unit_net * qty if unit_net is not None else None
@@ -1408,6 +1605,21 @@ def price_lines(lines, ref, meta):
             # and the engine says so rather than reporting a margin it cannot see.
             flags.append(("verify", "no cost - not on the transaction and the Trigger sheet "
                                     "has none for this material, so this line carries no E2E"))
+        if bk:
+            paid = ", ".join(p["transaction"] for p in bk["paid"][:4])
+            more = f" +{bk['orders'] - 4} more" if bk["orders"] > 4 else ""
+            flags.append(("action" if book_guard else "info",
+                          (f"HELD at the agreed price {book_price:,.4f} - the rule priced it "
+                           f"under a price this customer has already paid. "
+                           if book_guard else
+                           f"agreed price {book_price:,.4f} in the customer's own book. ")
+                          + f"Paid on {bk['orders']} order(s) this year ({paid}{more})"
+                          + ("" if bk["firm"] else
+                             f" - and NOT at one price: {bk['low']:,.4f} to {bk['high']:,.4f}, "
+                             f"so the latest is used and the agreed number needs confirming")
+                          + (". The ledger reads no customer history for it - 'PV 2025 ' is "
+                             "last year, so its whole price lands in mix variance"
+                             if not cust_avg else "")))
         if reworked is not None:
             # An approver moved this price, so every one of these lines is a
             # decision somebody has to own — say what it was measured against and
@@ -1548,6 +1760,13 @@ def price_lines(lines, ref, meta):
             # What the approver's rework set this line to, before the E2E floor
             # had its say — None on a case nobody reworked.
             "reworked": reworked,
+            # The customer's own agreed price, how many orders it was invoiced on
+            # this year, whether every one of them was at the same number, and
+            # whether the guard had to hold the line there.
+            "book_price": book_price,
+            "book_orders": bk["orders"] if bk else None,
+            "book_firm": bk["firm"] if bk else None,
+            "book_guard": book_guard,
             "add_disc": add_disc, "unit_net": unit_net, "total_net": total_net,
             "e2e": e2e, "binds": binds, "raised": raised, "severity": sev,
             "carried": carried is not None,
@@ -1661,6 +1880,23 @@ def price_lines(lines, ref, meta):
         "rpi_readings": {k: (round(v, 4) if isinstance(v, float) and k in RPI_BASES
                              else round(v, 2) if isinstance(v, float) else v)
                          for k, v in _rpi_readings(out, "unit_net").items()},
+        # The customer's own fixed-price book, when this customer has one.
+        # `rpi_vs_book` is the increase measured against what they have ACTUALLY
+        # PAID this year, over the lines the book covers — the honest answer to
+        # "what did you put this customer's prices up by", and usually nothing
+        # like the ledger's RPI, which measures 2026 agreed prices against 2025
+        # averages the customer never saw.
+        "book": ({"path": os.path.basename(book["path"]),
+                  "orders": len(book["orders"]), "materials": len(book["prices"]),
+                  "lines": sum(1 for l in out if l.get("book_price")),
+                  "held": sum(1 for l in out if l.get("book_guard")),
+                  "unpriced_history": sum(1 for l in out
+                                          if l.get("book_price") and not l["cust_avg"]),
+                  "not_firm": sum(1 for l in out if l.get("book_orders")
+                                  and not l.get("book_firm")),
+                  "rpi_vs_book": _book_rpi(out)}
+                 if book else None),
+        "book_error": book_err,
         # Set only when the case was reworked to an approver's ceiling.
         "rework": ({k: v for k, v in rework.items() if not k.startswith("_")}
                    if rework else None),
@@ -2547,6 +2783,30 @@ def main():
 
         _check_cancel(meta, "before pricing")
         priced, summary = price_lines(lines, ref, meta)
+        bk = summary.get("book")
+        if bk:
+            log(f"Fixed-price book: {bk['path']} — {bk['materials']} materials over "
+                f"{bk['orders']} order(s). It covers {bk['lines']} line(s) on this "
+                f"transaction"
+                + (f", {bk['unpriced_history']} of which the ledger reads as having "
+                   f"no customer history (the book is this year, 'PV 2025 ' is last)"
+                   if bk["unpriced_history"] else "")
+                + ".")
+            if bk["held"]:
+                log(f"{bk['held']} line(s) were priced UNDER what this customer has "
+                    f"already paid this year and were held at the agreed price.", "warn")
+            if bk["not_firm"]:
+                log(f"{bk['not_firm']} line(s) were invoiced at more than one price this "
+                    f"year — the latest is used, and the agreed number needs confirming.",
+                    "warn")
+            if bk["rpi_vs_book"] is not None:
+                log(f"Against the agreed prices themselves, this quote is "
+                    f"{bk['rpi_vs_book']:+.1%} — that is the increase this customer "
+                    f"can actually see.")
+        if summary.get("book_error"):
+            log(f"The customer's fixed-price book could not be read ({summary['book_error']}) "
+                f"— priced without it, so nothing guards against quoting under an "
+                f"agreed price.", "warn")
         log(f"Priced {summary['lines']} line(s) — total {summary['grand_total']:,.2f} "
             f"{summary['currency']}")
         if summary["overall_e2e"] is not None:
@@ -2559,12 +2819,15 @@ def main():
         if rw and rw.get("applied"):
             log(f"Reworked to the approver's {rw['target']:.1%} ceiling on the "
                 f"{rw['basis']} reading: {rw['before']:.1%} → {rw['achieved']:.1%}, "
-                f"{summary['reworked']} line(s) moved. Lines with history went to "
-                f"last year + {summary['rpi_rate']:.1%}; the rest to the ledger "
-                f"average {rw['country_rate']:+.1%}.",
+                f"{summary['reworked']} line(s) moved."
+                + (f" {rw['book_held']} line(s) held at the customer's own agreed "
+                   f"price + {summary['rpi_rate']:.1%}"
+                   if rw.get("book_held") else
+                   f" Lines with history went to last year + {summary['rpi_rate']:.1%}")
+                + f"; the rest to the ledger average {rw['country_rate']:+.1%}.",
                 "warn" if not rw.get("reachable") else "info")
             if not rw.get("reachable"):
-                log(f"{rw['why']}.", "warn")
+                log(f"It does NOT reach {rw['target']:.1%}: {rw['why']}.", "warn")
         elif rw:
             log(f"Not reworked: {rw['why']}.")
         if summary.get("carried"):
