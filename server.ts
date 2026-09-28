@@ -7980,6 +7980,65 @@ async function startServer() {
       .map(r => ({ ...r, attachments: fenParseJson(r.attachments, []), tags: fenParseJson(r.tags, []) }));
   const fenMeta = () => queryAll('SELECT lastRefreshAt FROM fenton_meta WHERE id = 1')[0] || {};
 
+  // One mail, many copies: the sweep reads both mailboxes and several folders
+  // (Inbox, email drop, Completed by …), and every copy has its own EntryID —
+  // so EntryID alone stored the same answer 2–3 times, each extracted into a
+  // different card. A copy is the same subject within a few seconds (copies of
+  // one mail can be stamped seconds apart per store).
+  const FENTON_DUP_WINDOW_MS = 10_000;
+  const fenSubjectKey = (s: string) => String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  const fenTime = (s: string) => {
+    // "2026-09-22 10:38:50.598000+00:00" → ISO with millisecond precision
+    const m = String(s || '').match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(\.\d+)?(.*)$/);
+    const t = m ? Date.parse(`${m[1]}T${m[2]}${(m[3] || '').slice(0, 4)}${m[4] || 'Z'}`) : Date.parse(s);
+    return Number.isFinite(t) ? t : NaN;
+  };
+  // Which copy survives: a kept card beats a skipped one, an extracted one beats
+  // a pending one, then the shared quote box beats personal folders.
+  const FENTON_FOLDER_RANK = ['ukquotefactoryel\\inbox', 'ukquotefactoryel\\completed', 'laithal-soub@eaton.com\\inbox'];
+  const fenFolderRank = (f: string) => {
+    const lf = String(f || '').toLowerCase();
+    const i = FENTON_FOLDER_RANK.findIndex(p => lf.startsWith(p));
+    return i === -1 ? FENTON_FOLDER_RANK.length : i;
+  };
+  const fenKeeperOrder = (a: any, b: any) =>
+    (Number(a.skipped || 0) - Number(b.skipped || 0)) ||
+    (Number(b.extracted || 0) - Number(a.extracted || 0)) ||
+    (fenFolderRank(a.folder) - fenFolderRank(b.folder)) ||
+    String(a.ts || '').localeCompare(String(b.ts || ''));
+
+  // Delete every copy but one. Returns how many rows went.
+  function fentonDedup(): number {
+    const rows = queryAll('SELECT entryId, received, subject, folder, extracted, skipped, ts FROM fenton_kb');
+    const bySubject = new Map<string, any[]>();
+    for (const r of rows) {
+      const k = fenSubjectKey(r.subject);
+      if (!bySubject.has(k)) bySubject.set(k, []);
+      bySubject.get(k)!.push({ ...r, t: fenTime(r.received) });
+    }
+    const drop: string[] = [];
+    for (const list of bySubject.values()) {
+      if (list.length < 2) continue;
+      list.sort((a, b) => (a.t || 0) - (b.t || 0));
+      // Chain rows whose received times sit within the window into one group.
+      let group: any[] = [];
+      const flush = () => {
+        if (group.length > 1) group.sort(fenKeeperOrder).slice(1).forEach(r => drop.push(r.entryId));
+        group = [];
+      };
+      for (const r of list) {
+        const last = group[group.length - 1];
+        if (last && !(Number.isFinite(r.t) && Number.isFinite(last.t) && r.t - last.t <= FENTON_DUP_WINDOW_MS)) flush();
+        group.push(r);
+      }
+      flush();
+    }
+    for (const id of drop) runWrite('DELETE FROM fenton_kb WHERE entryId = ?', [id]);
+    if (drop.length) console.log(`[fenton] removed ${drop.length} duplicate cop${drop.length === 1 ? 'y' : 'ies'}`);
+    return drop.length;
+  }
+  try { fentonDedup(); } catch (e: any) { console.warn('[fenton] dedup skipped:', e.message); }
+
   // Pull the first JSON array out of a model response (handles ``` fences / prose).
   function firstJsonArray(text: string): any[] | null {
     const stripped = (text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
@@ -8080,10 +8139,25 @@ async function startServer() {
     const r = await runOutlookPy(['--action', 'emails-from', '--sender', FENTON_SENDER,
       '--recipient', FENTON_RECIPIENTS, '--since', since, '--skip-auto']);
     const fetched = (r.emails || []) as any[];
-    const existing = new Set(queryAll('SELECT entryId FROM fenton_kb').map((x: any) => x.entryId));
+    const known = queryAll('SELECT entryId, received, subject FROM fenton_kb');
+    const existing = new Set(known.map((x: any) => x.entryId));
+    // Subject → received times already stored, so another folder's copy of a
+    // mail we hold is recognised and not inserted again.
+    const seen = new Map<string, number[]>();
+    const remember = (subject: string, received: string) => {
+      const k = fenSubjectKey(subject);
+      if (!seen.has(k)) seen.set(k, []);
+      seen.get(k)!.push(fenTime(received));
+    };
+    known.forEach((x: any) => remember(x.subject, x.received));
+    const isCopy = (subject: string, received: string) => {
+      const t = fenTime(received);
+      return Number.isFinite(t) && (seen.get(fenSubjectKey(subject)) || []).some(s => Math.abs(s - t) <= FENTON_DUP_WINDOW_MS);
+    };
     const now = new Date().toISOString();
     let added = 0;
     for (const e of fetched) {
+      if (!existing.has(e.entryId) && isCopy(e.subject, e.received)) continue;
       if (existing.has(e.entryId)) {
         runWrite(`UPDATE fenton_kb SET received=?, subject=?, senderEmail=?, body=?, attachments=?, folder=? WHERE entryId=?`,
           [e.received || '', e.subject || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), e.folder || '', e.entryId]);
@@ -8093,9 +8167,14 @@ async function startServer() {
            VALUES (?,?,?,?,?,?,?,'','','','[]',0,0,?)`,
           [e.entryId, e.received || '', e.subject || '', e.senderEmail || '', e.body || '',
            JSON.stringify(e.attachments || []), e.folder || '', now]);
+        existing.add(e.entryId);
+        remember(e.subject, e.received);
         added++;
       }
     }
+    // Clears copies stored before this check existed (a no-op afterwards), and
+    // runs before extraction so no AI call is spent on a copy.
+    fentonDedup();
     await fentonExtract(force);
     runWrite('INSERT OR REPLACE INTO fenton_meta (id, lastRefreshAt) VALUES (1, ?)', [now]);
     const skipped = Number(queryAll('SELECT COUNT(*) c FROM fenton_kb WHERE skipped = 1')[0]?.c || 0);
