@@ -325,7 +325,11 @@ function QueuePanel({ toast, onFetch, disabled }: {
             : `Read ${ago(q.ran)}`}
           {q.enabled ? ` · every ${q.everyMin} min` : ' · auto-read off'}
         </span>
-        <UiIconButton icon={RefreshCw} label="Read the sheet now" className="shrink-0" onClick={refresh} disabled={working} />
+        <Button tone="outline" size="sm" Icon={working ? Loader2 : RefreshCw} disabled={working} onClick={refresh}
+                title="Read Dalia's sheet now instead of waiting for the next timed read"
+                className={cn('shrink-0', working && '[&_svg]:animate-spin')}>
+          {working ? 'Reading…' : 'Refresh'}
+        </Button>
       </div>
 
       {open && q.ran != null && (
