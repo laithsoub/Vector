@@ -123,6 +123,7 @@ job.json:
      "rule": "requested" (default) | "e2e",
      "rpi_target": 0.045,            rework the case to an approver's RPI ceiling
      "rpi_basis": "pivot" (default) | "ledger" | "price",   which reading that is
+     "typo_keep": ["1100-0532"],     suspected-typo lines the analyst confirmed as real
      "baseline": false               skip the "as pasted" copy (default: write it)}
 
 `preview` needs no Excel — it prices the lines and returns them as JSON.
@@ -198,8 +199,204 @@ BOOK_DIRS = ("books", "")
 E2E_CONCESSION = (0.37, 0.35)
 
 FIVEX = 4.9999                         # model gate: QTY/PYctryQTY <= 499.99%
+# Proposed 2026-10-01 (Laith on W262253147E, Qatar): a line the customer has
+# never bought, measured only against the REGIONAL ledger (R2321 is the whole
+# Middle East sold-to ledger, not one country) and quoted at over 5x last year's
+# regional qty, reads RPI 0 in the model whatever it is priced at — so the RPI
+# floor there buys no KPI, only price, off somebody else's (often another
+# country's) last-year price. When on, such a line skips the RPI floor and is
+# priced by the target E2E floor instead. OFF until the rule table approves it.
+#
+# And even when on, ONLY ONCE THE ORDER IS CONFIRMED (Laith, same case, same day):
+# the customer can cut the quantity at any moment, and a line priced without the
+# RPI that drops back under 5x is then read at full RPI on a price that never had
+# it. Until the job says `order_confirmed`, the 6% stays on and the line is
+# flagged provisional - conceding it later is easy, adding it back is not.
+FIVEX_COUNTRY_NO_GATE = False
 STD_DISCOUNT = 0.55                    # default customer condition when the BOM omits it
 EPS = 1e-9
+
+# How close a requested price has to sit to an approved one to BE that price.
+# Sales re-send the approved figure rounded to the digits CPQ carries, so an
+# exact compare would call 2.246037404 a different price from 2.2460374043.
+# A relative tolerance, because the prices span 2.24 to 2,943.
+REVISION_MATCH_TOL = 0.0001            # 0.01% of the approved price
+
+# A requested price sales could not have meant. W262247243E (Heptagon, 2026-09-29)
+# asked 1,500.00 for 1100-0532 against a ~258 standard price — a slipped digit —
+# and the requested rule priced it there: one line at 830% Total RPI dragged the
+# whole case, and Dalia sent it back ("one line have very high price maybe this by
+# mistake from Sales person, we cannot approve such high price"). So a request
+# over TYPO_REQ_RATIO x the standard price is NOT copied: the line is priced as if
+# nothing was requested (target E2E, then the RPI gate — the agreed balance) and
+# the case stops to ask the analyst. `typo_keep` on the job names the lines they
+# have confirmed are real, which are then priced as requested.
+# TYPO_LINE_RPI catches the same slip arriving another way (a qty or a reference):
+# any line whose own Total RPI% is over it is flagged and asked about too.
+TYPO_REQ_RATIO = 2.0
+TYPO_LINE_RPI = 1.0
+
+
+# ─── the rule table ──────────────────────────────────────────────────────────
+# The constants above are the engine's DEFAULTS. The rules in force live in
+# Vector's rule table (server.ts, `rule`), where every one carries who set it,
+# where it came from and the dates it holds for, and a change waits in an
+# approval queue before it prices anything. The server seeds the table from
+# `code_rules()` once, then sends the approved rows with every job; `apply_rules`
+# lays the ones valid on the TRANSACTION's date over the defaults. A job with no
+# `rules` (the CLI, a ship build without the table) prices on the defaults.
+#
+# A key is one knob. `rpi_exception.<slug>` is the one family: the set of those
+# in force REPLACES RPI_EXCEPTIONS outright, so retiring the last one leaves no
+# exception rather than falling back to the code's.
+RULE_KEYS = {
+    "rpi_rate.H1":       "number",
+    "rpi_rate.H2":       "number",
+    "rpi_working_level": "number",
+    "add_disc_cap":      "number",
+    "std_discount":      "number",
+    "e2e_concession":    "numbers",
+    "revision_match_tol": "number",
+    "fivex_country_no_gate": "flag",
+}
+RULE_FAMILY_EXC = "rpi_exception."
+# A working instruction in words — mined from Dalia's and Kiran's mail, or typed.
+# The engine does not price by it; it sits in the table so an approved guideline
+# is written down with its source, and a number in it can later become a key.
+RULE_FAMILY_NOTE = "guideline."
+
+
+def code_rules():
+    """The defaults as rule rows — what the server seeds an empty table with."""
+    src = "automation/lsd_pricing.py defaults"
+    rows = [
+        {"key": "rpi_rate.H1", "value": RPI_RATE["H1"], "title": "RPI gate, H1",
+         "why": "Unit net floor = customer prior-year average x (1 + rate) for a first-half transaction.",
+         "source": f"LSD Daily Work Procedure ({src})"},
+        {"key": "rpi_rate.H2", "value": RPI_RATE["H2"], "title": "RPI gate, H2",
+         "why": "Unit net floor = customer prior-year average x (1 + rate) for a second-half transaction.",
+         "source": f"LSD Daily Work Procedure ({src})"},
+        {"key": "rpi_working_level", "value": RPI_WORKING_LEVEL, "title": "RPI working level",
+         "why": "Dalia's KPI is 6% as an average over all cases and the flat/4% exceptions pull it "
+                "down, so a normal case is worked to ~6.8%. Shown as headroom; the gate stays at the H1/H2 rate.",
+         "source": f"Dalia review 2026-09-15 ({src})"},
+        {"key": "add_disc_cap", "value": ADD_DISC_CAP, "title": "Add. Discount cap",
+         "why": "The 20% flatten in the old MIN(requested, @target E2E, cap) rule; the requested rule only warns past it.",
+         "source": f"E2E Guidelines ({src})"},
+        {"key": "std_discount", "value": STD_DISCOUNT, "title": "Default customer condition",
+         "why": "Standard discount assumed when the CPQ export omits it.",
+         "source": f"CPQ export default ({src})"},
+        {"key": "e2e_concession", "value": list(E2E_CONCESSION), "title": "E2E concession band (Addressable)",
+         "why": "Where the approver will come down to when the target E2E cannot be held — a concession "
+                "offered in the approval mail, never a price the engine picks.",
+         "source": f"Dalia on W262223256E ({src})"},
+        {"key": "revision_match_tol", "value": REVISION_MATCH_TOL,
+         "title": "Revision: requested-vs-approved match tolerance",
+         "why": "On a revision of an approved quote every line already quoted must come back at the price "
+                "that was approved; this is how close counts as the same price (sales re-send the approved "
+                "figure rounded to CPQ's digits). A line outside it is flagged for action, never silently "
+                "held. An item NEW on the revision is priced by the rule: capped at the customer's own "
+                "reference x (1 + RPI rate) when they have one, with no country-average fallback, and the "
+                "target E2E overrides that cap.",
+         "source": f"Laith 2026-09-28 on W261999073E ({src})"},
+    ]
+    for exc in RPI_EXCEPTIONS:
+        slug = re.sub(r"[^a-z0-9]+", "-", exc["label"].lower()).strip("-")
+        rows.append({
+            "key": RULE_FAMILY_EXC + slug,
+            "value": {"label": exc["label"], "customers": sorted(exc["customers"]),
+                      "names": list(exc["names"]), "from_month": exc["from_month"],
+                      "rate": exc["rate"], "why": exc["why"], "book": exc.get("book")},
+            "title": f"RPI exception: {exc['label']}",
+            "why": exc["why"],
+            "source": f"Laith 2026-09-07, standing rule ({src})",
+        })
+    return rows
+
+
+def check_rule(key, value):
+    """Why this value cannot be used for this key, or None. The server calls this
+    before a proposal enters the queue, so a bad value never reaches approval."""
+    def rate(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < 1
+    if key.startswith(RULE_FAMILY_EXC):
+        if not isinstance(value, dict):
+            return "an RPI exception is an object"
+        if not str(value.get("label") or "").strip():
+            return "label is required"
+        if not (value.get("customers") or value.get("names")):
+            return "name at least one customer number or name"
+        if not rate(value.get("rate")):
+            return "rate must be a fraction between 0 and 1 (2.5% = 0.025)"
+        fm = value.get("from_month", 1)
+        if not (isinstance(fm, int) and 1 <= fm <= 12):
+            return "from_month must be 1..12"
+        return None
+    if key.startswith(RULE_FAMILY_NOTE):
+        if not (isinstance(value, dict) and str(value.get("text") or "").strip()):
+            return "a guideline is an object with its text"
+        return None
+    kind = RULE_KEYS.get(key)
+    if kind is None:
+        return f"unknown rule key '{key}'"
+    if kind == "flag" and not isinstance(value, bool):
+        return "must be true or false"
+    if kind == "number" and not rate(value):
+        return "must be a fraction between 0 and 1 (6% = 0.06)"
+    if kind == "numbers" and not (isinstance(value, list) and value and all(rate(v) for v in value)):
+        return "must be a list of fractions between 0 and 1"
+    return None
+
+
+def _in_force(rule, as_of):
+    day = as_of.isoformat()
+    return ((not rule.get("valid_from") or rule["valid_from"] <= day)
+            and (not rule.get("valid_to") or day < rule["valid_to"]))
+
+
+def apply_rules(rules, as_of, log=None):
+    """Lay the approved rules valid on `as_of` over the defaults. Per key the rule
+    that started latest wins (a dated rule over an open-ended one), then the
+    newest id. Returns the rows applied, for the result's provenance."""
+    global RPI_RATE, RPI_WORKING_LEVEL, ADD_DISC_CAP, STD_DISCOUNT, E2E_CONCESSION, RPI_EXCEPTIONS
+    global REVISION_MATCH_TOL, FIVEX_COUNTRY_NO_GATE
+    best = {}
+    for r in rules:
+        key = str(r.get("key") or "")
+        if not _in_force(r, as_of):
+            continue
+        bad = check_rule(key, r.get("value"))
+        if bad:
+            if log:
+                log(f"Rule #{r.get('id')} '{key}' ignored: {bad}", "warn")
+            continue
+        cur = best.get(key)
+        rank = (r.get("valid_from") or "", r.get("id") or 0)
+        if cur is None or rank > (cur.get("valid_from") or "", cur.get("id") or 0):
+            best[key] = r
+
+    val = {k: r["value"] for k, r in best.items()}
+    RPI_RATE = {"H1": val.get("rpi_rate.H1", RPI_RATE["H1"]),
+                "H2": val.get("rpi_rate.H2", RPI_RATE["H2"])}
+    RPI_WORKING_LEVEL = val.get("rpi_working_level", RPI_WORKING_LEVEL)
+    ADD_DISC_CAP = val.get("add_disc_cap", ADD_DISC_CAP)
+    STD_DISCOUNT = val.get("std_discount", STD_DISCOUNT)
+    E2E_CONCESSION = tuple(val.get("e2e_concession", E2E_CONCESSION))
+    REVISION_MATCH_TOL = val.get("revision_match_tol", REVISION_MATCH_TOL)
+    FIVEX_COUNTRY_NO_GATE = val.get("fivex_country_no_gate", FIVEX_COUNTRY_NO_GATE)
+    RPI_EXCEPTIONS = tuple(
+        {**r["value"],
+         "customers": {canon(c) for c in r["value"].get("customers") or ()},
+         "names": tuple(str(n).lower() for n in r["value"].get("names") or ()),
+         "from_month": r["value"].get("from_month", 1)}
+        for k, r in sorted(best.items()) if k.startswith(RULE_FAMILY_EXC))
+
+    applied = [{"id": r.get("id"), "key": k, "value": r["value"], "title": r.get("title"),
+                "source": r.get("source"), "valid_from": r.get("valid_from")}
+               for k, r in sorted(best.items())]
+    if log:
+        log(f"Rules: {len(applied)} in force on {as_of.isoformat()} from Vector's rule table")
+    return applied
 
 # Ledger geometry (V2 master). Data rows 13..500 feed Feedback 12..634.
 LEDGER_SHEET = "Model Ledger "
@@ -431,7 +628,12 @@ BOM_COLS = {
     "catalog": 8, "material": 9, "description": 10, "group_code": 14,
     "group": 15, "qty": 16, "list": 18, "std_pct": 21, "net_price": 22,
     "net_fixed": 25, "requested": 27, "req_disc_pct": 31, "cost": 39,
+    "identifier": 1, "notes": 54,
 }
+# A row cpq_fetch appended because CPQ's Approval History asked for it ("Add QTY
+# xx of Item xx") - it is not on CPQ's own BOM. The Identifier carries this mark,
+# the Notes column the approver's comment. Keep in step with cpq_fetch.py.
+APPROVAL_ADD_MARK = "APPROVAL HISTORY ADD"
 HEADER_MARKERS = ("material #", "catalog #", "pricing group description")
 
 
@@ -500,6 +702,8 @@ def _row_to_line(cells):
         "requested": req,
         "req_disc_pct": req_disc_pct,
         "cost": num(at("cost")),
+        "approval_add": (str(at("notes") or "").strip() or "approver's request")
+                        if str(at("identifier") or "").startswith(APPROVAL_ADD_MARK) else None,
     }
 
 
@@ -771,6 +975,128 @@ def load_reference(master):
 
     return {"e2e": e2e, "pv": pv, "mv": mv, "cust": cust, "trig": trig,
             "twin": twin, "twin_desc": twin_desc, "dead": dead, "guide": guide}
+
+
+# ─── the plant-cost price list (lines CPQ's Approval History adds) ───────────
+# An item an approver asks to add ("Add QTY xx of Item xx") is not on CPQ's BOM,
+# so it arrives with no cost and no pricing group. Laith's manual step reads both
+# off this workbook ("Copy of Price list Master file workout Fire plant cost
+# V15 NKKP 050326.xlsx"). Its 'Cost SAP 2026 FCT USD FX' column IS CPQ's Cost to
+# within 0.3% on every line checked (W262253147E, W262247243E, W262253261E,
+# 2026-10-01), so it stands in for the cost CPQ would have carried.
+COST_MASTER_GLOB = "Copy of Price list Master file*.xlsx"
+COST_MASTER_SHEET = "draft Fire V15 NKKP Clean copy"
+# Pricing group code -> the description the E2E table is keyed on. Measured 1:1
+# over 206 archived CPQ exports (2026-10-01); the master file carries only the code.
+GROUP_NAMES = {
+    "M5G": "Software", "M5I": "Spares", "M8A": "Addressable",
+    "M8B": "Luminaries Self contained", "M8C": "Modules", "M8D": "Luminaires",
+    "M8E": "Batteries", "M8F": "Voice System EN", "M8G": "Systems", "M8I": "Universal",
+    "M8J": "Conventional", "M8K": "Notification-EN", "M8L": "Voice System UL",
+    "M8M": "PQ Micro DC", "M8N": "Vocall & EAS", "M8P": "Legacy", "MDE": "Notification-UL",
+}
+
+
+def find_cost_master(job):
+    """The configured plant-cost list, else the newest one in <case root>/Master Models."""
+    p = str(job.get("cost_master") or "").strip()
+    if p:
+        return p if os.path.exists(p) else None
+    import glob
+    root = job.get("cases_root") or ""
+    hits = [h for h in glob.glob(os.path.join(root, "Master Models", COST_MASTER_GLOB))
+            if not os.path.basename(h).startswith("~$")]
+    return max(hits, key=os.path.getmtime) if hits else None
+
+
+def load_cost_master(path):
+    """{material: {cost (USD), group_code, description}} off the plant-cost sheet.
+    Columns are found by header name, not position - the sheet is re-cut per version."""
+    import openpyxl
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        names = {n.strip().lower(): n for n in wb.sheetnames}
+        sheet = names.get(COST_MASTER_SHEET.lower()) or next(
+            (n for k, n in names.items() if k.startswith("draft fire")), None)
+        if not sheet:
+            raise ValueError(f"no '{COST_MASTER_SHEET}' sheet")
+        out, cols = {}, None
+        for row in wb[sheet].iter_rows(values_only=True):
+            if cols is None:
+                h = [re.sub(r"\s+", " ", str(v or "")).strip().lower() for v in row]
+                if "material" in h and any(t.startswith("cost sap 2026 fct") for t in h):
+                    cols = {"mat": h.index("material"),
+                            "cost": next(i for i, t in enumerate(h) if t.startswith("cost sap 2026 fct")),
+                            "mg5": h.index("mg5") if "mg5" in h else None,
+                            "desc": h.index("description") if "description" in h else None}
+                continue
+            mat = row[cols["mat"]] if cols["mat"] < len(row) else None
+            if mat in (None, ""):
+                continue
+            def at(k):
+                i = cols[k]
+                return row[i] if i is not None and i < len(row) else None
+            cost = num(at("cost"))
+            out[canon(mat)] = {"cost": cost if cost and cost > 0 else None,
+                               "group_code": (str(at("mg5") or "").strip().upper() or None),
+                               "description": (str(at("desc") or "").strip() or None)}
+        if cols is None:
+            raise ValueError("no header row with Material and 'Cost SAP 2026 FCT USD FX'")
+        return out
+    finally:
+        wb.close()
+
+
+def fill_approval_adds(lines, rows, job, aprc, log):
+    """Give every line CPQ's Approval History added the cost, group and description
+    the plant-cost list carries for it. Cost is USD there, so a EUR (525) deal gets
+    it through the ledger's own R6 rate. A material the list does not price is left
+    without a cost - the engine's no-cost flag then says so."""
+    adds = [l for l in lines if l.get("approval_add")]
+    if not adds:
+        return
+    path = find_cost_master(job)
+    if not path:
+        log(f"{len(adds)} line(s) added from CPQ's Approval History, but no plant-cost price "
+            f"list was found (Settings > LSD Pricing > Plant-cost price list) - they carry no cost.",
+            "warn")
+        return
+    try:
+        book = load_cost_master(path)
+    except Exception as e:                              # noqa: BLE001 - reported
+        log(f"Could not read {os.path.basename(path)}: {e} - the added line(s) carry no cost.", "warn")
+        return
+    fx = float(job.get("fx") or 1.12522)
+    for l in adds:
+        rec = book.get(l["material"])
+        if not rec:
+            log(f"{l['material']} (added from Approval History) is not on "
+                f"{os.path.basename(path)} - no cost.", "warn")
+            continue
+        if not l.get("cost") and rec["cost"]:
+            l["cost"] = rec["cost"] / fx if aprc == "525" else rec["cost"]
+        if not l.get("group") and rec["group_code"]:
+            l["group_code"] = rec["group_code"]
+            l["group"] = GROUP_NAMES.get(rec["group_code"])
+        if not l.get("description"):
+            l["description"] = rec["description"]
+        # The same values into the raw row, so 'Paste BOM Here' (which the ledger
+        # XLOOKUPs) carries them too.
+        for i, r in enumerate(rows):
+            if (str((r[0] if r else "") or "").startswith(APPROVAL_ADD_MARK)
+                    and len(r) >= BOM_COLS["cost"]
+                    and canon(r[BOM_COLS["material"] - 1]) == l["material"]):
+                r = list(r)
+                r[BOM_COLS["description"] - 1] = l.get("description")
+                r[BOM_COLS["group_code"] - 1] = l.get("group_code")
+                r[BOM_COLS["group"] - 1] = l.get("group")
+                r[BOM_COLS["cost"] - 1] = l.get("cost")
+                rows[i] = r
+        log(f"{l['material']} x{l['qty']:g} added from Approval History: cost "
+            f"{l['cost'] if l.get('cost') is not None else 'none'}, group {l.get('group') or '?'}"
+            f" (from {os.path.basename(path)})")
 
 
 def detect_aprc(lines):
@@ -1091,14 +1417,20 @@ def _by_group(lines):
         ls = r.pop("_lines")
         net = sum(l["total_net"] or 0 for l in ls)
         std = sum(l["total_std"] or 0 for l in ls)
-        cost = sum(l["total_cost"] or 0 for l in ls)
+        # E2E over the lines that HAVE a cost, never over all of them: a missing
+        # cost is unknown, not zero, and a zero reads as a 100% margin.
+        costed = [l for l in ls if l["total_cost"] is not None]
+        cost = sum(l["total_cost"] for l in costed)
+        cost_net = sum(l["total_net"] or 0 for l in costed)
         _, ae = _variance(ls, "unit_net")
         tgts = [l["target_e2e"] for l in ls if l["target_e2e"] is not None]
         r.update({
             "lines": len(ls),
             "add_disc": round(1 - net / std, 4) if std else None,
             "net": round(net, 2),
-            "e2e": round(1 - cost / net, 4) if net else None,
+            "e2e": round(1 - cost / cost_net, 4) if cost_net else None,
+            # Lines in this group the E2E above could not see.
+            "cost_missing": len(ls) - len(costed),
             "target_e2e": round(max(tgts), 4) if tgts else None,
             # The summary PIVOT's own calculated field — 'Total RPI Value' /
             # ('Total Net Price' - 'Total RPI Value') — which is NOT the ledger
@@ -1142,6 +1474,44 @@ def headline(summary, meta, diff):
                 f"{summary['lines']} line{'s' if summary['lines'] != 1 else ''} priced.")
 
     head += f" {money_}, E2E {e2e}, total RPI {rpi}."
+    # A 0% the model cannot see past is not a 0% increase — say which it is.
+    blind = summary.get("rpi_blind") or {}
+    nb = len(blind.get("fivex") or ()) + len(blind.get("no_ref") or ())
+    if nb and abs(summary.get("total_rpi") or 0) < 0.0005:
+        bits = []
+        if blind.get("fivex"):
+            bits.append(f"{len(blind['fivex'])} line(s) are over 5x last year's country qty "
+                        f"(the model zeroes RPI there)")
+        if blind.get("no_ref"):
+            bits.append(f"{len(blind['no_ref'])} line(s) have no prior-year price at all")
+        head += (" RPI reads 0 because " + " and ".join(bits)
+                 + (" - that is every line, so the 0% says nothing about the increase"
+                    + ("; the RPI floor still priced the referenced lines over last year."
+                       if summary.get("raised") else
+                       "; no line is priced off last year, the target E2E set them.")
+                    if nb >= summary["lines"] else "."))
+    prov = summary.get("provisional_5x") or []
+    if prov:
+        head += (f" {len(prov)} line(s) over 5x last year's country qty keep the RPI until "
+                 f"the order is confirmed ({', '.join(prov[:4])}{'...' if len(prov) > 4 else ''}).")
+    adds = summary.get("approval_adds") or []
+    if adds:
+        head += (f" {len(adds)} line(s) added from CPQ's Approval History "
+                 f"({', '.join(adds[:4])}{'...' if len(adds) > 4 else ''}) - check them.")
+    sus = summary.get("suspect") or []
+    if sus:
+        head = (f"ASK FIRST: {len(sus)} line(s) look like a typo ("
+                + ", ".join(s["material"] for s in sus[:3])
+                + (", ..." if len(sus) > 3 else "")
+                + ") - confirm with sales before sending. " + head)
+    miss = summary.get("cost_missing") or 0
+    if miss:
+        head += (f" No cost on {miss} of {summary['lines']} line(s)"
+                 + (" - there is no margin reading on this case"
+                    if miss >= summary["lines"] else
+                    f", so the E2E covers {summary['cost_cover']:.0%} of the money")
+                 + ": the CPQ document carries no cost, so reprice it there "
+                   "and fetch it again before quoting a margin.")
     if summary.get("below_target"):
         head += (f" Margin {e2e} against a "
                  f"{summary['target_e2e']:.0%} target — needs approval.")
@@ -1211,6 +1581,9 @@ def price_lines(lines, ref, meta):
     rule = str(meta.get("rule") or "requested").strip().lower()
     if rule not in ("requested", "e2e"):
         rule = "requested"
+    # The customer has confirmed the order and its quantities. Until then a 5x
+    # line is priced as if the quantity could still drop (see FIVEX_COUNTRY_NO_GATE).
+    order_confirmed = bool(meta.get("order_confirmed"))
 
     # ── the approver's rework ────────────────────────────────────────────────
     # `rpi_target` is a CEILING an approver put on the case after seeing it, not
@@ -1269,7 +1642,9 @@ def price_lines(lines, ref, meta):
 
     # Prices carried forward from the previous revision, keyed on material.
     carry = meta.get("_carry") or {}
+    typo_keep = {str(m).strip() for m in (meta.get("typo_keep") or ()) if str(m).strip()}
     carry_label = meta.get("_carry_label") or "the previous revision"
+    carry_hist = meta.get("_carry_hist") or {}
     fx = float(meta.get("fx") or 1.12522)
     usd = meta.get("aprc") != "525"
     customer = canon(meta.get("customer"))
@@ -1364,6 +1739,16 @@ def price_lines(lines, ref, meta):
         elif ln["req_disc_pct"] is not None:
             req_disc = ln["req_disc_pct"] / 100
 
+        # A request so far over the standard price it can only be a typo (see
+        # TYPO_REQ_RATIO). Not copied unless the analyst has confirmed it.
+        typo = None
+        if req_disc is not None and req_disc < 1 - TYPO_REQ_RATIO and carry.get(mat) is None:
+            asked = ln["requested"] if ln["requested"] is not None else unit_std * (1 - req_disc)
+            typo = {"requested": round(asked, 4), "unit_std": round(unit_std, 4),
+                    "ratio": round(asked / unit_std, 2), "kept": mat in typo_keep}
+            if not typo["kept"]:
+                req_disc = None
+
         # E2E target and the discount that lands the line on it (ledger M and N).
         tgt_e2e = ref["e2e"].get(str(ln["group"] or "").strip().lower())
         net_at_tgt = (total_cost / (1 - tgt_e2e)) if (total_cost is not None and tgt_e2e not in (None, 1)) else None
@@ -1379,7 +1764,14 @@ def price_lines(lines, ref, meta):
             candidates = [req_disc]
         else:
             candidates = [c for c in (req_disc, disc_at_tgt, ADD_DISC_CAP) if c is not None]
-            if rule == "requested":
+            if rule == "requested" and ln.get("approval_add"):
+                # Not on the BOM at all: an approver asked for it in CPQ's Approval
+                # History, so there is no request to copy. MIN(target E2E, 20%),
+                # then the RPI and E2E floors below, is the analyst's own handling.
+                flags.append(("verify", f"added from CPQ Approval History "
+                                        f"({ln['approval_add']}) - no requested price, priced "
+                                        f"at MIN(target E2E, 20%) then the floors"))
+            elif rule == "requested" and not typo:
                 # Nothing was requested, so there is nothing to copy across. Falling
                 # through to MIN(@target, 20%) is the only defensible reading, but
                 # it is a different rule from the one the case was run under and the
@@ -1416,6 +1808,25 @@ def price_lines(lines, ref, meta):
         # revision fall through to the rule above.
         carried = carry.get(mat)
         if carried is not None and unit_std:
+            # What sales ASKED for on a line that was already approved. Holding the
+            # approved price is right either way, but a request that is not that
+            # price is a decision someone made and nobody has seen: it has to be
+            # said out loud, not quietly overwritten (Laith, 2026-09-28).
+            if ln["requested"] is not None and carried:
+                off = abs(ln["requested"] - carried) / carried
+                if off > REVISION_MATCH_TOL:
+                    way = "under" if ln["requested"] < carried else "over"
+                    # An older revision's price is a different story from a number
+                    # nobody has approved, so name it when that is what was asked.
+                    older = next((lb for lb, net in carry_hist.get(mat, ())
+                                  if net and abs(ln["requested"] - net) / net <= REVISION_MATCH_TOL
+                                  and lb != carry_label), None)
+                    flags.append(("action",
+                                  f"requested {ln['requested']:,.4f} is {off:.2%} {way} the "
+                                  f"{carry_label} price {carried:,.4f}"
+                                  + (f" - it is the {older} price" if older else
+                                     " - it matches no approved revision")
+                                  + f"; held at {carry_label}, confirm which one the customer was given"))
             add_disc = 1 - carried / unit_std
             unit_net = carried
             binds = f"held from {carry_label}"
@@ -1441,8 +1852,30 @@ def price_lines(lines, ref, meta):
         book_price = bk["price"] if bk else None
 
         rpi_before = _rpi_pct(unit_net, cust_avg, ctry_avg, qty, ctry_qty, cust_qty) if unit_net else None
+        # An item ADDED to a quote the customer has already approved. The rest of
+        # the quote is frozen at prices he has seen, so this one line is the whole
+        # negotiation, and it is priced on what HE has a reference for — nothing
+        # else (Laith, 2026-09-28, W261999073E: "if it has customer relevancy then
+        # apply max 6% RPI, if not it's okay to go up as long as we meet our E2E,
+        # no need to check previous year prices from the ledger sheets").
+        #
+        # So the country average is NOT a reference here. Measuring a customer who
+        # bought none of this against the Gulf's prior-year mean is the no-history
+        # trap that read 36% RPI on W262223256E without anyone raising a price.
+        rev_new = bool(carry) and carried is None
+        rev_ref = book_price or cust_avg              # his own price, or nothing
         if carried is not None:
             rpi_floor, rpi_mode = None, f"held from {carry_label}"
+        elif rev_new:
+            if rev_ref:
+                rpi_floor = rev_ref * (1 + rate)
+                rpi_mode = (f"new on this revision, capped at {rate:.1%} over "
+                            + (f"the fixed-price book {book_price:,.4f}" if book_price
+                               else f"last year on this customer {cust_avg:,.4f}"))
+            else:
+                rpi_floor = None
+                rpi_mode = ("new on this revision and the customer has no price of his "
+                            "own for it - target E2E only, no RPI")
         elif book_price:
             # The agreed price plus whatever increase is negotiated for the year —
             # the same shape as the customer-average gate, off a number that is
@@ -1454,6 +1887,31 @@ def price_lines(lines, ref, meta):
             rpi_floor, rpi_mode = _rpi_gate(cust_avg, ctry_avg, qty, ctry_qty, rate)
         else:
             rpi_floor, rpi_mode = _rpi_target(cust_avg, ctry_avg, qty, ctry_qty, cust_qty, rate)
+        # Over 5x the regional volume on a line this customer never bought: the
+        # model reads RPI 0 at any price, so the floor would only cost price (see
+        # FIVEX_COUNTRY_NO_GATE). Standing customer exceptions keep their rate.
+        gate_skipped = None
+        fivex_ctry = bool(not cust_avg and ctry_avg and ctry_qty and qty / ctry_qty > FIVEX)
+        if (FIVEX_COUNTRY_NO_GATE and order_confirmed and rpi_floor is not None and carried is None
+                and not rev_new and not book_price and not exc and not cust_avg
+                and ctry_avg and ctry_qty and qty / ctry_qty > FIVEX):
+            gate_skipped = rpi_floor
+            rpi_floor = None
+            rpi_mode = (f"no RPI floor: {qty / ctry_qty:.0f}x last year's regional qty "
+                        f"({ctry_qty:g}) and no history on this customer - the model reads "
+                        f"RPI 0 here at any price; target E2E only")
+            flags.append(("info", f"{rpi_mode} (the floor would have been {gate_skipped:,.4f})"))
+        elif fivex_ctry and rpi_floor is not None and carried is None and not order_confirmed:
+            # Provisional: the model would read RPI 0 here, but the quantity is not
+            # confirmed yet, so the floor stays on (W262253147E, 2026-10-01).
+            flags.append(("info", f"provisional - {qty / ctry_qty:.0f}x last year's country qty, "
+                                  f"so the model reads RPI 0, but the {rate:.1%} RPI is kept "
+                                  f"until the order is confirmed (the customer can still cut "
+                                  f"the quantity)"))
+        elif fivex_ctry and rpi_floor is not None and carried is None and order_confirmed:
+            flags.append(("info", f"order confirmed, but the {rate:.1%} RPI is still kept - "
+                                  f"dropping it on a 5x line needs the 'fivex_country_no_gate' "
+                                  f"rule approved in the rule table"))
         raised = False
         # The gate is applied PER LINE against this customer's own last-year
         # price, even when the ledger's Total RPI already clears the rate. The
@@ -1467,6 +1925,17 @@ def price_lines(lines, ref, meta):
             add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
             binds = f"RPI {exc['rate']:.1%} floor" if exc else f"RPI {half} floor"
             raised = True
+        # On an added line the rate is a CEILING as well as a floor: the line lands
+        # ON the customer's reference + the rate, so a request that runs past it
+        # comes back down. Everywhere else the rate only ever lifts a price.
+        elif (rev_new and rpi_floor is not None and unit_net is not None
+                and unit_net > rpi_floor + 1e-6):
+            was = unit_net
+            unit_net = rpi_floor
+            add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
+            binds = f"RPI {rate:.1%} cap on an added line"
+            flags.append(("verify", f"added line asked {was:,.4f}, more than {rate:.1%} over the "
+                                    f"customer's own {rev_ref:,.4f} - brought down to {unit_net:,.4f}"))
 
         # ── the approver's rework ────────────────────────────────────────────
         # Same two branches as the solve (see _rework_prices), applied here so the
@@ -1510,11 +1979,28 @@ def price_lines(lines, ref, meta):
         # carve-out: raising a line above the price the customer is already
         # invoiced at, to chase a margin target, is reopening the agreement from
         # our side. The hard floor below still holds it at the agreed price.
+        #
+        # An ADDED line is the exception to the carve-out: there the target E2E
+        # overrides the customer reference outright. It is one new line on a quote
+        # whose every other price is frozen, so if the margin cannot be held the
+        # approver would rather see it and send it back than have the engine give
+        # it away (Laith, 2026-09-28: "let E2E override, if it was too much Kiran
+        # will send it back").
         e2e_floor = None
-        if (carried is None and unit_std and not cust_avg and not book_price
+        if (carried is None and unit_std
+                and (rev_new or (not cust_avg and not book_price))
                 and net_at_tgt is not None and qty):
             e2e_floor = net_at_tgt / qty
         if e2e_floor is not None and unit_net is not None and e2e_floor > unit_net + 1e-6:
+            # Say it when the target has just overridden the customer's own
+            # reference: it is the one place an added line goes past the RPI rate,
+            # and it is what the approver is being asked to accept.
+            if rev_new and rev_ref:
+                over = e2e_floor / rev_ref - 1
+                flags.append(("action",
+                              f"added line: the {tgt_e2e:.0%} target E2E needs {e2e_floor:,.4f}, "
+                              f"{over:.1%} over the customer's own {rev_ref:,.4f} - past the "
+                              f"{rate:.1%} cap, so the approver decides"))
             unit_net = e2e_floor
             add_disc = (1 - unit_net / unit_std) if unit_std else add_disc
             binds = f"target E2E {tgt_e2e:.0%} floor"
@@ -1726,6 +2212,24 @@ def price_lines(lines, ref, meta):
                               f"margin {e2e:.0%} against a {tgt_e2e:.0%} target - needs approval"
                               if rule == "requested" else
                               f"below target E2E ({e2e:.0%} < {tgt_e2e:.0%})"))
+        # Ask, never decide: a price nobody could have meant goes to the analyst.
+        line_rpi = (ae_value / (total_net - ae_value)
+                    if total_net and abs(total_net - ae_value) > EPS else None)
+        suspect = None
+        if typo and not typo["kept"]:
+            suspect = (f"requested {typo['requested']:,.2f} is {typo['ratio']:.1f}x the "
+                       f"{typo['unit_std']:,.2f} standard price - looks like a typo by sales, "
+                       f"so it was NOT copied: priced on target E2E + RPI gate instead. "
+                       f"Confirm with sales; tick 'real' to price it as requested")
+        elif typo:
+            flags.append(("verify", f"requested {typo['requested']:,.2f} is {typo['ratio']:.1f}x "
+                                    f"the standard price - confirmed real, priced as requested"))
+        elif line_rpi is not None and line_rpi > TYPO_LINE_RPI and carried is None:
+            suspect = (f"this line's Total RPI is {line_rpi:.0%} - check the requested price, "
+                       f"qty and reference for a typo before it goes out")
+        if suspect:
+            flags.append(("action", "ASK: " + suspect))
+
         if req_disc is not None and req_disc > ADD_DISC_CAP + EPS:
             flags.append(("info",
                           f"requested {req_disc:.1%} is over the {ADD_DISC_CAP:.0%} guideline "
@@ -1743,6 +2247,7 @@ def price_lines(lines, ref, meta):
             "total_std": total_std, "cost": cost, "total_cost": total_cost,
             "target_e2e": tgt_e2e, "net_at_target": net_at_tgt, "disc_at_target": disc_at_tgt,
             "requested": ln["requested"], "req_disc": req_disc,
+            "typo": typo, "suspect": suspect, "line_rpi": line_rpi,
             "cust_avg": cust_avg, "cust_qty": cust_qty,
             "ctry_avg": ctry_avg, "ctry_qty": ctry_qty,
             "rpi_floor": rpi_floor, "rpi_before": rpi_before, "rpi_after": rpi_after,
@@ -1770,12 +2275,27 @@ def price_lines(lines, ref, meta):
             "add_disc": add_disc, "unit_net": unit_net, "total_net": total_net,
             "e2e": e2e, "binds": binds, "raised": raised, "severity": sev,
             "carried": carried is not None,
+            "approval_add": ln.get("approval_add"),
+            "provisional_5x": bool(fivex_ctry and rpi_floor is not None and carried is None
+                                   and not order_confirmed),
             "flags": "; ".join(t for _, t in flags),
         })
 
     grand = sum(l["total_net"] or 0 for l in out)
-    cost_tot = sum(l["total_cost"] or 0 for l in out)
     std_tot = sum(l["total_std"] or 0 for l in out)
+    # A line with no cost has an UNKNOWN margin, not a 100% one. Summing the
+    # missing cost as zero is what made W262242719E read "E2E 100.0% - no line
+    # needs a decision" (2026-09-21): a FIRE stock order whose CPQ document was
+    # saved with nothing but Requested Prices - List Price 0, Customer Condition
+    # blank, Cost blank on every line, the same through the spreadsheet export
+    # and the REST fetch, so it is the document that was never priced in CPQ and
+    # not the export that failed. The list was rescued from the Trigger sheet;
+    # the cost cannot be, because 'Fire Trigger 26' carries no cost column at
+    # all. So every E2E here is measured over the lines that carry a cost, and
+    # how much of the quote that is comes out beside it.
+    costed = [l for l in out if l["total_cost"] is not None]
+    cost_tot = sum(l["total_cost"] for l in costed)
+    cost_net = sum(l["total_net"] or 0 for l in costed)
     # Two RPI readings, because the model shows two and they are not the same:
     #   ledger K6 "Overall RPI" = AG11/(T11-AG11) — PRICE variance only, so it
     #     reads 0 when no line has a customer prior-year average;
@@ -1792,9 +2312,12 @@ def price_lines(lines, ref, meta):
     tgt_total = sum((l["requested"] if l["requested"] is not None else l["unit_net"] or 0)
                     * (l["qty"] or 0) for l in out)
     tgt_ag, tgt_ae = _variance(out, "requested")
+    # Same stage, same costed lines, so the mail's two E2E readings compare.
+    tgt_costed = sum((l["requested"] if l["requested"] is not None else l["unit_net"] or 0)
+                     * (l["qty"] or 0) for l in costed)
     at_target = {
         "target_price": round(tgt_total, 2),
-        "e2e": round(1 - cost_tot / tgt_total, 4) if tgt_total else None,
+        "e2e": round(1 - cost_tot / tgt_costed, 4) if tgt_costed else None,
         # Same basis as the ledger's AF11 — see total_rpi below.
         "rpi_pct": round(tgt_ae / (tgt_total - tgt_ag), 4) if abs(tgt_total - tgt_ag) > EPS else None,
         "rpi_value": round(tgt_ae, 2),
@@ -1842,7 +2365,12 @@ def price_lines(lines, ref, meta):
         "grand_total": round(grand, 2),
         "total_standard": round(std_tot, 2),
         "overall_add_disc": round(1 - grand / std_tot, 4) if std_tot else None,
-        "overall_e2e": round(1 - cost_tot / grand, 4) if grand else None,
+        "overall_e2e": round(1 - cost_tot / cost_net, 4) if cost_net else None,
+        # Lines carrying no cost at all, and the share of the quote's money the
+        # E2E above is measured over. cost_missing == lines means this case has
+        # NO margin reading: the transaction has to come back from CPQ priced.
+        "cost_missing": len(out) - len(costed),
+        "cost_cover": round(cost_net / grand, 4) if grand else None,
         "overall_rpi": round(ag / (grand - ag), 4) if abs(grand - ag) > EPS else None,
         # The ledger's totals row is NOT the per-line formula summed: AF11 is
         # =AE11/(T11-AG11) — Total RPI value over (Total Net - RPI VALUE), where
@@ -1907,6 +2435,29 @@ def price_lines(lines, ref, meta):
         "carried": sum(1 for l in out if str(l["binds"]).startswith("held from")),
         "raised": sum(1 for l in out if l["raised"]),
         "action": sum(1 for l in out if l["severity"] == "action"),
+        # Lines the engine will not decide alone — a requested price that reads
+        # like a typo, or a line RPI no approver would sign. The tab asks.
+        "suspect": [{"material": l["material"], "description": l["description"],
+                     "qty": l["qty"], "requested": l["requested"], "unit_std": l["unit_std"],
+                     "unit_net": l["unit_net"], "line_rpi": l["line_rpi"],
+                     "typo": bool(l["typo"]), "why": l["suspect"]}
+                    for l in out if l.get("suspect")],
+        "typo_kept": [l["material"] for l in out if l.get("typo") and l["typo"]["kept"]],
+        # Lines the model CANNOT measure, so their RPI reads 0 whatever the price:
+        # more than 5x last year's country qty (the model's own gate), or no
+        # prior-year reference at all. W262253147E (2026-10-01) read "total RPI
+        # 0.0%" on all three lines while two were priced +6% over last year.
+        "rpi_blind": {
+            "fivex": [l["material"] for l in out if l["ctry_avg"] and l["ctry_qty"]
+                      and not l["cust_avg"] and l["qty"] / l["ctry_qty"] > FIVEX],
+            "no_ref": [l["material"] for l in out if not l["cust_avg"] and not l["ctry_avg"]],
+        },
+        # 5x country-average lines still carrying the RPI because the order is not
+        # confirmed - the price comes down once it is (see FIVEX_COUNTRY_NO_GATE).
+        "provisional_5x": [l["material"] for l in out if l.get("provisional_5x")],
+        "order_confirmed": bool(meta.get("order_confirmed")),
+        # Lines CPQ's Approval History asked to add, not on CPQ's own BOM.
+        "approval_adds": [l["material"] for l in out if l.get("approval_add")],
         "verify": sum(1 for l in out if l["severity"] == "verify"),
         "no_py": sum(1 for l in out if not l["cust_avg"] and not l["ctry_avg"]),
         "currency": "EUR" if meta.get("aprc") == "525" else "USD",
@@ -2218,7 +2769,10 @@ def _fill_working(wb, priced, meta, log):
     i_ = [[_com_value(l["list"])] for l in priced]
     j = [[_com_value(l["std_disc"])] for l in priced]
     u = [[_com_value(l["cost"])] for l in priced]
-    q = [[_com_value(l["req_disc"])] for l in priced]
+    # A typo request priced as nothing-asked still shows what sales typed, so the
+    # file carries the reason the line was not priced on it.
+    q = [[_com_value(l["req_disc"] if not l.get("typo")
+                     else 1 - l["typo"]["requested"] / l["typo"]["unit_std"])] for l in priced]
     r = [[_com_value(l["add_disc"])] for l in priced]
     last = FIRST_ROW + n - 1
     led.Range(f"B{FIRST_ROW}:B{last}").Value = b
@@ -2318,20 +2872,13 @@ def revision_diff(lines, prior, label, log):
     return diff
 
 
-def prior_prices(case_dir, log, before=None):
-    """{material: {net, qty}} from the newest revision already in the folder.
-
-    `before` is this run's own revision number: R5 must carry from R4, never from
-    an earlier attempt at R5 sitting in the same folder — otherwise a rebuild
-    quietly reads its own output and the diff against R4 disappears.
-
-    A revision usually only changes quantities, and a quantity change must not
-    move the price the customer was already quoted — so the previous revision's
-    Approved Offer is the reference, and it is read from the file rather than
-    recomputed. Returns (label, prices); ('', {}) when there is nothing to carry.
-    """
+def _offer_files(case_dir, before=None):
+    """(revision number, filename) for every Approved Offer in the folder that this
+    run may read, oldest first. `before` is this run's own revision number: R5 may
+    read R4 and below, never an earlier attempt at R5 sitting in the same folder —
+    otherwise a rebuild quietly reads its own output and the diff disappears."""
     if not os.path.isdir(case_dir):
-        return "", {}
+        return []
     offers = []
     for f in os.listdir(case_dir):
         # 'approved', not 'approved offer': the analyst's own file is named
@@ -2343,14 +2890,46 @@ def prior_prices(case_dir, log, before=None):
         m = re.match(r"^R(\d+)\b", f)
         n = int(m.group(1)) if m else 0
         if before is not None and n >= before:
-            continue                      # this revision, or a later one: not a source
+            continue
         offers.append((n, f))
+    return sorted(offers)
+
+
+def _offer_label(rev):
+    return f"R{rev}" if rev else "the first version"
+
+
+def prior_prices(case_dir, log, before=None):
+    """{material: {net, qty}} from the newest revision already in the folder.
+
+    A revision usually only changes quantities, and a quantity change must not
+    move the price the customer was already quoted — so the previous revision's
+    Approved Offer is the reference, and it is read from the file rather than
+    recomputed. Returns (label, prices); ('', {}) when there is nothing to carry.
+    """
+    offers = _offer_files(case_dir, before)
     if not offers:
         return "", {}
-    rev, fname = max(offers)
-    label = f"R{rev}" if rev else "the first version"
+    rev, fname = offers[-1]
+    label = _offer_label(rev)
     prices, _ = read_offer_prices(os.path.join(case_dir, fname), label, log)
     return (label, prices) if prices else ("", {})
+
+
+def prior_prices_history(case_dir, log, before=None):
+    """{material: [(label, net), …]} over EVERY earlier revision, oldest first.
+
+    The carry comes from the newest revision alone — that is the price the customer
+    last saw. But when a requested price does not match it, the useful question is
+    whether it matches an OLDER one: sales re-quoting the R1 price on R3 is a
+    different mistake from inventing a number, and the flag should say which."""
+    hist = {}
+    for rev, fname in _offer_files(case_dir, before):
+        label = _offer_label(rev)
+        prices, _ = read_offer_prices(os.path.join(case_dir, fname), label, log)
+        for mat, v in (prices or {}).items():
+            hist.setdefault(mat, []).append((label, v["net"]))
+    return hist
 
 
 def read_offer_prices(path, label, log):
@@ -2684,9 +3263,22 @@ def resolve_meta(job, lines, bom_path, ref):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--job", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--job")
+    ap.add_argument("--out")
+    # The server's two calls into the rule table: seed it, and vet a proposal.
+    ap.add_argument("--dump-rules", action="store_true")
+    ap.add_argument("--check-rule", metavar="JSON")
     args = ap.parse_args()
+
+    if args.dump_rules:
+        print(json.dumps(code_rules()))
+        return
+    if args.check_rule:
+        r = json.loads(args.check_rule)
+        print(json.dumps({"error": check_rule(str(r.get("key") or ""), r.get("value"))}))
+        return
+    if not (args.job and args.out):
+        ap.error("--job and --out are required")
 
     # The log carries arrows and currency signs; a cp1252 console must not be
     # able to kill a run that has already copied files.
@@ -2725,12 +3317,18 @@ def main():
                                f"{MAX_LINES}. Split the transaction.")
         log(f"Read {len(lines)} line(s) from {os.path.basename(bom)}")
 
+        # Before anything reads a constant. Dated by the transaction, like the
+        # exceptions themselves — a June case re-run today gets June's rules.
+        rules = job.pop("rules", None)
+        applied = apply_rules(rules, guess_date(bom), log) if rules is not None else None
+
         ref = load_reference(master)
         log(f"Reference loaded: {len(ref['e2e'])} E2E targets, {len(ref['pv'])} customer "
             f"prior-year rows, {len(ref['mv'])} ledger prior-year rows, "
             f"{len(ref['trig'])} Trigger list prices, {len(ref['guide'])} Guidance rows")
 
         meta = resolve_meta(job, lines, bom, ref)
+        fill_approval_adds(lines, rows, meta, meta["aprc"], log)
         _exc = rpi_exception(meta)
         _rate = _exc["rate"] if _exc else RPI_RATE[meta["half"]]
         log(f"Half-year {meta['half']} (RPI floor {_rate:.1%}) · "
@@ -2754,6 +3352,9 @@ def main():
             lbl, prior = prior_prices(case_folder(meta), log, before=mine)
             meta["_carry"] = {m: v["net"] for m, v in prior.items()}
             meta["_carry_label"] = lbl
+            # Every earlier revision, so a requested price that is not the carried
+            # one can still be named as an older approved price.
+            meta["_carry_hist"] = prior_prices_history(case_folder(meta), log, before=mine)
             if prior:
                 # What changed comes FIRST — it is the question a revision asks.
                 diff = revision_diff(lines, prior, lbl, log)
@@ -2813,6 +3414,17 @@ def main():
             log(f"Overall E2E {summary['overall_e2e']:.1%} · overall RPI "
                 f"{summary['overall_rpi']:.1%}" if summary["overall_rpi"] is not None
                 else f"Overall E2E {summary['overall_e2e']:.1%}")
+        if summary.get("cost_missing"):
+            miss, tot = summary["cost_missing"], summary["lines"]
+            log(f"No cost on {miss} of {tot} line(s): "
+                + ("no E2E can be read on this transaction"
+                   if miss >= tot else
+                   f"the E2E above is measured over {summary['cost_cover']:.0%} "
+                   f"of the money")
+                + ". Neither the transaction nor the master carries a cost for "
+                  "these materials. A transaction whose List Price is 0 and "
+                  "Customer Condition blank was never priced in CPQ - reprice "
+                  "the document there and fetch it again.", "warn")
         if summary.get("total_rpi") is not None:
             log(f"Total RPI {summary['total_rpi']:.1%}")
         rw = summary.get("rework")
@@ -2879,7 +3491,7 @@ def main():
         log(summary["headline"], "ok")
 
         result = {"ok": True, "mode": job.get("mode", "preview"), "lines": priced,
-                  "summary": summary, "diff": diff,
+                  "summary": summary, "diff": diff, "rules": applied,
                   "meta": {k: v for k, v in meta.items() if not k.startswith("_")}}
 
         if job.get("mode") == "build":

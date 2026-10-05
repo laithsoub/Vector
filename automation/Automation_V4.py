@@ -421,7 +421,10 @@ def normalize_sfid(sfid):
     if "-" in sfid:
         sfid = sfid.split("-")[0]
     if len(sfid) >= 4 and sfid[2:4] == "00" and sfid[:2].isalpha():
-        sfid = "006QO00000" + sfid[4:]
+        # Pad to 18, not a fixed '00000': the record counter has rolled past
+        # 8 chars (SR0010IuhdYAC is 006QO000010IuhdYAC), and a fixed pad made
+        # a 19-char id that SharePoint and the duplicate check never matched.
+        sfid = "006QO" + sfid[4:].rjust(13, "0")
     return sfid
 
 
@@ -469,8 +472,8 @@ def _sfid_spellings(sfid):
     if not core:
         return []
     out = {core, sfid.strip()}
-    if core.startswith("006QO00000"):
-        tail = core[10:]
+    if core.startswith("006QO0"):
+        tail = core[5:].lstrip("0")
         out.update(f"{p}00{tail}" for p in _SFID_PREFIXES)
     return [s for s in out if s]
 
@@ -547,6 +550,41 @@ def _row_identity(row):
     return sf, code, name, cust
 
 
+# BidManager works number, revision suffix and all ('QB28548A1R', 'QV27303A3R').
+_WORKS_RE = re.compile(r"(?<![A-Za-z0-9])(Q[BWV]\d{5})[A-Za-z0-9]*(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _extractor_notes():
+    """Row index -> why that row's Salesforce id is blank, as pdf_to_csv saw it.
+
+    The works number that explains a blank id is printed on the quote but has
+    no CSV column, so the extractor leaves its reasons in a sidecar beside
+    QuoteExtra.csv. Missing file = nothing to say, never an error.
+    """
+    path = os.path.join(os.path.dirname(CSV_PATH), "QuoteExtra.notes.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            loaded = json.load(f)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _blank_sfid_note(row):
+    """Why this row has no Salesforce id — '' when there is nothing to add.
+
+    The fallback for rows the extractor left no note on (a hand-edited CSV, or
+    one written before the sidecar existed): a works number in the code or the
+    name says the same thing.
+    """
+    blob  = " ".join((row.get(k) or "") for k in ("QUOTATION CODE", "QUOTATION NAME"))
+    works = sorted({w.upper() for w in _WORKS_RE.findall(blob)})
+    if not works:
+        return ""
+    return (f"{', '.join(works)} is a BidManager works number — quotes raised that way "
+            f"often have no Salesforce id.")
+
+
 def check_rows(session, rows):
     """Return the list of conflicts/warnings for this batch.
 
@@ -554,14 +592,17 @@ def check_rows(session, rows):
     still needs a decision — keying on the id (as before) silently dropped them.
     """
     conflicts = []
-    seen = {}                       # identity key -> row index already in this batch
+    seen  = {}                      # identity key -> row index already in this batch
+    notes = _extractor_notes()
 
     for i, row in enumerate(rows):
         sf, code, name, cust = _row_identity(row)
         label   = code or name or sf or f"row {i + 1}"
         missing = []
+        note    = ""
         if not sf:
             missing.append("SALESFORCE ID")
+            note = notes.get(str(i)) or _blank_sfid_note(row)
         if not (row.get("REQUESTED FROM EATON (INTERNAL)") or "").strip():
             missing.append("REQUESTED FROM")
 
@@ -569,7 +610,7 @@ def check_rows(session, rows):
         if not sf and not code and not name:
             conflicts.append({
                 "key": str(i), "kind": "blank", "matchedOn": "",
-                "sfid": "", "rowLabel": f"row {i + 1}", "missing": missing,
+                "sfid": "", "rowLabel": f"row {i + 1}", "missing": missing, "note": note,
                 "existingId": 0, "existingTitle": "", "existingCustomer": "",
                 "existingCreated": "", "defaultAction": "skip",
             })
@@ -582,7 +623,7 @@ def check_rows(session, rows):
         if batch_key in seen:
             conflicts.append({
                 "key": str(i), "kind": "duplicate", "matchedOn": "same batch",
-                "sfid": sf, "rowLabel": label, "missing": missing,
+                "sfid": sf, "rowLabel": label, "missing": missing, "note": note,
                 "existingId": 0, "existingTitle": f"row {seen[batch_key] + 1} of this batch",
                 "existingCustomer": cust, "existingCreated": "", "defaultAction": "skip",
             })
@@ -604,7 +645,7 @@ def check_rows(session, rows):
         if hit:
             conflicts.append({
                 "key": str(i), "kind": "duplicate", "matchedOn": matched,
-                "sfid": sf, "rowLabel": label, "missing": missing,
+                "sfid": sf, "rowLabel": label, "missing": missing, "note": note,
                 "existingId": hit["id"], "existingTitle": hit["title"] or hit["name"],
                 "existingCustomer": hit["customer"], "existingCreated": hit["created"],
                 # A name-only match is a hint, not proof — never pre-select an overwrite.
@@ -615,11 +656,13 @@ def check_rows(session, rows):
         elif missing:
             conflicts.append({
                 "key": str(i), "kind": "incomplete", "matchedOn": "",
-                "sfid": sf, "rowLabel": label, "missing": missing,
+                "sfid": sf, "rowLabel": label, "missing": missing, "note": note,
                 "existingId": 0, "existingTitle": "", "existingCustomer": cust,
                 "existingCreated": "", "defaultAction": "add",
             })
             print(f"  [!] Row {i + 1} incomplete ({', '.join(missing)}): {label}")
+            if note:
+                print(f"      {note}")
 
     return conflicts
 
@@ -635,7 +678,23 @@ def patch_item(session, item_id, payload, digest):
         "X-HTTP-Method": "MERGE",
     }
     r = session.post(url, json=payload, headers=headers, timeout=TIMEOUT)
-    return r.status_code in (200, 201, 204)
+    if r.status_code in (200, 201, 204):
+        return True
+    print(f"  [!] HTTP {r.status_code} — {sp_error(r)}")
+    return False
+
+
+def sp_error(r):
+    """SharePoint's own error sentence instead of a raw JSON dump."""
+    try:
+        msg = r.json()["error"]["message"]["value"]
+    except Exception:
+        return r.text[:300]
+    if "validation" in msg.lower():
+        # The list's rule: SF id blank or 18 chars, dates in order.
+        msg += (" Salesforce ID must be blank or 18 characters, and dates must run"
+                " Arrived ≤ On-hold ≤ Recovering ≤ Processed.")
+    return msg
 
 
 
@@ -708,7 +767,9 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
 
         sfid = normalize_sfid(payload.get("SALESFORCEID", ""))
         payload["SALESFORCEID"] = sfid
-        if sfid and len(sfid) < 18:
+        # The list's validation rule rejects the WHOLE item unless the id is
+        # blank or exactly 18 chars — drop a bad id rather than lose the row.
+        if sfid and len(sfid) != 18:
             print(f"  [!] SALESFORCEID '{sfid}' is {len(sfid)} chars (need 18) — skipping field, fill manually")
             payload.pop("SALESFORCEID", None)
             sfid = ""
@@ -749,11 +810,11 @@ def upload_rows(session, rows, entity_type, digest, decisions=None):
                     print(f"  [OK] [{i}/{len(rows)}] {label}")
                 else:
                     fail += 1
-                    print(f"  [ERR] [{i}/{len(rows)}] HTTP {r.status_code} — {r.text[:300]}")
+                    print(f"  [ERR] [{i}/{len(rows)}] {label}: {sp_error(r)}")
                     print(f"  [PAYLOAD] {json.dumps({k: v for k, v in payload.items() if k != '__metadata'}, default=str)}")
         except requests.exceptions.Timeout:
             fail += 1
-            print(f"  [ERR] [{i}/{len(rows)}] Timed out.")
+            print(f"  [ERR] [{i}/{len(rows)}] {label}: SharePoint timed out.")
 
     print(f"\n{'='*45}")
     print(f"  Done — {success} uploaded, {skipped} skipped, {fail} failed.")
@@ -813,6 +874,10 @@ if __name__ == "__main__":
     print(f"[>>] Uploading {len(rows)} row(s)...\n")
     success, fail, skipped = upload_rows(session, rows, entity_type, digest, decisions)
 
+    # Machine-readable tally for the Dashboard toast.
+    print(f"__SUMMARY__:{json.dumps({'uploaded': success, 'skipped': skipped, 'failed': fail})}")
     if success == 0 and fail > 0:
-        print("[ERR] 0 rows uploaded successfully — cookies may be expired. Refresh them in Settings.")
+        # Not always cookies: a rejected row (list validation) lands here too,
+        # and its own [ERR] line above names the real reason.
+        print("[ERR] Nothing was uploaded — see the error above.")
         sys.exit(1)

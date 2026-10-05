@@ -280,6 +280,15 @@ def main():
                                "'summary' + 'meta'.")
         if not job.get("to"):
             raise RuntimeError("No approver to send to.")
+        # The mail's whole subject is the margin. A case priced off an export
+        # with no costs has none to quote, and an empty E2E column in Kiran's
+        # inbox is worse than no mail at all.
+        if (summary.get("cost_missing") or 0) >= (summary.get("lines") or 0) > 0:
+            raise RuntimeError(
+                f"No cost on any of the {summary['lines']} lines, so there is no "
+                f"E2E to ask approval for. The CPQ document was never priced "
+                f"there (List Price 0, no Customer Condition) - reprice it in "
+                f"CPQ, fetch it again, and the mail will carry real margins.")
 
         if job.get("html_only"):
             result = {"ok": True, "html": build_html(summary, meta, job.get("intro"),

@@ -337,6 +337,7 @@ def fetch_transaction(transaction, port, log):
         "sales_name": _label(doc.get("preparedByName_t")),
         "cpq_status": _label(doc.get("status_t")),
         "cpq_updated": extra["updated"],
+        "approval_history": extra["history"],
     }
     return header, rows
 
@@ -369,7 +370,7 @@ def _doc_extra(port, doc_id, log):
     on to name the case folder, so the whole one has to come off the document
     record. Best-effort: a quote still registers without either, so a failure
     here is a warning, never an error."""
-    out = {"updated": "", "project": ""}
+    out = {"updated": "", "project": "", "history": []}
     try:
         res = json.loads(_evaluate(port, _doc_js(doc_id), log))
         doc = res.get("doc") or {}
@@ -391,9 +392,86 @@ def _doc_extra(port, doc_id, log):
             s = str(v or "").strip()
             if len(s) > len(out["project"]):
                 out["project"] = s
+        out["history"] = _approval_history(doc.get("approval_history_submit_t"))
     except Exception as e:
         log(f"Could not read the CPQ document record: {e}", "warn")
     return out
+
+
+# ── the Approval History (Transaction Details -> Approvals tab, right side) ──
+# An approver sometimes asks for items the BOM does not carry - "Add QTY xx of
+# Item xx" - and those asks live ONLY here, never in the line items. Measured on
+# the live API (W262253147E, 2026-10-01): approval_history_submit_t is a list of
+# {actionPerformed, performerName, performDate, performerComment, revisionNumber}.
+# Must match lsd_pricing.APPROVAL_ADD_MARK.
+APPROVAL_ADD_MARK = "APPROVAL HISTORY ADD"
+
+
+def _approval_history(raw):
+    """Every Approval History entry that carries a comment, oldest first."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raw = []
+    out = []
+    for e in raw if isinstance(raw, list) else []:
+        if not isinstance(e, dict):
+            continue
+        c = re.sub(r"\s+", " ", str(e.get("performerComment") or "")).strip()
+        if c:
+            out.append({"comment": c, "action": e.get("actionPerformed") or "",
+                        "by": e.get("performerName") or "",
+                        "date": e.get("performDateTime") or e.get("performDate") or "",
+                        "revision": e.get("revisionNumber")})
+    return out
+
+
+# "Add QTY 10 of Item CN101009", "add 10 pcs of CN101009", "add qty 5 x MXD01020",
+# "please add 2 nos CN110753". A material has no spaces and a digit or a dash in
+# it (EF-HTB has no digit) - which keeps plain words like "battery" out.
+_MAT = r"(?P<mat>[A-Z0-9][A-Z0-9./_-]*[0-9-][A-Z0-9./_-]*)"
+# Real wording, W262253261E 2026-09-28: "add Qty (432) of ULEFMDO10" - brackets allowed.
+_QTY = r"\(?\s*(?P<qty>\d+(?:[.,]\d+)?)\s*\)?"
+_ADD_PATTERNS = [
+    re.compile(r"\badd(?:ed)?\b[^.;\n]*?\bq(?:ty|uantity)\b\s*(?:of\s*)?:?\s*" + _QTY
+               + r"\s*(?:pcs|pc|nos|no|units?|x)?\s*(?:of\s+)?(?:the\s+)?(?:items?|materials?|part(?:\s*(?:no|number|#))?)?\s*[:#]?\s*"
+               + _MAT, re.I),
+    re.compile(r"\badd(?:ed)?\b\s*:?\s*" + _QTY
+               + r"\s*(?:pcs|pc|nos|no|units?|x)?\s*(?:of\s+)?(?:the\s+)?(?:items?|materials?|part(?:\s*(?:no|number|#))?)?\s*[:#]?\s*"
+               + _MAT, re.I),
+    # "add item CN101009 qty 10"
+    re.compile(r"\badd(?:ed)?\b\s*(?:the\s+)?(?:items?|materials?)?\s*[:#]?\s*" + _MAT
+               + r"\s*(?:,|-|with)?\s*(?:q(?:ty|uantity))\s*:?\s*" + _QTY, re.I),
+]
+
+
+def parse_adds(history):
+    """(adds, unparsed): the add-line asks found in the comments, and the comments
+    that say 'add' but could not be read into a material and a quantity - those
+    are shown to the analyst, never silently dropped."""
+    adds, unparsed = [], []
+    for h in history:
+        found = False
+        for part in re.split(r"[;\n]|,\s*(?=add\b)", h["comment"], flags=re.I):
+            hit = False
+            for pat in _ADD_PATTERNS:
+                for m in pat.finditer(part):
+                    mat = m.group("mat").upper().strip(".-_/")
+                    if mat.isdigit():
+                        continue                   # a number, not a material
+                    qty = float(m.group("qty").replace(",", "."))
+                    if qty <= 0:
+                        continue
+                    found = hit = True
+                    if not any(a["material"] == mat and a["comment"] == h["comment"] for a in adds):
+                        adds.append({"material": mat, "qty": qty, "comment": h["comment"],
+                                     "by": h["by"], "date": h["date"], "revision": h["revision"]})
+                if hit:
+                    break               # first pattern that reads this part wins
+        if not found and re.search(r"\badd", h["comment"], re.I):
+            unparsed.append(h)
+    return adds, unparsed
 
 
 def _digits(v):
@@ -429,7 +507,7 @@ def _num(v):
         return None
 
 
-def write_export(transaction, doc_id, rows, out_dir, log):
+def write_export(transaction, doc_id, rows, out_dir, log, adds=()):
     import openpyxl
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -460,6 +538,17 @@ def write_export(transaction, doc_id, rows, out_dir, log):
         rdisc = _num(r.get("extraDiscount_l_c")) or _num(r.get("discountOffList_l"))
         put("req_disc_pct", rdisc)
         put("cost", _num(r.get("cost_l")))
+        ws.append(line)
+    # Approval History adds, marked so the engine (and anyone reading the file)
+    # can tell them from CPQ's own lines. Cost, group and description are filled
+    # by lsd_pricing from the plant-cost price list, in the deal's currency.
+    for a in adds:
+        line = [None] * len(EXPORT_HEADER)
+        line[0] = APPROVAL_ADD_MARK
+        line[COL["catalog"] - 1] = a["material"]
+        line[COL["material"] - 1] = a["material"]
+        line[COL["qty"] - 1] = a["qty"]
+        line[EXPORT_HEADER.index("Notes")] = (f"{a['date']} {a['by']}: {a['comment']}").strip()
         ws.append(line)
 
     os.makedirs(out_dir, exist_ok=True)
@@ -501,9 +590,32 @@ def main():
         header, rows = fetch_transaction(transaction, port, log)
         if not rows:
             raise RuntimeError("The CPQ transaction has no line items.")
-        xlsx = write_export(transaction, header["doc_id"], rows, out_dir, log)
+        history = header.get("approval_history") or []
+        adds, unparsed = parse_adds(history)
+        on_bom = {str(r.get("materialLineItem_l") or "").strip().upper() for r in rows}
+        added, skipped = [], []
+        for a in adds:
+            # The history keeps every revision's comments, so an ask sales have
+            # already put on the BOM must not be added twice.
+            (skipped if a["material"] in on_bom else added).append(a)
+        if history:
+            log(f"Approval History: {len(history)} comment(s)")
+            for h in history:
+                log(f"  R{h['revision']} {h['date']} {h['by']}: {h['comment']}")
+        for a in added:
+            log(f"Added {a['material']} x{a['qty']:g} from the Approval History "
+                f"(R{a['revision']}, {a['by']})", "warn")
+        for a in skipped:
+            log(f"Approval History asks for {a['material']} x{a['qty']:g}, but it is "
+                f"already on the BOM - not added again", "warn")
+        for h in unparsed:
+            log(f"Approval History comment mentions adding something but could not be "
+                f"read - check it by hand: {h['comment']}", "warn")
+        xlsx = write_export(transaction, header["doc_id"], rows, out_dir, log, added)
 
-        result = {"ok": True, "header": header, "xlsx": xlsx, "lines": len(rows)}
+        result = {"ok": True, "header": header, "xlsx": xlsx, "lines": len(rows) + len(added),
+                  "approval": {"history": history, "added": added, "skipped": skipped,
+                               "unparsed": unparsed}}
         log("Done.", "ok")
     except Exception as e:
         log(str(e), "error")

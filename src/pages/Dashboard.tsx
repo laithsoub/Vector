@@ -14,6 +14,8 @@ import {
 import { MiniBars, PRODUCT_COLORS } from '../lib/charts';
 import { api, runStreamingScript } from '../lib/api';
 import { failed, plural } from '../lib/errors';
+import { peek } from '../lib/localCache';
+import { runLog, stepLabel } from '../lib/steps';
 import { usePolling } from '../lib/usePolling';
 import type { ConflictItem } from '../lib/api';
 import type { Job, PdfFile, DashboardStats, ArchiveDay, CheckupItem, CheckupResponse } from '../types';
@@ -55,10 +57,12 @@ export function DashboardPage({
   toast: ToastFn;
   onTab: (t: any) => void;
 }) {
-  const [stats, setStats]       = useState<DashboardStats | null>(null);
-  const [jobs, setJobs]         = useState<Job[]>([]);
+  // Last good answers paint first; the live refresh below replaces them.
+  // (The file queue is never taken from cache — it is acted on, so it must be live.)
+  const [stats, setStats]       = useState<DashboardStats | null>(() => peek<DashboardStats>('dashboard.stats') ?? null);
+  const [jobs, setJobs]         = useState<Job[]>(() => peek<Job[]>('jobs') ?? []);
   const [pdfs, setPdfs]         = useState<PdfFile[]>([]);
-  const [archive, setArchive]   = useState<ArchiveDay[]>([]);
+  const [archive, setArchive]   = useState<ArchiveDay[]>(() => peek<ArchiveDay[]>('archive') ?? []);
   const [suggesting, setSuggesting] = useState(false); // detection in progress
   const [perFile, setPerFile]   = useState<{ name: string; lang: string; suggestion: string }[]>([]);
   const [fileLines, setFileLines] = useState<Record<string, string>>({}); // per-file manual overrides
@@ -225,6 +229,22 @@ export function DashboardPage({
   const step2Ready = connected && pdfs.length > 0;
 
   // ─── Run actions (SSE) ────────────────────────────────────────────────────
+  // One toast per run, built from the script's own tally + first [ERR] line,
+  // so a failure names its cause instead of a bare "failed".
+  const SP  = 'the SharePoint List';
+  const DQ  = 'the D&Q Store';
+  const isAbort = (e: any) => e?.name === 'AbortError';
+
+  function toastSharePoint(ok: boolean, log: ReturnType<typeof runLog>) {
+    const s = log.summary;
+    if (!ok) { toast('err', failed(`upload to ${SP}`, log.firstErr)); return; }
+    if (!s) { toast('ok', `Uploaded to ${SP}`); return; }
+    const skipped = s.skipped ? ` · ${s.skipped} skipped` : '';
+    if (s.failed) toast('warn', `${s.uploaded} of ${s.uploaded + s.failed} quotes uploaded to ${SP}${skipped} — ${log.firstErr || `${s.failed} failed`}`);
+    else if (s.uploaded) toast('ok', `${plural(s.uploaded, 'quote')} uploaded to ${SP}${skipped}`);
+    else toast('info', `Nothing uploaded to ${SP}${skipped}`);
+  }
+
   async function runStep1() {
     if (step1 === 'running') { step1Abort.current?.abort(); setStep1('idle'); return; }
     setStep1('running');
@@ -233,11 +253,12 @@ export function DashboardPage({
     // Per-file product line: { filename: division } for every queued file.
     const lines: Record<string, string> = {};
     pdfs.forEach(p => { lines[p.name] = lineFor(p.name); });
+    const log = runLog();
     try {
       const r = await runStreamingScript('/api/run/step1', {
         params: { lines: JSON.stringify(lines), arrived, today: todayLocal },
         signal: step1Abort.current.signal,
-        onLine: () => {},
+        onLine: log.onLine,
       });
       if (r.conflicts?.length) {
         setStep1('idle');
@@ -245,25 +266,29 @@ export function DashboardPage({
         setConflictCtx({ queuedNames });
       } else {
         setStep1(r.ok ? 'done' : 'err');
-        toast(r.ok ? 'ok' : 'err', r.ok ? 'Step 1 completed' : 'Step 1 failed');
+        toastSharePoint(r.ok, log);
       }
-    } catch { setStep1('err'); }
+    } catch (e) {
+      if (isAbort(e)) toast('info', `Upload to ${SP} stopped`);
+      else { setStep1('err'); toast('err', failed(`upload to ${SP}`, e)); }
+    }
     refresh();
   }
 
   async function resolveConflicts(decisions: Record<string, { action: string; existingId: number }>) {
     setConflicts(null);
     setStep1('running');
+    const log = runLog();
     try {
       const r = await runStreamingScript('/api/run/step1/upload', {
         // CSV (with per-file divisions) is already written by the extract phase;
         // the upload phase just pushes it, so no division payload is needed here.
         body: { decisions, queuedNames: conflictCtx?.queuedNames || [] },
-        onLine: () => {},
+        onLine: log.onLine,
       });
       setStep1(r.ok ? 'done' : 'err');
-      toast(r.ok ? 'ok' : 'err', r.ok ? 'Step 1 completed' : 'Step 1 failed');
-    } catch { setStep1('err'); }
+      toastSharePoint(r.ok, log);
+    } catch (e) { setStep1('err'); toast('err', failed(`upload to ${SP}`, e)); }
     setConflictCtx(null);
     refresh();
   }
@@ -271,14 +296,22 @@ export function DashboardPage({
     if (step2 === 'running') { step2Abort.current?.abort(); setStep2('idle'); return; }
     setStep2('running');
     step2Abort.current = new AbortController();
+    const log = runLog();
     try {
       const r = await runStreamingScript('/api/run/step2', {
         signal: step2Abort.current.signal,
-        onLine: () => {},
+        onLine: log.onLine,
       });
       setStep2(r.ok ? 'done' : 'err');
-      toast(r.ok ? 'ok' : 'err', r.ok ? 'D&Q Store built' : 'Step 2 failed');
-    } catch { setStep2('err'); }
+      const s = log.summary;
+      if (!r.ok) toast('err', failed(`upload to ${DQ}`, log.firstErr));
+      else if (s && s.failed) toast('warn', `${s.uploaded} of ${s.uploaded + s.failed} quotes uploaded to ${DQ} — ${log.firstErr || `${s.failed} failed`}`);
+      else if (s && !s.uploaded) toast('info', `Nothing to upload to ${DQ} — the queue is empty`);
+      else toast('ok', s ? `${plural(s.uploaded, 'quote')} uploaded to ${DQ}` : `Uploaded to ${DQ}`);
+    } catch (e) {
+      if (isAbort(e)) toast('info', `Upload to ${DQ} stopped`);
+      else { setStep2('err'); toast('err', failed(`upload to ${DQ}`, e)); }
+    }
     refresh();
   }
 
@@ -311,7 +344,7 @@ export function DashboardPage({
       />
 
       <KpiBand>
-        <KpiTile icon={FileUp}      label="In queue"        value={pdfs.length}   sub="awaiting Step 1"   accent="brand" />
+        <KpiTile icon={FileUp}      label="In queue"        value={pdfs.length}   sub="awaiting upload"   accent="brand" />
         <KpiTile icon={Check}       label="Processed today" value={todayOk}       sub={`${todayJobs.length} total runs`} accent="ok" />
         <KpiTile icon={AlertCircle} label="Failed today"    value={todayErr}      sub="see History"       accent="err" />
         <KpiTile icon={Archive}     label="Archived today"  value={archivedToday} sub="files moved"       accent="violet" />
@@ -467,11 +500,11 @@ export function DashboardPage({
             <Stage n={3} title="Run" right={!connected && <Badge tone="warn" dot>Not connected to JOE</Badge>}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <RunCard step={1} primary
-                  title="Quotation list upload"
-                  sub="Extract quotes → push to SharePoint list"
+                  title="Upload to SharePoint List"
+                  sub="Extract quotes → add them to the Quotation List"
                   ready={step1Ready} status={step1} onRun={runStep1} />
                 <RunCard step={2}
-                  title="D&Q Store builder"
+                  title="Upload to D&Q Store"
                   sub="Create folders → match emails → upload PDFs"
                   ready={step2Ready} status={step2} onRun={runStep2} />
               </div>
@@ -526,14 +559,14 @@ export function DashboardPage({
           <Section title="Recent jobs"
             actions={<Button tone="ghost" size="xs" onClick={() => onTab('History')} trailing={<ChevronRight className="w-3 h-3" />}>All</Button>}>
             {jobs.length === 0 ? (
-              <EmptyState compact title="No jobs yet" description="Run Step 1 to get started." />
+              <EmptyState compact title="No jobs yet" description="Upload to the SharePoint List to get started." />
             ) : (
               <div className="flex flex-col -mt-3">
                 {jobs.slice(0, 6).map(j => (
                   <div key={j.id} className="flex items-center gap-2.5 py-2 border-b border-line last:border-0">
                     <StatusDot status={j.status} size={6} />
                     <div className="min-w-0 flex-1">
-                      <p className="text-sm truncate text-fg">{j.step} · {j.customer || j.product || j.pdfName || '—'}</p>
+                      <p className="text-sm truncate text-fg">{stepLabel(j.step)} · {j.customer || j.product || j.pdfName || '—'}</p>
                       <p className="mono text-2xs text-fg-3 truncate">{j.sfId || '—'}{j.note ? ` · ${j.note}` : ''}</p>
                     </div>
                     <span className="mono text-2xs text-fg-3 shrink-0">{relTime(j.timestamp)}</span>
@@ -579,7 +612,7 @@ const CHECKUP_META: Record<string, { label: string; tone: StatusTone; hint: stri
   unverified: { label: 'Unverified',   tone: 'warn',   hint: 'SharePoint could not be checked' },
   noref:      { label: 'No reference', tone: 'warn',   hint: 'Quote mail with no SR/CR number' },
   queued:     { label: 'In queue',     tone: 'accent', hint: 'Already waiting in this queue' },
-  processed:  { label: 'Processed',    tone: 'ok',     hint: 'Run through Step 1 on this machine' },
+  processed:  { label: 'Processed',    tone: 'ok',     hint: 'Uploaded to the SharePoint List from this machine' },
   uploaded:   { label: 'Uploaded',     tone: 'ok',     hint: 'Already on the Quotations List' },
 };
 
@@ -736,8 +769,11 @@ function RunCard({
   const done    = status === 'done';
   const err     = status === 'err';
   return (
+    // Grid cells stretch to the taller card; the column + space-between keeps
+    // both buttons on one line when one header wraps or carries a badge.
     <Panel padding="md" tone={done ? 'ok' : err ? 'err' : ready ? 'accent' : undefined}
-      eyebrow={<span className="flex items-center gap-2">Step {step}
+      style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', height: '100%' }}
+      eyebrow={<span className="flex items-center gap-2"><span className="mono">{String(step).padStart(2, '0')}</span>
         {ready && !done && !running && !err && <Badge tone="ok" dot size="xs">Ready</Badge>}
         {done && <Badge tone="ok" dot size="xs">Done</Badge>}
         {err  && <Badge tone="err" dot size="xs">Failed</Badge>}
@@ -748,7 +784,7 @@ function RunCard({
         disabled={!ready && !running}
         onClick={onRun}
         icon={running ? <Loader2 className="animate-spin" /> : done ? Check : err ? AlertCircle : Play}>
-        {running ? 'Stop' : done ? 'Completed · run again' : err ? 'Retry' : `Run step ${step}`}
+        {running ? 'Stop' : done ? 'Uploaded · run again' : err ? 'Retry' : 'Upload'}
       </Button>
     </Panel>
   );
@@ -810,6 +846,7 @@ function ConflictModal({
             {c.missing.length > 0 && (
               <p className="text-xs text-fg-3 mt-0.5">No {c.missing.join(', no ')} — SharePoint row will be incomplete</p>
             )}
+            {c.note && <p className="text-xs text-fg-3 mt-0.5">{c.note}</p>}
             <Segmented className="mt-2" size="xs"
               value={decisions[c.key]?.action ?? c.defaultAction}
               onChange={action => setDecisions(prev => ({ ...prev, [c.key]: { action, existingId: c.existingId } }))}

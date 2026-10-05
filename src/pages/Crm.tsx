@@ -16,6 +16,7 @@ import { openExternal, isTauri } from '../lib/shell';
 import { Card, Pill, Button, fmtMoneyFull, relTime } from '../lib/ui';
 import { EmptyState, Input as UiInput, Select as UiSelect, Switch as UiSwitch, Button as UiButton, IconButton as UiIconButton } from '../ui';
 import { api } from '../lib/api';
+import { peek } from '../lib/localCache';
 import { confirmAsync } from '../lib/notify';
 import { failed, plural } from '../lib/errors';
 import type { CrmSyncStatus, CrmQuoteHit } from '../lib/api';
@@ -39,8 +40,10 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
   // questions — "who is this customer?" vs "what quotes can I see from here?".
   const [tab, setTab]             = useState<'accounts' | 'mailbox'>('accounts');
   const [mailCounts, setCounts]   = useState<{ total: number; mine: number; team: number } | null>(null);
-  const [companies, setCompanies] = useState<CrmCompanyCard[]>([]);
-  const [loading, setLoading]     = useState(true);
+  // Last good list paints first; `loading` (the full-page spinner) only covers
+  // a cold start with nothing cached.
+  const [companies, setCompanies] = useState<CrmCompanyCard[]>(() => peek<CrmCompanyCard[]>('crm.companies') ?? []);
+  const [loading, setLoading]     = useState(() => !peek('crm.companies'));
   const [query, setQuery]         = useState('');
   const [salesman, setSalesman]   = useState('');                 // '' = all
   const [sortBy, setSortBy]        = useState<'name' | 'quotes' | 'total' | 'recent'>('name');
@@ -57,7 +60,7 @@ export function CrmPage({ toast }: { toast: ToastFn }) {
   const wasRunning                = useRef(false);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
+    if (!peek('crm.companies')) setLoading(true);
     try { setCompanies(await api.crmCompanies()); }
     catch (e: any) { toast('err', failed('load the CRM accounts', e)); }
     setLoading(false);

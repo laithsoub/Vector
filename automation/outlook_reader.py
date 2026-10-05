@@ -733,7 +733,7 @@ def normalize_ref(ref):
     if '-' in ref:
         ref = ref.split('-')[0]
     if len(ref) >= 4 and ref[2:4] == '00' and ref[:2].isalpha():
-        ref = '006QO00000' + ref[4:]
+        ref = '006QO' + ref[4:].rjust(13, '0')
     return ref
 
 
@@ -2326,7 +2326,7 @@ def main():
     parser.add_argument('--flagged',    type=int, default=1)
     parser.add_argument('--query',      default='')
     parser.add_argument('--att-sources', default='[]')
-    parser.add_argument('--sender',     default='')   # substring to match sender addr/name
+    parser.add_argument('--sender',     default='')   # comma-sep substrings to match sender addr/name
     parser.add_argument('--since',      default='')    # DD/MM/YYYY or MM/DD/YYYY start date
     parser.add_argument('--recipient',  default='')    # comma-sep substrings; keep only if ANY is a To/CC recipient
     parser.add_argument('--skip-auto',  action='store_true')  # emails-from: drop auto-replies/OOF/bounces
@@ -2993,7 +2993,8 @@ def _win32_action(args):
             if not folders:
                 folders = [('', ns.GetDefaultFolder(6))]
 
-            needle = (args.sender or '').strip().lower()
+            # comma-separated: a mail from ANY of these senders qualifies
+            needles = [s.strip().lower() for s in (args.sender or '').split(',') if s.strip()]
             recip_needles = [s.strip().lower() for s in (args.recipient or '').split(',') if s.strip()]
             skip_auto = bool(getattr(args, 'skip_auto', False))
             emails, seen = [], set()
@@ -3023,9 +3024,9 @@ def _win32_action(args):
                         # must only run for mail that is already a candidate.
                         addr = (getattr(item, 'SenderEmailAddress', '') or '')
                         name = (getattr(item, 'SenderName', '') or '')
-                        if needle and needle not in f'{addr} {name}'.lower():
+                        if needles and not any(n in f'{addr} {name}'.lower() for n in needles):
                             smtp = resolve_smtp(item)
-                            if needle not in (smtp or '').lower():
+                            if not any(n in (smtp or '').lower() for n in needles):
                                 continue
                         else:
                             smtp = resolve_smtp(item)

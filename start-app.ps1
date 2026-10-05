@@ -1,3 +1,6 @@
+# -ServerOnly: the header's Start button (via start-server.vbs). The app tab is
+# already open, so step 7 is skipped; everything else runs as usual.
+param([switch]$ServerOnly)
 $ErrorActionPreference = 'Continue'
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $dir
@@ -5,7 +8,7 @@ $log = Join-Path $dir 'startup-debug.log'
 
 function Log($msg) { "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg" | Out-File -Append -Encoding utf8 $log }
 
-Log "=== PS launcher started ==="
+Log "=== PS launcher started$(if ($ServerOnly) { ' (server only)' }) ==="
 
 # 1) Kill anything listening on port 3000
 try {
@@ -103,7 +106,7 @@ if (-not $ready) { Log "server NEVER came up after 30s" }
 # SharePoint cookies (the server-side python holds them), so it does not have
 # to live in the debug profile — this way it opens as a tab in the browser
 # window that is already in front of the user.
-if ($edge) {
+if ($edge -and -not $ServerOnly) {
     Start-Process $edge -ArgumentList @('http://localhost:3000')
     Log "app tab opened in the default profile"
 }

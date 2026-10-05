@@ -49,6 +49,7 @@ HEADERS = {
     "cpq last updated": "cpq_updated", "total value": "value", "notes": "notes",
 }
 CLOSED = ("done", "cancel")               # Done, Cancelled
+DONE_GREEN = "FF92D050"                    # her green fill on a done number
 W_RE = re.compile(r"^W\d{9,}E\d*$", re.I)
 
 
@@ -185,6 +186,10 @@ def parse(data, today=None, bus=("FIRE",)):
                            "has the layout changed?")
 
     rows, closed, other_bu, by_txn = [], 0, 0, {}
+    # EVERY row with a W-number, Done ones and other BUs included — what the
+    # approval-mail queue compares against (a Done row must not look unregistered).
+    # Later rows win: her newest entry for a number is the current one.
+    registered = {}
     for r in range(hdr_row + 1, ws.max_row + 1):
         cell = lambda k: ws.cell(r, cols[k]).value if k in cols else None
         status = _text(cell("status"))
@@ -192,6 +197,17 @@ def parse(data, today=None, bus=("FIRE",)):
         name = _text(cell("name"))
         if not (txn_raw or name):
             continue
+        w_all = re.sub(r"\s+", "", txn_raw).upper()
+        if W_RE.match(w_all):
+            # Green on the number cell is her "done" mark (1,921 of her rows are
+            # Done + FF92D050) — counted even when the Status was not updated.
+            f = ws.cell(r, cols["transaction"]).fill if "transaction" in cols else None
+            rgb = (f.fgColor.rgb if f is not None and f.fill_type and
+                   isinstance(f.fgColor.rgb, str) else None)
+            registered[w_all] = {"status": status, "notes": _text(cell("notes")),
+                                 "bu": _text(cell("bu")), "row": r, "fill": rgb,
+                                 "closed": status.lower().startswith(CLOSED)
+                                           or (rgb or "").upper() == DONE_GREEN}
         sl = status.lower()
         if sl.startswith(CLOSED):
             closed += 1
@@ -241,7 +257,8 @@ def parse(data, today=None, bus=("FIRE",)):
 
     rows = [x for x in rows if x][::-1]          # her newest rows are at the bottom
     return {"sheet": ws.title, "header_row": hdr_row, "closed": closed,
-            "other_bu": other_bu, "bu_filter": sorted(bus), "rows": rows}
+            "other_bu": other_bu, "bu_filter": sorted(bus), "rows": rows,
+            "registered": registered}
 
 
 def customer_rows(data, customer="", customer_name="", exclude=""):

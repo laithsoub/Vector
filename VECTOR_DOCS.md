@@ -537,6 +537,18 @@ Locked in the ship build: the tab is gated, `/api/lsd` is 403'd in the sidecar (
 | `el_corrections` | JSON object | User-corrected catalogue number mappings |
 | `theme` | `"dark"` / `"light"` | UI theme |
 | `mu_lang` | `"en"` / `"hu"` | Language |
+| `vector_cache_debug` | `"1"` / `"0"` | Log every local-cache save/serve to the console |
+
+#### Local data cache (IndexedDB `vector-cache`) — added 2026-10-03
+`src/lib/localCache.ts` keeps the **last good answer** of the slow reads on this device, so a page paints instantly and the live fetch replaces it (stale-while-revalidate). The store is read into memory before the first render (`hydrateLocalCache()` in `main.tsx`, capped at 400 ms), so `peek(key)` is synchronous.
+
+- **One registry:** `CACHE_FAMILIES` lists every cached family — label, source endpoint, max age, shape version `v`. Keys are `family` or `family:detail` (e.g. `analytics:30`, `todo.list:open`, `inbox.list:<store>:false:50`).
+- **Wiring:** `api.ts` wraps reads in `remember(key, …)`; pages seed `useState` from `peek(key)`. Inbox list uses `save()` directly (keyed like the in-memory `emailCache`).
+- **Never cached:** `/api/config` (can carry keys), `/api/pdfs` (acted on, must be live). Answers with `ok:false` or `error` never overwrite a good copy.
+- **Acted-on lists stay inert until live:** LSD queue / Dalia-Kiran feed Fetch buttons and the To-Do board wait for the live answer.
+- **Shape change?** Bump that family's `v` — old copies are pruned on next load instead of crashing the page.
+- **Trace it:** Settings → Logs & retries → *Local cache* (entries, age, size, forget / clear all). DevTools: `vectorCache.list()`, `vectorCache.get(key)`, `vectorCache.clear()`, `vectorCache.debug()`.
+- Inbox subjects/senders stay on the device up to 3 days; *Clear all* removes them.
 
 ---
 

@@ -25,9 +25,11 @@ import { api } from '../lib/api';
 import type { MatchMode, SearchScope, SearchFacets } from '../lib/api';
 import { failed, plural } from '../lib/errors';
 import { runTask, isCancel } from '../lib/tasks';
+import { peek, savedAt, save as saveLocal } from '../lib/localCache';
 import type { ToastFn } from '../App';
 import type { TodoBucket } from '../types';
 import { QuickQuotePanel } from './QuickQuote';
+import { TodoPage } from './Todo';
 import {
   InboxPage, STRIPPED, CACHE_TTL, emailCache, capMap, capRecord, MAX_EMAIL_CACHE, MAX_SUMMARIES,
   _summaryCache, _storeOf, rememberStores, CATEGORIES,
@@ -46,7 +48,13 @@ import {
 type InboxProps = { toast: ToastFn; setTab: (t: string) => void; onUnreadCount?: (n: number) => void };
 
 // ─── Layout switch ────────────────────────────────────────────────────────────
-export function InboxRoot(props: InboxProps) {
+// Mail | To-Do: the To-Do board used to be its own tab; it is the other half of
+// the same job (what came in → what is still owed), so it lives here now. Both
+// views stay mounted once opened, so switching never loses a selection.
+type InboxView = 'mail' | 'todo';
+
+export function InboxRoot(props: InboxProps & { todoOpen?: number; onTodoCount?: (n: number) => void }) {
+  const { todoOpen, onTodoCount, ...rest } = props;
   const [layout, setLayout] = useState<'outlook' | 'classic'>(() => {
     try { return localStorage.getItem('inbox_layout') === 'classic' ? 'classic' : 'outlook'; } catch { return 'outlook'; }
   });
@@ -54,9 +62,52 @@ export function InboxRoot(props: InboxProps) {
     setLayout(l);
     try { localStorage.setItem('inbox_layout', l); } catch { /* private mode */ }
   };
-  return layout === 'classic'
-    ? <InboxPage {...props} onSwitchLayout={() => switchTo('outlook')} />
-    : <InboxOutlookPage {...props} onSwitchLayout={() => switchTo('classic')} />;
+  const [view, setView] = useState<InboxView>(() => {
+    try { return localStorage.getItem('inbox_view') === 'todo' ? 'todo' : 'mail'; } catch { return 'mail'; }
+  });
+  const [todoMounted, setTodoMounted] = useState(view === 'todo');
+  const show = useCallback((v: InboxView) => {
+    setView(v);
+    if (v === 'todo') setTodoMounted(true);
+    try { localStorage.setItem('inbox_view', v); } catch { /* private mode */ }
+  }, []);
+  // "Open To-Do" buttons inside the mail views still ask the app for the old tab.
+  const { setTab: appSetTab } = rest;
+  const setTab = useCallback((t: string) => { if (t === 'Todo') show('todo'); else appSetTab(t); }, [show, appSetTab]);
+
+  const tabs: Array<[InboxView, string, React.ComponentType<{ className?: string }>, number | undefined]> = [
+    ['mail', 'Mail', Mail, undefined],
+    ['todo', 'To-Do', ListTodo, todoOpen],
+  ];
+  return (
+    <div className="h-full min-h-0 flex flex-col">
+      <div role="tablist" aria-label="Inbox view" className="shrink-0 flex items-center gap-1 px-3 h-9 border-b border-line bg-subtle">
+        {tabs.map(([id, label, Icon, count]) => (
+          <button key={id} role="tab" aria-selected={view === id} onClick={() => show(id)}
+            className={cn('relative h-9 px-3 inline-flex items-center gap-1.5 text-sm transition-colors',
+              view === id
+                ? 'font-semibold text-fg after:absolute after:left-3 after:right-3 after:bottom-0 after:h-0.5 after:rounded-t after:bg-signal'
+                : 'font-medium text-fg-tab hover:text-fg')}>
+            <Icon className="w-3.5 h-3.5" />{label}
+            {!!count && <span className="mono text-2xs px-1.5 rounded-full bg-accent-soft text-accent-text">{count}</span>}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0" style={view === 'mail' ? undefined : { display: 'none' }}>
+        {layout === 'classic'
+          ? <InboxPage {...rest} setTab={setTab} onSwitchLayout={() => switchTo('outlook')} />
+          : <InboxOutlookPage {...rest} setTab={setTab} onSwitchLayout={() => switchTo('classic')} />}
+      </div>
+      {todoMounted && (
+        <div className="flex-1 min-h-0 overflow-y-auto" style={view === 'todo' ? undefined : { display: 'none' }}>
+          <div className="w-full mx-auto"
+            style={{ padding: 'var(--pad-page)', maxWidth: 'calc(var(--sp-4) * 80 + var(--pad-page) * 2)' }}>
+            <TodoPage toast={rest.toast} onOpenCount={onTodoCount} setTab={appSetTab} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Types, prefs, helpers ────────────────────────────────────────────────────
@@ -418,7 +469,10 @@ function VectorSummary({ detail, toast, setAppTab }: { detail: EmailDetail; toas
   const id = detail.entryId;
   const [analysis, setAnalysis] = useState(() => _summaryCache[id] || '');
   const [busy, setBusy]         = useState(false);
-  const [included, setIncluded] = useState<Set<number>>(new Set());
+  // Spreadsheets start ticked: they go in as plain text (no vision tokens), and
+  // a question about "the attached sheet" is useless if the AI can't see it.
+  const [included, setIncluded] = useState<Set<number>>(
+    () => new Set(detail.attachments.filter(a => isExcelFile(a.name)).map(a => a.index)));
   const [liked, setLiked]       = useState<'up' | 'down' | null>(null);
   const [chat, setChat]         = useState<Array<{ role: 'user' | 'ai'; text: string }>>([]);
   const [q, setQ]               = useState('');
@@ -453,7 +507,7 @@ function VectorSummary({ detail, toast, setAppTab }: { detail: EmailDetail; toas
       setAnalysis(text);
       _summaryCache[id] = text;
       capRecord(_summaryCache, MAX_SUMMARIES);
-      if (r.imagesRead) toast('info', `Read ${plural(r.imagesRead, 'image')} from the email`);
+      if (r.imagesRead) toast('info', `Read ${plural(r.imagesRead, 'attachment')} from the email`);
     } catch (e: any) { if (!isCancel(e)) toast('err', failed('summarize the email', e)); }
     setBusy(false);
   }
@@ -504,7 +558,7 @@ function VectorSummary({ detail, toast, setAppTab }: { detail: EmailDetail; toas
     }).catch(() => {});
   }
 
-  const readable = detail.attachments.filter(a => a.isPdf || a.isImage || isImageFile(a.name));
+  const readable = detail.attachments.filter(a => a.isPdf || a.isImage || isImageFile(a.name) || isExcelFile(a.name));
 
   return (
     <div className="flex flex-col min-h-full">
@@ -512,7 +566,7 @@ function VectorSummary({ detail, toast, setAppTab }: { detail: EmailDetail; toas
         {!analysis && (
           <section className="rounded-panel border border-line bg-surface overflow-hidden">
             <AiPanelHeader title="Summarize this email"
-              sub="Reads the text only. Tick a picture or PDF below if Vector needs to see it." />
+              sub="Reads the text only. Tick a picture, PDF or spreadsheet below if Vector needs to see it." />
             <div className="p-3">
               <UiButton tone="primary" size="md" onClick={() => summarize()} disabled={busy}>
                 {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
@@ -540,7 +594,7 @@ function VectorSummary({ detail, toast, setAppTab }: { detail: EmailDetail; toas
             <div className="flex flex-wrap gap-1.5">
               {readable.map(a => (
                 <AiFileChip key={a.index} name={a.name} on={included.has(a.index)}
-                  kind={a.isPdf ? 'file' : 'image'}
+                  kind={a.isPdf || isExcelFile(a.name) ? 'file' : 'image'}
                   onToggle={() => setIncluded(prev => { const n = new Set(prev); n.has(a.index) ? n.delete(a.index) : n.add(a.index); return n; })} />
               ))}
             </div>
@@ -598,11 +652,12 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
   const [mailboxes, setMailboxes] = useState<Mailbox[]>(_oMailboxes);
   const [storeId, setStoreIdRaw]  = useState(() => localStorage.getItem('inbox_storeId') || 'default');
   const [view, setView]           = usePref<View>('ol_view', 'inbox');
-  const [emails, setEmails]       = useState<EmailSummary[]>([]);
+  // First paint from the list this device saved last time (key shape as loadEmails).
+  const [emails, setEmails]       = useState<EmailSummary[]>(() => peek<EmailSummary[]>(`inbox.list:${storeId}:false:50`) ?? []);
   const [loading, setLoading]     = useState(false);
   const [limit, setLimit]         = useState(50);
   const [hasMore, setHasMore]     = useState(true);
-  const [syncedAt, setSyncedAt]   = useState<number | null>(null);
+  const [syncedAt, setSyncedAt]   = useState<number | null>(() => savedAt(`inbox.list:${storeId}:false:50`) ?? null);
   const [, setClock]              = useState(0);
   const [selectedId, setSelectedRaw] = useState(_oSelected);
   const [detail, setDetail]       = useState<EmailDetail | null>(null);
@@ -699,25 +754,36 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       setSyncedAt(cached.ts);
       return;
     }
-    if (!opts.silent) setLoading(true);
+    // Stale in memory, or only on this device from an earlier session: show it
+    // now and re-read the mailbox quietly behind it.
+    const stale = cached?.emails ?? peek<EmailSummary[]>(`inbox.list:${key}`);
+    let silent = !!opts.silent;
+    if (!opts.force && !silent && stale) {
+      rememberStores(stale, sid);
+      setEmails(stale);
+      setSyncedAt(cached?.ts ?? savedAt(`inbox.list:${key}`) ?? null);
+      silent = true;
+    }
+    if (!silent) setLoading(true);
     try {
-      const r = opts.silent
+      const r = silent
         ? await api.outlookEmails(sid, lim, false)
         : await runTask(`Fetching ${lim} emails…`, s => api.outlookEmails(sid, lim, false, s));
       if (sid === storeRef.current) {
-        if (r.error && !opts.silent) toast('warn', failed('load the email list', r.error));
+        if (r.error && !silent) toast('warn', failed('load the email list', r.error));
         const list = (r.emails || []) as EmailSummary[];
         emailCache.set(key, { emails: list, ts: Date.now() });
         capMap(emailCache, MAX_EMAIL_CACHE);
+        if (!r.error) saveLocal(`inbox.list:${key}`, list);
         rememberStores(list, sid);
         setEmails(list);
         setHasMore(list.length >= lim);
         setSyncedAt(Date.now());
       }
     } catch (e: any) {
-      if (!opts.silent && !isCancel(e)) toast('err', failed('load the email list', e));
+      if (!silent && !isCancel(e)) toast('err', failed('load the email list', e));
     }
-    if (!opts.silent) setLoading(false);
+    if (!silent) setLoading(false);
   }, [toast]);
 
   useEffect(() => { if (available) void loadEmails(); }, [available, storeId, loadEmails]);
@@ -952,7 +1018,9 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
   }, []);
 
   // ── Early states ───────────────────────────────────────────────────────────
-  if (available === null) {
+  // Still asking Outlook whether it is there — but a list saved on this device
+  // is shown meanwhile rather than a spinner.
+  if (available === null && !emails.length) {
     return <div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-fg-3" /></div>;
   }
   if (available === false) {

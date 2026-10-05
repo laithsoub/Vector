@@ -15,6 +15,7 @@ import { runTask, isCancel } from '../lib/tasks';
 import { QuickQuotePanel } from './QuickQuote';
 import { extractMaterialHints } from '../lib/elHints';
 import { openExternal } from '../lib/shell';
+import { peek, savedAt, save as saveLocal } from '../lib/localCache';
 
 // ─── Module-level state — survives tab switches / component remounts ─────────
 // Locked behind a "Coming Soon" wall in the stripped ship build (personal API
@@ -2611,7 +2612,8 @@ function EmailDetailPanel({
       setDetail(r);
       // Nothing visual is fed to the AI unless it is ticked. Reading images is
       // what makes a summary expensive, and most emails do not need it.
-      setIncluded(new Set());
+      // Spreadsheets are the exception: they go in as cheap text, so on by default.
+      setIncluded(new Set(r.attachments.filter(a => isExcelFile(a.name)).map(a => a.index)));
       onMarkRead(id);
       onLabelChange(r.subject);
       // Pull the persisted summary (survives restart) if we don't have it in-session.
@@ -2651,7 +2653,7 @@ function EmailDetailPanel({
       setAnalysis(text);
       _summaryCache[emailData.entryId] = text;
       capRecord(_summaryCache, MAX_SUMMARIES);
-      if (r.imagesRead) toast('info', `Read ${plural(r.imagesRead, 'image')} from the email`);
+      if (r.imagesRead) toast('info', `Read ${plural(r.imagesRead, 'attachment')} from the email`);
     } catch (e: any) { if (!isCancel(e)) setAnalysis(`Error: ${e.message}`); }
     setAnalyzing(false);
   }
@@ -3095,7 +3097,7 @@ function EmailDetailPanel({
                         (< 12 KB) are hidden entirely. */}
                     {(() => {
                       const visual = detail.attachments.filter(a =>
-                        (a.isPdf || a.isImage || isImageFile(a.name)) && !(a.isInline && a.size < 12_000));
+                        (a.isPdf || a.isImage || isImageFile(a.name) || isExcelFile(a.name)) && !(a.isInline && a.size < 12_000));
                       if (visual.length === 0) return null;
                       return (
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -3979,6 +3981,17 @@ export function InboxPage({
       setCacheAge(ageMin === 0 ? 'just now' : `${ageMin}m ago`);
       return;
     }
+    // Stale in memory, or only on this device from an earlier session: show it
+    // now and re-read the mailbox quietly behind it.
+    const stale = cached?.emails ?? peek<EmailSummary[]>(`inbox.list:${key}`);
+    const revalidating = !force && !silent && !!stale;
+    if (revalidating) {
+      rememberStores(stale!, sid);
+      setEmails(stale!);
+      const at = cached?.ts ?? savedAt(`inbox.list:${key}`) ?? Date.now();
+      setCacheAge(`${Math.floor((Date.now() - at) / 60000)}m ago · refreshing`);
+      silent = true;
+    }
     if (!silent) setLoadingEmails(true);
     try {
       const r = silent
@@ -3988,6 +4001,8 @@ export function InboxPage({
       const list = r.emails || [];
       emailCache.set(key, { emails: list, ts: Date.now() });
       capMap(emailCache, MAX_EMAIL_CACHE);
+      if (!r.error) saveLocal(`inbox.list:${key}`, list);
+      if (revalidating) setCacheAge('just now');
       rememberStores(list, sid);
       setEmails(list);
       // Fewer returned than asked → no more to fetch
@@ -3995,6 +4010,7 @@ export function InboxPage({
       if (!silent) setCacheAge('just now');
     } catch (e: any) {
       if (!silent && !isCancel(e)) toast('err', failed('load the email list', e));
+      if (revalidating) setCacheAge('saved copy · mailbox not reachable');
     }
     if (!silent) setLoadingEmails(false);
   }, [storeId, unreadOnly, toast, emailLimit]);

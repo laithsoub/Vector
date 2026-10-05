@@ -9,6 +9,7 @@ import { Checkbox, Segmented, Switch, useFormHotkeys } from '../ui';
 import { useLang, LANG_LABELS, type Lang, type Translations } from '../lib/i18n';
 import { cn } from '../lib/cn';
 import { api } from '../lib/api';
+import { clearLocalCache, forget, useLocalCacheEntries } from '../lib/localCache';
 import type { Config } from '../types';
 
 // ── Dark mode schedule ────────────────────────────────────────────────────────
@@ -55,7 +56,7 @@ function LogViewer() {
       <div className="h-64 overflow-y-auto p-4 mono text-2xs leading-[1.7] rounded-b-panel vec-scroll" style={{ background: 'var(--term)' }}>
         {error && <p className="mb-2" style={{ color: 'var(--err)' }}>[Error loading log: {error}]</p>}
         {lines.length === 0 && !error && !loading && (
-          <p className="text-fg-3">No log file yet — runs Step 1 or Step 2 to generate entries.</p>
+          <p className="text-fg-3">No log file yet — an upload to the SharePoint List or D&Q Store generates entries.</p>
         )}
         {lines.map((l, i) => (
           <div key={i} className="whitespace-pre-wrap break-all" style={{ color: lineColor(l) }}>{l}</div>
@@ -78,7 +79,7 @@ function RetryQueue({ onCount }: { onCount?: (n: number) => void }) {
 
   async function retryNow() {
     setRunning(true);
-    await api.retryNow();
+    try { await api.retryNow(); } catch {}
     await load();
     setRunning(false);
   }
@@ -102,7 +103,7 @@ function RetryQueue({ onCount }: { onCount?: (n: number) => void }) {
         {items.map(item => (
           <div key={item.id} className="flex items-start gap-2 p-2.5 rounded-panel" style={{ background: 'var(--warn-soft)', border: 'var(--hairline) solid color-mix(in oklab, var(--warn) 35%, transparent)' }}>
             <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium" style={{ color: 'var(--warn)' }}>{item.script} — attempt {item.attempts}/{item.maxAttempts}</p>
+              <p className="text-xs font-medium" style={{ color: 'var(--warn)' }}>{item.script === 'step2' ? 'Upload to D&Q Store' : item.script} — attempt {item.attempts}/{item.maxAttempts}</p>
               <p className="text-2xs text-fg-2 truncate mt-0.5">{item.lastError}</p>
               <p className="text-2xs text-fg-3 mt-0.5">{new Date(item.timestamp).toLocaleString()}</p>
             </div>
@@ -112,6 +113,51 @@ function RetryQueue({ onCount }: { onCount?: (n: number) => void }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── Local cache viewer — what src/lib/localCache.ts holds on this device ────────
+function fmtBytes(n: number) {
+  return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+function fmtAge(ms: number) {
+  const m = Math.floor((Date.now() - ms) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.floor(m / 60)}h ago` : `${Math.floor(m / 1440)}d ago`;
+}
+function LocalCachePanel() {
+  const entries = useLocalCacheEntries();
+  const total = entries.reduce((s, e) => s + e.bytes, 0);
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-sm text-fg-2 flex-1">
+          {entries.length ? `${entries.length} entries · ${fmtBytes(total)}` : 'Nothing cached yet.'}
+        </span>
+        {entries.length > 0 && (
+          <Button tone="outline" size="md" Icon={Trash2} onClick={clearLocalCache}>Clear all</Button>
+        )}
+      </div>
+      {entries.length > 0 && (
+        <div className="space-y-1">
+          {entries.map(e => (
+            <div key={e.key} className="flex items-center gap-3 px-2.5 py-1.5 rounded-panel border border-line">
+              <div className="flex-1 min-w-0">
+                <p className="m-0 text-xs text-fg truncate">{e.label}</p>
+                <p className="m-0 text-2xs text-fg-3 mono truncate" title={`${e.key} ← ${e.source}`}>{e.key} ← {e.source}</p>
+              </div>
+              <span className="text-2xs text-fg-3 shrink-0" title={new Date(e.savedAt).toLocaleString()}>{fmtAge(e.savedAt)}</span>
+              <span className="text-2xs text-fg-3 shrink-0 w-16 text-right">{fmtBytes(e.bytes)}</span>
+              <button aria-label={`Forget ${e.key}`} onClick={() => forget(e.key)} className="text-fg-3 hover:text-err">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="mt-3 mb-0 text-2xs text-fg-3">
+        In DevTools: <span className="mono">vectorCache.list()</span> · <span className="mono">vectorCache.debug()</span> logs every save and serve.
+      </p>
     </div>
   );
 }
@@ -536,7 +582,7 @@ export function SettingsPage({
         {sec === 'sharepoint' && (<>
           <Group title="Sites" sub="Where uploads, searches and D&Q filing go">
             {field('sp_site',  'ELTechsupport site',   'D&Q Store script site')}
-            {field('sp_list',  'QuotationFactoryEMEA', 'Step 1 upload and Search site')}
+            {field('sp_list',  'QuotationFactoryEMEA', 'SharePoint List upload and Search site')}
             {field('dq_store', 'D&Q Store path',       'Server-relative library path')}
           </Group>
           <Group title="Connect this session"
@@ -570,6 +616,8 @@ export function SettingsPage({
           <Group title="Files" sub="All optional — blank uses the defaults">
             {field('lsd_master_model', 'Master CPQ model',
                    'Full path to the "CPQ Pricing Model LSD … V2" .xlsb. Blank = newest .xlsb in data\\lsd')}
+            {field('lsd_cost_master',  'Plant-cost price list',
+                   'Unit cost for items CPQ’s Approval History asks to add ("Copy of Price list Master file workout Fire plant cost …" .xlsx). Blank = newest one in <case root>\Master Models')}
             {field('lsd_cases_root',   'Case folder root',
                    'Where generated case folders are written. Blank = Desktop\\LSD Pricing Doc')}
             {field('lsd_ledger',       'MV ledger code',
@@ -617,6 +665,10 @@ export function SettingsPage({
           </Group>
           <Group title="Server log">
             <LogViewer />
+          </Group>
+          <Group title="Local cache"
+            sub="Last good answers kept on this device so pages open instantly. Always refreshed live behind the scenes; never sent anywhere.">
+            <LocalCachePanel />
           </Group>
         </>)}
 

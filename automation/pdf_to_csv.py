@@ -66,6 +66,8 @@ CSV_FOLDER = os.environ.get("MAGIC_CSV_FOLDER", _BASE)
 
 # Output CSV path
 CSV_OUTPUT = os.path.join(CSV_FOLDER, "QuoteExtra.csv")
+# Per-row notes the CSV has no column for, read back by Automation_V4.
+NOTES_OUTPUT = os.path.join(CSV_FOLDER, "QuoteExtra.notes.json")
 
 # INSIDE SALES — the uploader for UK quotes (SharePoint lookup field, must resolve).
 # Config-driven so each department/uploader sets their own; env var overrides.
@@ -166,26 +168,34 @@ def extract_total_price(all_pages_text):
     return ""
 
 
-def extract_quotation_name(page1_text, salesforce_id):
+def extract_quotation_name(page1_text):
     """
     Extract the quotation name from the Project Reference line.
     Handles both:
       'SR00VroMbYAJ - Costco, Gloucester EL'  (with dash separator)
       'SR00f0uvRYAQ ALO YOGA- EDINBURGH'       (space only, no dash before name)
+
+    The leading token is stripped ONLY when it really is a reference — a
+    Salesforce id of any spelling or a BidManager code. On
+    'Project Reference: RAF Marham - CBU - 0012hmpMYAQ' there is no reference
+    at all, and blindly cutting at the first dash (or at whatever word the id
+    hunt happened to land on) shipped the quote as 'Marham - CBU - …' with the
+    customer's own name chopped off the front.
     """
-    # Try with dash separator first
-    m = re.search(r"Project Reference:\s*" + re.escape(salesforce_id) + r"\s*[-–]\s*(.*)", page1_text, re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    # Try space-only separator (no dash between SF ID and name)
-    m2 = re.search(r"Project Reference:\s*" + re.escape(salesforce_id) + r"\s+(.*)", page1_text, re.IGNORECASE)
-    if m2:
-        return m2.group(1).strip()
-    # Fallback: everything after the last dash on the Project Reference line
-    m3 = re.search(r"Project Reference:.*?[-–]\s*(.*)", page1_text, re.IGNORECASE)
-    if m3:
-        return m3.group(1).strip()
-    return ""
+    line = extract_field(page1_text, r"Project Reference:\s*(.+)").strip()
+    if not line:
+        return ""
+
+    head, _, rest = line.partition(" ")
+    # References are written with the revision glued on by a dash and no space
+    # ('SR00VKmxuYAD-A1R- Tackley cubicles'), so validate the stem.
+    stem = head.strip("-–").split("-")[0]
+    # Validate the token that is actually printed. This used to take the id the
+    # hunt had guessed — which is the very thing that guessed 'RAF'.
+    if not (canonical_sfid(stem) or _CODE_RE.fullmatch(stem) or _WORKS_RE.fullmatch(stem)):
+        return line
+
+    return rest.strip().lstrip("-–").strip() or line
 
 
 # Short-form Salesforce ids as they appear in BidManager exports and in file
@@ -199,7 +209,7 @@ _SFID_RE = re.compile(
 # Quotation codes: BidManager negotiation codes (EE3E0721X6K1-0000) and the
 # older BidManager series (QB28262A, QW28073A4R, QV27682A).
 _CODE_RE = re.compile(
-    r"(?<![A-Za-z0-9])([A-Z]{2}[A-Z0-9]{2}\d{4}X\d[A-Z]\d(?:-\d{4})?|Q[BWV]\d{5}[A-Z]\d?R?)(?![A-Za-z0-9])"
+    r"(?<![A-Za-z0-9])([A-Z]{2}[A-Z0-9]{2}\d{4}X\d[A-Z]\d(?:-\d{4})?|Q[BWV]\d{5}[A-Z]\d{0,2}R?)(?![A-Za-z0-9])"
 )
 
 
@@ -208,17 +218,31 @@ _CODE_RE = re.compile(
 # '006QO00000zc0jpYAA'. The last 3 chars are Salesforce's checksum, drawn from
 # [A-Z0-5] — do NOT assume it always reads 'YAx', it only looks that way in the
 # ids seen so far. `_is_sfid_tail` does the rest of the filtering.
-_SFID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9])00([A-Za-z0-9]{5}[A-Z0-5]{3})(?![A-Za-z0-9])")
+#
+# A tail is the full id with '006QO' and a VARYING number of the leading zeros
+# dropped, so its length is not fixed: '00yduKjYAI' is 10 chars but
+# '0012hmpMYAQ' (006QO000012hmpMYAQ, RAF Marham) is 11. The old pattern pinned
+# it at exactly 10 and so read no id at all off the longer ones — the same
+# growth the 18-char form already allows for below. 13 is the ceiling: that is
+# what is left of an 18-char id once '006QO' is removed.
+_SFID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9])(00[A-Za-z0-9]{5,8}[A-Z0-5]{3})(?![A-Za-z0-9])")
 
 
 def _is_sfid_tail(tail):
     """Reject the numeric strings the loose tail pattern would otherwise catch.
 
-    Salesforce ids are mixed case ('zc0jpYAA', 'tlWsnYAE'), so requiring both a
-    lowercase and an uppercase letter throws out dates and order numbers such as
-    '0012345012' without having to hard-code the checksum's shape.
+    The body carries a letter; an all-digit run is an order number or a date
+    ('0012345012'), not a Salesforce id. This used to demand a LOWERCASE letter
+    as well, which reads right for 'zc0jpYAA' and 'tlWsnYAE' but silently threw
+    away every id that happens to come out upper-case — 16 Cadogan Square's
+    '001247XXYAY' (006QO00001247XXYAY) uploaded with no id at all because of it.
     """
-    return any(c.islower() for c in tail) and any(c.isupper() for c in tail)
+    return any(c.isalpha() for c in tail[2:-3])
+
+
+def _sfid_from_tail(tail):
+    """'00yduKjYAI' -> '006QO00000yduKjYAI'; '0012hmpMYAQ' -> '006QO000012hmpMYAQ'."""
+    return "006QO" + tail.rjust(13, "0")
 
 
 def canonical_sfid(value):
@@ -235,10 +259,11 @@ def canonical_sfid(value):
     m = _SFID_RE.fullmatch(v)
     if m:
         s = m.group(1)
-        return s if s.startswith("006") else "006QO00000" + s[4:]
+        # Pad to 18: tails outgrew 8 chars (SR0010IuhdYAC -> 006QO000010IuhdYAC).
+        return s if s.startswith("006") else "006QO" + s[4:].rjust(13, "0")
     m = _SFID_TAIL_RE.fullmatch(v)
     if m and _is_sfid_tail(m.group(1)):
-        return "006QO00000" + m.group(1)
+        return _sfid_from_tail(m.group(1))
     return ""
 
 
@@ -249,7 +274,7 @@ def find_sfid(text):
         return canonical_sfid(m.group(1))
     for m in _SFID_TAIL_RE.finditer(text or ""):
         if _is_sfid_tail(m.group(1)):
-            return "006QO00000" + m.group(1)
+            return _sfid_from_tail(m.group(1))
     return ""
 
 
@@ -274,6 +299,115 @@ def _mail_index_path():
         if os.path.exists(cand):
             return cand
     return ""
+
+
+def _vector_db_path():
+    """Vector's own database — holds crm_quote, the Quotations List mirror."""
+    env = os.environ.get("MAGIC_DB", "").strip()
+    if env:
+        return env
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(os.path.dirname(here), "eaton_automation.db"),
+                 os.path.join(here, "eaton_automation.db")):
+        if os.path.exists(cand):
+            return cand
+    return ""
+
+
+# The BidManager works number, stripped of its revision suffix: 'QB28548A1R'
+# and 'QB28548A' are both revisions of the works number 'QB28548', and that
+# stem is what the Quotations List and the request mail carry.
+_WORKS_RE = re.compile(r"(?<![A-Za-z0-9])(Q[BWV]\d{5})[A-Za-z0-9]*(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def _works_numbers(*blobs):
+    """Every distinct BidManager works number mentioned in these strings."""
+    out = []
+    for blob in blobs:
+        for w in _WORKS_RE.findall(blob or ""):
+            w = w.upper()
+            if w not in out:
+                out.append(w)
+    return out
+
+
+def _sfid_from_quotations_list(works):
+    """The Salesforce id the Quotations List already holds for a works number.
+
+    A BidManager quote prints its works number and nothing else, so there is no
+    id on page 1 to read. But an earlier revision of the same job was usually
+    uploaded WITH one, and that row is in the local mirror of the list. Only
+    accept a unanimous answer — a works number that points at two different ids
+    is a filing mistake and guessing between them would spread it.
+    """
+    db = _vector_db_path()
+    if not db or not works:
+        return "", ""
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    except Exception as e:
+        print(f"    [WARN] Could not read the Quotations List mirror: {e}")
+        return "", ""
+    try:
+        for w in works:
+            like = f"%{w}%"
+            rows = con.execute(
+                "SELECT sfId FROM crm_quote "
+                "WHERE (title LIKE ? OR quoteName LIKE ? OR account LIKE ?) "
+                "AND sfId IS NOT NULL AND sfId <> ''",
+                (like, like, like),
+            ).fetchall()
+            found = {canonical_sfid(r[0]) for r in rows}
+            found.discard("")
+            if len(found) == 1:
+                return found.pop(), f"Quotations List, works {w}"
+            if len(found) > 1:
+                print(f"    [WARN] Works {w} points at {len(found)} different Salesforce ids "
+                      f"on the Quotations List — leaving the id blank.")
+    except Exception as e:
+        print(f"    [WARN] Quotations List lookup failed: {e}")
+    finally:
+        con.close()
+    return "", ""
+
+
+def _sfid_from_mail(works, quotation_code=""):
+    """The Salesforce id quoted in the request mail for this job.
+
+    Same idea as the list lookup, one step further out: the thread that asked
+    for the quote often spells the id even when the PDF never does. Unanimity
+    is required again — a thread that mentions two jobs must not decide this.
+    """
+    db = _mail_index_path()
+    terms = list(works) + ([quotation_code] if quotation_code else [])
+    if not db or not terms:
+        return "", ""
+    try:
+        import sqlite3
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+    except Exception as e:
+        print(f"    [WARN] Could not read the mail index: {e}")
+        return "", ""
+    try:
+        for term in terms:
+            rows = con.execute(
+                "SELECT subject, body_text FROM mail WHERE blob LIKE ? "
+                "ORDER BY received DESC LIMIT 40",
+                (f"%{term.lower()}%",),
+            ).fetchall()
+            found = {find_sfid(f"{s or ''}\n{b or ''}") for s, b in rows}
+            found.discard("")
+            if len(found) == 1:
+                return found.pop(), f"request mail, {term}"
+            if len(found) > 1:
+                print(f"    [WARN] The mail for {term} quotes {len(found)} different "
+                      f"Salesforce ids — leaving the id blank.")
+    except Exception as e:
+        print(f"    [WARN] Mail id lookup failed: {e}")
+    finally:
+        con.close()
+    return "", ""
 
 
 def find_requester(salesforce_id="", quotation_code="", quotation_name=""):
@@ -486,7 +620,7 @@ def process_pdf(pdf_path, arrived_date="", division="", today=""):
     valid_to = normalise_date(raw_valid_to) if raw_valid_to else ""
 
     # Quotation name: old Project Reference pattern or new Request Name
-    quotation_name = extract_quotation_name(page1_text, salesforce_id)
+    quotation_name = extract_quotation_name(page1_text)
     if not quotation_name:
         m_rn2 = re.search(r"Request Name:\s*\S+\s+(.+)", page1_text, re.IGNORECASE)
         if m_rn2:
@@ -514,6 +648,7 @@ def process_pdf(pdf_path, arrived_date="", division="", today=""):
     # Keep the id only if it really is one, then hunt for the real one in the
     # document, the quotation name and finally the file name.
     salesforce_id = canonical_sfid(salesforce_id) or canonical_sfid(bid["sfid"])
+    sfid_source   = ""
     if not salesforce_id:
         for blob in (page1_text, quotation_name, os.path.basename(pdf_path)):
             salesforce_id = find_sfid(blob)
@@ -524,6 +659,26 @@ def process_pdf(pdf_path, arrived_date="", division="", today=""):
         quotation_code = bid["code"] or fn["code"]
     if not quotation_name:
         quotation_name = bid["name"] or fn["name"]
+
+    # Still nothing: a BidManager quote prints its works number instead of an
+    # id, so ask the two local mirrors what id that job already carries. The
+    # Quotations List is the record we are about to write to, so it wins over
+    # the mail. Neither is allowed to guess — see the helpers.
+    sfid_note = ""
+    if not salesforce_id:
+        works = _works_numbers(quotation_code, quotation_name, page1_text,
+                               os.path.basename(pdf_path))
+        salesforce_id, sfid_source = _sfid_from_quotations_list(works)
+        if not salesforce_id:
+            salesforce_id, sfid_source = _sfid_from_mail(works, quotation_code)
+        if not salesforce_id and works:
+            # The works number is nowhere in the CSV columns, so record the
+            # reason here — this is the only place that still knows it, and the
+            # upload's "missing fields" prompt has no way to work it out again.
+            sfid_note = (f"{', '.join(works)} is a BidManager works number — quotes raised "
+                         f"that way often have no Salesforce id, and neither the Quotations "
+                         f"List nor the request mail had one for this job.")
+            print(f"    [i] {sfid_note}")
     if not issue_date and bid["issue_date"]:
         issue_date = bid["issue_date"]
 
@@ -555,9 +710,12 @@ def process_pdf(pdf_path, arrived_date="", division="", today=""):
         "QUOTATION NAME"                    : quotation_name,
         "CUSTOMER"                          : customer,
         "DIVISION"                          : division,
+        # Not a CSV column — stripped out again when the file is written, and
+        # carried to the upload in QuoteExtra.notes.json instead.
+        "_sfid_note"                        : sfid_note,
     }
 
-    print(f"    SF ID       : {salesforce_id}")
+    print(f"    SF ID       : {salesforce_id}" + (f"  (via the {sfid_source})" if sfid_source else ""))
     print(f"    Salesman    : {salesman}")
     print(f"    Quote Code  : {quotation_code}")
     print(f"    Quote Name  : {quotation_name}")
@@ -1891,11 +2049,27 @@ if __name__ == "__main__":
     except Exception:
         pass
 
+    # Lift the per-row notes out before writing — the CSV holds columns only.
+    # Keyed by row index, which is the order Automation_V4 reads them back in.
+    notes = {}
+    for i, row in enumerate(rows):
+        note = row.pop("_sfid_note", "")
+        if note:
+            notes[str(i)] = note
+
     # Write CSV
     with open(CSV_OUTPUT, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
         writer.writeheader()
         writer.writerows(rows)
+
+    # Always rewrite the sidecar, empty included — a stale one left from the
+    # previous batch would caption the wrong rows.
+    try:
+        with open(NOTES_OUTPUT, "w", encoding="utf-8") as f:
+            json.dump(notes, f)
+    except Exception as e:
+        print(f"  [WARN] Could not write {NOTES_OUTPUT}: {e}")
 
     print(f"{'='*50}")
     print(f"  Done! {len(rows)} row(s) written to:")

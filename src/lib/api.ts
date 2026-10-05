@@ -3,6 +3,8 @@
 // and before any component renders. In browser dev it stays unset (relative paths).
 import axios from 'axios';
 
+import { remember } from './localCache';
+
 import type {
   Job, DashboardStats, Config, PdfFile, ArchiveDay,
   AnalyticsResponse, SearchResult, DqDoc,
@@ -82,6 +84,12 @@ export interface LsdLine {
 export interface LsdSummary {
   lines: number; grand_total: number; total_standard: number;
   overall_add_disc: number | null; overall_e2e: number | null;
+  // Lines carrying no cost, and the share of the quote's money the E2E above is
+  // measured over. A missing cost is an unknown margin, never a zero one, so
+  // those lines are left out of the E2E rather than counted as free. All of them
+  // missing (cost_missing === lines) means overall_e2e is null and the export
+  // has to come back from CPQ with its price book loaded.
+  cost_missing?: number; cost_cover?: number | null;
   overall_rpi: number | null; total_rpi: number | null;
   // The level a normal case is worked to (6.8%) so the yearly 6% average survives
   // exceptions. Null under a customer RPI exception.
@@ -95,6 +103,13 @@ export interface LsdSummary {
   // One sentence saying what this transaction is — what changed, what it costs,
   // and whether anyone has to decide anything.
   headline?: string;
+  // Lines the engine would not decide alone: a requested price that reads like a
+  // typo (over 2x the standard price, not copied) or a line RPI over 100%. The
+  // tab asks; `typo_kept` are the ones the analyst confirmed as real.
+  suspect?: Array<{ material: string; description: string; qty: number; requested: number | null;
+                    unit_std: number | null; unit_net: number | null; line_rpi: number | null;
+                    typo: boolean; why: string }>;
+  typo_kept?: string[];
   rule?: 'requested' | 'e2e'; half?: 'H1' | 'H2'; rpi_rate?: number;
   // Set when a standing customer exception replaced the half-year RPI rate
   // (Khaled Al Saigh / KYR and the like) — `standard` is the rate it replaced.
@@ -137,7 +152,8 @@ export interface LsdSummary {
                 rpi_value: number; pv_value: number };
   groups?: Array<{ group: string; lines: number; add_disc: number | null;
                    net: number; e2e: number | null; target_e2e: number | null;
-                   rpi_pct: number | null; rpi_value: number }>;
+                   rpi_pct: number | null; rpi_value: number;
+                   cost_missing?: number }>;
 }
 
 // The state of the background session keep-alive: one row per tab Vector holds
@@ -154,6 +170,33 @@ export interface LsdKeepalive {
   tabs: LsdKeepaliveTab[]; needs_signin: string[]; error?: string; log?: string[];
 }
 
+// One row of the rule table (server.ts `rule`). A rule is never edited in place:
+// a change is a new 'proposed' row that supersedes the old one once approved.
+export type RuleStatus = 'proposed' | 'approved' | 'rejected' | 'retired';
+export interface Rule {
+  id: number; domain: string; key: string; value: any;
+  title: string | null; why: string | null; source: string | null; sourceRef: string | null;
+  validFrom: string | null; validTo: string | null; status: RuleStatus;
+  proposedBy: string | null; proposedAt: string;
+  decidedBy: string | null; decidedAt: string | null; decisionNote: string | null;
+  supersedes: number | null; supersededBy: number | null;
+}
+export interface RuleProposal {
+  domain?: string; key: string; value: unknown; title?: string; why?: string;
+  source: string; sourceRef?: string; validFrom?: string; validTo?: string; supersedes?: number;
+}
+
+export type KnowledgeSource = 'fenton' | 'elinfo';
+
+export interface TodoNextItem {
+  kind: 'todo' | 'lsd' | 'queue' | 'jobs'; id: number | string | null;
+  title: string; why: string; action: string;
+}
+export interface TodoNext {
+  ok: boolean; ai: boolean; headline: string; items: TodoNextItem[]; generatedAt: string;
+  load: { open: number; overdue: number; high: number; waiting: number; lsd: number; dropQueue: number; failedToday: number };
+}
+
 // One open row of the analyst's LSD Daily work sheet (automation/lsd_queue.py).
 //   fetch     — nobody has picked it up: Status open, no case folder here
 //   priced    — a case folder exists here, but her Status is still open
@@ -167,16 +210,42 @@ export interface LsdQueueRow {
   country: string; bu: string; name: string; customer: string; customer_name: string;
   status: string; sales: string; notes: string;
   cpq_updated: string | null; age_days: number | null; value: number | string | null;
-  fill: string | null; kind: 'fetch' | 'priced' | 'laith' | 'hold' | 'no_number' | 'no_bu';
+  fill: string | null; kind: 'fetch' | 'priced' | 'laith' | 'hold' | 'no_number' | 'no_bu' | 'approved';
   first_seen?: string | null; case_folder?: string | null;
+  // Mail source only (lsd_approvals.py): the CPQ approval mail it came from.
+  entry_id?: string; currency?: string; reminders?: number;
+  fire_lines?: number; other_lines?: number;
+  // Merged queue: which source(s) saw this transaction.
+  from?: 'mail' | 'sheet' | 'both';
 }
 export interface LsdQueue {
   enabled: boolean; everyMin: number; running: boolean;
   ran: string | null; ok: boolean | null; error?: string;
   file?: { name: string; modified: string; url?: string };
   rows: LsdQueueRow[]; counts?: Record<string, number>; closed?: number;
+  // 'mail' = CPQ's Approval Required mail (default), 'sheet' = Dalia's daily sheet.
+  source?: 'mail' | 'sheet' | 'merge'; folder?: string;
+  // Merge: mail transactions left out because her sheet has them with a comment.
+  commented?: number;
   other_bu?: number; bu_filter?: string[];
 }
+
+// Dalia ↔ Kiran approval mail, grouped by transaction (server: /api/lsd/updates).
+//   approved   — Kiran's newest reply says proceed
+//   rework     — Kiran answered with anything else (a margin/RPI ask)
+//   with_kiran — Dalia's summary is waiting on Kiran
+//   for_laith  — Dalia wrote to Laith
+//   sent       — Dalia's last mail went elsewhere (sales, the customer)
+export interface LsdTalkMail {
+  entryId: string; received: string; subject: string; who: 'dalia' | 'kiran';
+  text: string; table: { cols: string[]; rows: string[][] } | null; attachments: string[];
+}
+export interface LsdTalkThread {
+  key: string; transaction: string | null; subject: string; last: string;
+  state: 'approved' | 'rework' | 'with_kiran' | 'for_laith' | 'sent';
+  mails: LsdTalkMail[];
+}
+export interface LsdTalk { ran: string | null; error: string | null; running: boolean; days: number; threads: LsdTalkThread[] }
 
 // One line of the LSD daily register, in the analyst's own column order. Every
 // field is optional because the workbook is authoritative: a register swapped
@@ -313,10 +382,16 @@ export interface LsdMeta {
   // E2E still floors every one of them. Blank leaves the rule alone, and a case
   // already under the ceiling is never given away down to it.
   rpi_target?: number | null;
+  // The customer has confirmed the order. Until then a line over 5x last year's
+  // country qty keeps the RPI floor and is flagged provisional.
+  order_confirmed?: boolean;
   // Which of the working file's three RPI readings that ceiling is on. The
   // default is the one the approval mail prints, because it is the only one the
   // approver was sent.
   rpi_basis?: 'pivot' | 'ledger' | 'price';
+  // Suspected-typo requests the analyst confirmed with sales as real — priced as
+  // requested instead of on target E2E + RPI gate.
+  typo_keep?: string[];
   // Register fields. They ride along with the build, which registers the case
   // as soon as it is written; `register: false` builds without registering.
   bu?: string; status?: string; sales_name?: string; cpq_updated?: string;
@@ -324,11 +399,22 @@ export interface LsdMeta {
   register?: boolean;
 }
 
+// CPQ's Approval History, read on every fetch: the comments, and the
+// "Add QTY xx of Item xx" asks appended to the BOM as lines.
+export interface LsdApprovalAdd { material: string; qty: number; comment: string; by: string; date: string; revision?: number }
+export interface LsdApprovalHistory {
+  history: { comment: string; action: string; by: string; date: string; revision?: number }[];
+  added: LsdApprovalAdd[]; skipped: LsdApprovalAdd[];
+  unparsed: { comment: string; by: string; date: string }[];
+}
+
 export const api = {
   // Stats / Jobs
-  stats:    () => axios.get<DashboardStats>('/api/stats').then(r => r.data),
-  jobs:     () => axios.get<Job[]>('/api/jobs').then(r => r.data),
-  archive:  () => axios.get<ArchiveDay[]>('/api/archive').then(r => r.data),
+  // remember(key, …) keeps the last good answer on this device so the page can
+  // paint it before the live fetch lands — see src/lib/localCache.ts.
+  stats:    () => remember('dashboard.stats', axios.get<DashboardStats>('/api/stats').then(r => r.data)),
+  jobs:     () => remember('jobs', axios.get<Job[]>('/api/jobs').then(r => r.data)),
+  archive:  () => remember('archive', axios.get<ArchiveDay[]>('/api/archive').then(r => r.data)),
 
   // Config
   config:     () => axios.get<Config>('/api/config').then(r => r.data),
@@ -381,7 +467,8 @@ export const api = {
   // Pull a transaction from Oracle CPQ (drives the logged-in debug-rail tab).
   lsdCpqFetch: (transaction: string) =>
     axios.post<LsdResult & { header?: Record<string, string>; file?: string; lines?: number;
-                             revisions?: LsdRevisions; history?: LsdHistory }>(
+                             revisions?: LsdRevisions; history?: LsdHistory;
+                             approval?: LsdApprovalHistory }>(
       // CPQ (up to a reload and retry) plus the OneDrive revision check and, on a
       // new number, the customer-history search. The server caps each well below
       // this, so this only ever fires if the box itself has stopped answering.
@@ -390,7 +477,22 @@ export const api = {
   lsdKeepalive: () => axios.get<LsdKeepalive>('/api/lsd/keepalive').then(r => r.data),
   lsdKeepaliveRun: () =>
     axios.post<LsdKeepalive>('/api/lsd/keepalive/run', {}, { timeout: 240_000 }).then(r => r.data),
-  lsdQueue: () => axios.get<LsdQueue>('/api/lsd/queue').then(r => r.data),
+  rules: (domain = 'lsd') =>
+    axios.get<{ ok: boolean; rules?: Rule[]; error?: string }>('/api/rules', { params: { domain } }).then(r => r.data),
+  // Read Dalia's and Kiran's mail for rules; `refresh` sweeps the mail first.
+  rulesMine: (refresh = true) =>
+    axios.post<{ ok: boolean; waiting?: number; error?: string }>('/api/rules/mine', { refresh },
+      { timeout: 300_000 }).then(r => r.data),
+  rulePropose: (p: RuleProposal) =>
+    axios.post<{ ok: boolean; id?: number; error?: string }>('/api/rules/propose', p,
+      { validateStatus: () => true }).then(r => r.data),
+  ruleDecide: (id: number, action: 'approve' | 'reject' | 'retire', note?: string) =>
+    axios.post<{ ok: boolean; error?: string }>(`/api/rules/${id}/decide`, { action, note },
+      { validateStatus: () => true }).then(r => r.data),
+  lsdQueue: () => remember('lsd.queue', axios.get<LsdQueue>('/api/lsd/queue').then(r => r.data)),
+  lsdUpdates: () => remember('lsd.updates', axios.get<LsdTalk>('/api/lsd/updates').then(r => r.data)),
+  lsdUpdatesRefresh: () =>
+    axios.post<LsdTalk>('/api/lsd/updates/refresh', {}, { timeout: 600_000 }).then(r => r.data),
   lsdQueueRefresh: () =>
     axios.post<LsdQueue>('/api/lsd/queue/refresh', {}, { timeout: 240_000 }).then(r => r.data),
   // The approval ask. Always a DRAFT — it opens in Outlook and a human sends it.
@@ -400,11 +502,11 @@ export const api = {
                  subject?: string; attached?: string[];
                  log?: Array<{ kind: 'info' | 'ok' | 'warn' | 'error'; msg: string }> }>(
       '/api/lsd/approval-mail', body, { timeout: 180_000 }).then(r => r.data),
-  lsdCases:   () => axios.get<{ root: string; cases: LsdCase[]; error?: string }>('/api/lsd/cases').then(r => r.data),
+  lsdCases:   () => remember('lsd.cases', axios.get<{ root: string; cases: LsdCase[]; error?: string }>('/api/lsd/cases').then(r => r.data)),
   lsdReveal:  (p: string) => axios.post<{ ok: boolean; error?: string }>('/api/lsd/reveal', { path: p }).then(r => r.data),
   lsdFileUrl: (p: string) => `/api/lsd/file?path=${encodeURIComponent(p)}`,
   // The daily register: read it, correct a row by hand, push it to SharePoint.
-  lsdRegister:       () => axios.get<LsdRegister>('/api/lsd/register').then(r => r.data),
+  lsdRegister:       () => remember('lsd.register', axios.get<LsdRegister>('/api/lsd/register').then(r => r.data)),
   lsdRegisterSave:   (row: LsdRegisterRow) =>
     axios.post<{ ok: boolean; error?: string; action?: string; rows?: LsdRegisterRow[] }>(
       '/api/lsd/register', { row }, { timeout: 60_000 }).then(r => r.data),
@@ -448,12 +550,14 @@ export const api = {
   // 240s for the same reason as `ai` above, and this is the one the Ask Vector tab
   // actually sends on: a search-classified message hits SharePoint (D&Q Store + the
   // Quotations List) before Gemini writes a word, so it is the slower of the two.
-  quoteAsk:      (query: string, history?: Array<{role:string;text:string}>) =>
-                   axios.post<{ answer: string | null; results?: DqDoc[]; meta?: { count: number; scope: string; term: string }; error?: string; suggestions?: string[]; title?: string }>(
-                     '/api/quote-ask', { query, history }, { timeout: 240_000 }).then(r => r.data),
+  // `sources` pins the answer to Mark Fenton's answers and/or the EL internal
+  // updates (the composer chips); empty = the full brain, which still reads both.
+  quoteAsk:      (query: string, history?: Array<{role:string;text:string}>, sources?: KnowledgeSource[]) =>
+                   axios.post<{ answer: string | null; results?: DqDoc[]; meta?: { count: number; scope: string; term: string }; error?: string; suggestions?: string[]; title?: string; sources?: KnowledgeSource[] }>(
+                     '/api/quote-ask', { query, history, sources }, { timeout: 240_000 }).then(r => r.data),
 
   // Analytics
-  analytics: (days: number) => axios.get<AnalyticsResponse>('/api/analytics', { params: { days } }).then(r => r.data),
+  analytics: (days: number) => remember(`analytics:${days}`, axios.get<AnalyticsResponse>('/api/analytics', { params: { days } }).then(r => r.data)),
 
   // Outlook
   outlookStatus:      () => axios.get<{ available: boolean; backend?: string; newOutlook?: boolean; graphAuth?: boolean; imapSetup?: boolean; name?: string; email?: string; error?: string }>('/api/outlook/status', { timeout: 15_000 }).then(r => r.data),
@@ -550,7 +654,7 @@ export const api = {
     ).then(r => r.data),
 
   // ── Mini CRM ───────────────────────────────────────────────────────────────
-  crmCompanies:   () => axios.get<CrmCompanyCard[]>('/api/crm/companies').then(r => r.data),
+  crmCompanies:   () => remember('crm.companies', axios.get<CrmCompanyCard[]>('/api/crm/companies').then(r => r.data)),
   crmCompany:     (id: number) => axios.get<CrmCompanyDetail>(`/api/crm/company/${id}`).then(r => r.data),
   crmSaveCompany: (c: { id?: number; name: string; country?: string | null; tags?: string | null; notes?: string | null }) =>
                     axios.post<{ id: number }>('/api/crm/company', c).then(r => r.data),
@@ -601,9 +705,12 @@ export const api = {
 
   // ── To-Do (triage of the shared mailbox into things still owed) ────────────
   // The scan sweeps every folder of the shared box, so give it real time.
+  // What to do next across To-Do, the LSD queue, the drop queue and failed jobs.
+  todoNext:       (refresh = false) =>
+                    axios.get<TodoNext>('/api/todo/next', { params: refresh ? { refresh: 1 } : {}, timeout: 60_000 }).then(r => r.data),
   todoList:       (status: 'all' | 'open' | 'done' = 'all') =>
-                    axios.get<{ items: TodoItem[]; lastScanAt: string | null; lastContactsAt: string | null; mailbox: string }>(
-                      '/api/todo', { params: { status }, timeout: 20_000 }).then(r => r.data),
+                    remember(`todo.list:${status}`, axios.get<{ items: TodoItem[]; lastScanAt: string | null; lastContactsAt: string | null; mailbox: string }>(
+                      '/api/todo', { params: { status }, timeout: 20_000 }).then(r => r.data)),
   todoScan:       (days = 30) =>
                     axios.post<TodoScanStatus>('/api/todo/scan', { days }, { timeout: 30_000 }).then(r => r.data),
   todoScanStatus: () => axios.get<TodoScanStatus>('/api/todo/scan/status', { timeout: 15_000 }).then(r => r.data),
@@ -903,6 +1010,9 @@ export interface ConflictItem {
   sfid:             string;
   rowLabel:         string;
   missing:          string[];
+  // Why a field is blank, when the extractor knows: a BidManager job has no
+  // Salesforce id to find, which is not the same as having failed to read one.
+  note?:            string;
   existingId:       number;
   existingTitle:    string;
   existingCustomer: string;

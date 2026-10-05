@@ -79,6 +79,9 @@ WIDTHS = {
     "rpi_value": 14,
 }
 TIMEOUT = 60
+# Every text column on the Quotations List is single-line Text, max 255 chars.
+# One character over and SharePoint rejects the whole item, so text is clipped.
+TEXT_MAX = 255
 
 
 def _cfg():
@@ -482,12 +485,20 @@ def _comments(row, extra, country_raw, currency):
             bits.append(f"RPI value {float(row['rpi_value']):,.2f}")
         except (TypeError, ValueError):
             pass
+    if extra.get("crm") and not extra.get("sfid_ok"):
+        bits.append(f"CRM {extra['crm']}")
+    # Free-text notes last: if the line is clipped to fit, they are what goes.
     for k in ("notes", "rpi_comment", "rpi_comment_2"):
         if row.get(k):
             bits.append(str(row[k]))
-    if extra.get("crm") and not extra.get("sfid_ok"):
-        bits.append(f"CRM {extra['crm']}")
-    return " · ".join(b for b in bits if b)
+    return _clip(" · ".join(b for b in bits if b))
+
+
+def _clip(text, limit=TEXT_MAX):
+    """Text cut to what a list Text column accepts. The facts come first in
+    COMMENTS, so what a clip loses is the tail of the engine's note."""
+    s = str(text or "").strip()
+    return s if len(s) <= limit else s[:limit - 1].rstrip() + "…"
 
 
 def _payload(row, extra, ctx, session, digest, log):
@@ -503,9 +514,9 @@ def _payload(row, extra, ctx, session, digest, log):
     day = _iso(row.get("out_date"))
     item = {
         "__metadata": {"type": ctx["entity"]},
-        "Title": str(row.get("transaction") or "").strip(),
-        "QUOTATION_x0020_NAME": str(row.get("transaction_name") or "").strip() or None,
-        "CUSTOMER": str(row.get("customer_name") or "").strip() or None,
+        "Title": _clip(row.get("transaction")),
+        "QUOTATION_x0020_NAME": _clip(row.get("transaction_name")) or None,
+        "CUSTOMER": _clip(row.get("customer_name")) or None,
         "DIVISION": division,
         "Country": country,
         "REQUEST_x0020_TYPE": ctx["request_type"],

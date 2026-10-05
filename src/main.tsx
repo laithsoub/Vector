@@ -1,6 +1,7 @@
 import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
+import { hydrateLocalCache } from './lib/localCache';
 // Mantine's stylesheets load BEFORE index.css on purpose. Mantine styles every
 // control through a class (.m_…), Tailwind's preflight resets bare elements
 // (button, input), so Mantine wins on specificity and keeps its controls intact;
@@ -27,9 +28,13 @@ if (isTauri && !onSidecar) {
     '<div style="height:100vh;display:flex;align-items:center;justify-content:center;' +
     'font:500 var(--fs-lg) var(--font-sans);color:var(--t3)">Starting Vector…</div>';
 } else {
-  createRoot(document.getElementById('root')!).render(
-    <StrictMode>
-      <App />
-    </StrictMode>,
-  );
+  // Last good answers from this device first (capped at 400 ms), so pages paint
+  // with data instead of spinners — see src/lib/localCache.ts.
+  void hydrateLocalCache().then(() => {
+    createRoot(document.getElementById('root')!).render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+  });
 }

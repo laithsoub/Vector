@@ -14,12 +14,87 @@ import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, relTime } from '../lib/ui';
 import { Button, EmptyState, Input, Section, Segmented, Select, Stat, StatRow, Toolbar, Button as UiButton, IconButton as UiIconButton } from '../ui';
 import { api } from '../lib/api';
+import { peek } from '../lib/localCache';
 import { failed, plural } from '../lib/errors';
 import { runTask, isCancel } from '../lib/tasks';
 import type {
   TodoItem, TodoBucket, TodoStatus, TodoScanStatus, TodoRecipientOption, TodoRecipient,
 } from '../types';
 import type { ToastFn } from '../App';
+import type { TodoNext, TodoNextItem } from '../lib/api';
+
+// ─── Next up — what to do next across the whole workload ─────────────────────
+// Ranked server-side (/api/todo/next) from the board, Dalia's LSD queue, the
+// drop queue and today's failed jobs; Gemini orders the top few and says why.
+// `sig` changes whenever the board does, so ticking a card off re-plans.
+function NextUpCard({ sig, onPick }: { sig: string; onPick: (it: TodoNextItem) => void }) {
+  const [data, setData] = useState<TodoNext | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async (refresh = false) => {
+    setBusy(true);
+    try { setData(await api.todoNext(refresh)); setError(null); }
+    catch (e: any) { setError(failed('plan what is next', e)); }
+    setBusy(false);
+  }, []);
+  useEffect(() => { void load(); }, [load, sig]);
+
+  const l = data?.load;
+  const chips = l ? ([
+    [l.overdue, 'overdue', 'text-err'], [l.high, 'high priority', 'text-warn'], [l.open, 'open to-dos', ''],
+    [l.waiting, 'waiting on others', ''], [l.lsd, 'LSD cases', ''], [l.dropQueue, 'in the drop queue', ''],
+    [l.failedToday, 'failed today', 'text-err'],
+  ] as Array<[number, string, string]>).filter(([n]) => n > 0) : [];
+
+  return (
+    <div className="rounded-panel border border-line bg-ai-wash px-4 py-3 flex flex-col gap-3">
+      <div className="flex items-start gap-2">
+        <Sparkles className="w-4 h-4 mt-0.5 shrink-0 text-accent-text" />
+        <div className="min-w-0 flex-1">
+          <p className="text-lg font-semibold text-fg leading-tight">Next up</p>
+          <p className="text-sm text-fg-2 mt-0.5">
+            {data ? data.headline : busy ? 'Reading your workload…' : error || ' '}
+          </p>
+        </div>
+        <UiIconButton icon={RefreshCw} label="Re-plan now" onClick={() => load(true)} disabled={busy}
+          className={busy ? 'animate-spin' : undefined} />
+      </div>
+
+      {!!chips.length && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-fg-3">
+          {chips.map(([n, label, tone]) => (
+            <span key={label}><span className={cn('mono font-semibold', tone || 'text-fg')}>{n}</span> {label}</span>
+          ))}
+        </div>
+      )}
+
+      {!!data?.items.length && (
+        <ol className="flex flex-col gap-1.5">
+          {data.items.map((it, i) => (
+            <li key={`${it.kind}-${it.id ?? i}`}>
+              <button onClick={() => onPick(it)}
+                className="w-full text-left flex items-start gap-3 px-2 py-1.5 -mx-2 rounded-control hover:bg-surface transition-colors group">
+                <span className="mono text-sm text-accent-text w-4 shrink-0 mt-px">{i + 1}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-sm font-medium text-fg truncate">{it.title}</span>
+                  <span className="block text-xs text-fg-3 leading-snug">{it.why}</span>
+                </span>
+                <span className="shrink-0 hidden sm:inline-flex items-center gap-1 text-xs text-accent-text mt-px">
+                  {it.action}<ChevronRight className="w-3 h-3 opacity-60 group-hover:opacity-100" />
+                </span>
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {data && !data.items.length && <p className="text-sm text-fg-3">Nothing is waiting on you.</p>}
+      {data && !data.ai && !!data.items.length && (
+        <p className="text-2xs text-fg-4">Ranked by due date, priority and age — no Gemini key for the reasoning.</p>
+      )}
+    </div>
+  );
+}
 
 // ─── Bucket presentation ─────────────────────────────────────────────────────
 const BUCKETS: Array<{
@@ -487,12 +562,17 @@ function TodoCard({
 }
 
 // ─── Page ────────────────────────────────────────────────────────────────────
-export function TodoPage({ toast, onOpenCount }: { toast: ToastFn; onOpenCount?: (n: number) => void }) {
-  const [items, setItems]     = useState<TodoItem[]>([]);
+export function TodoPage({ toast, onOpenCount, setTab }: {
+  toast: ToastFn; onOpenCount?: (n: number) => void; setTab?: (t: string) => void;
+}) {
+  // The board paints from this device's last copy; `loading` still means "live
+  // answer not in yet", so Next up waits for real data before asking the AI.
+  const cachedBoard = peek<{ items: TodoItem[]; lastScanAt: string | null; mailbox: string }>('todo.list:all');
+  const [items, setItems]     = useState<TodoItem[]>(() => cachedBoard?.items ?? []);
   const [loading, setLoading] = useState(true);
   const [status, setStatus]   = useState<TodoScanStatus | null>(null);
-  const [lastScanAt, setLastScanAt] = useState<string | null>(null);
-  const [mailbox, setMailbox] = useState('');
+  const [lastScanAt, setLastScanAt] = useState<string | null>(() => cachedBoard?.lastScanAt ?? null);
+  const [mailbox, setMailbox] = useState(() => cachedBoard?.mailbox ?? '');
   const [days, setDays]       = useState(30);
   const [view, setView]       = useState<'open' | 'done' | 'all'>('open');
   const [filter, setFilter]   = useState('');
@@ -625,12 +705,21 @@ export function TodoPage({ toast, onOpenCount }: { toast: ToastFn; onOpenCount?:
   // The sidebar badge shows what is still owed, so keep it in step with the board.
   useEffect(() => { onOpenCount?.(counts.open); }, [counts.open, onOpenCount]);
 
+  // Re-plan "Next up" whenever what is owed changes.
+  const nextSig = openItems.map(t => `${t.id}:${t.status}:${t.bucket}:${t.priority}:${t.due}`).join('|');
+  const pickNext = (it: TodoNextItem) => {
+    if (it.kind === 'todo') { const t = items.find(x => x.id === it.id); if (t) setOpenItem(t); return; }
+    setTab?.(it.kind === 'lsd' ? 'LSD' : it.kind === 'queue' ? 'Dashboard' : 'History');
+  };
+
   const running = !!status?.running;
   // Both endpoints carry it; whichever answered most recently wins.
   const scannedAt = status?.lastScanAt || lastScanAt;
 
   return (
     <div className="flex flex-col gap-6">
+      <NextUpCard sig={loading ? '' : nextSig} onPick={pickNext} />
+
       {/* ── Scan ─────────────────────────────────────────────────────────── */}
       <Section
         title="Triage the shared mailbox"
@@ -700,7 +789,7 @@ export function TodoPage({ toast, onOpenCount }: { toast: ToastFn; onOpenCount?:
       </Toolbar>
 
       {/* ── Board ────────────────────────────────────────────────────────── */}
-      {loading ? (
+      {loading && !items.length ? (
         <div className="flex items-center gap-2 text-sm text-fg-3 py-8"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
       ) : !items.length ? (
         <div className="rounded-panel border border-dashed border-line-2">
@@ -708,7 +797,10 @@ export function TodoPage({ toast, onOpenCount }: { toast: ToastFn; onOpenCount?:
             description="Run a full scan to sweep every unanswered thread out of the shared mailbox, or add something by hand — or send one over from the Inbox after summarising it." />
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+        // While `loading`, these cards are this device's saved copy: shown, but
+        // inert (no open/send/drag/tick) until the live board replaces them.
+        <div className={cn('grid grid-cols-1 lg:grid-cols-3 gap-6 items-start', loading && 'pointer-events-none opacity-70')}
+          aria-busy={loading} title={loading ? 'Saved copy — updating…' : undefined}>
           {BUCKETS.map(b => {
             const col     = shown.filter(t => t.bucket === b.id);
             const isOver  = dragOver === b.id;

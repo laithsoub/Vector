@@ -18,8 +18,11 @@ import {
   type PaletteGroup, type ShortcutName,
 } from './ui';
 import { failed } from './lib/errors';
+import { peek } from './lib/localCache';
 import { openExternal, isTauri } from './lib/shell';
 import { CancelDock } from './components/CancelDock';
+import { RestartButton } from './components/RestartButton';
+import { KeepAwakeButton } from './components/KeepAwakeButton';
 import { LangCtx, useLang, T, type Lang } from './lib/i18n';
 import { TabErrorBoundary } from './lib/ErrorBoundary';
 import type { Config } from './types';
@@ -37,9 +40,6 @@ const HistoryPage    = React.lazy(() => import('./pages/History').then(m => ({ d
 const InboxPage      = React.lazy(() => import('./pages/InboxOutlook').then(m => ({ default: m.InboxRoot })));
 const SettingsPage   = React.lazy(() => import('./pages/Settings').then(m => ({ default: m.SettingsPage })));
 const CrmPage        = React.lazy(() => import('./pages/Crm').then(m => ({ default: m.CrmPage })));
-const ELInfoPage     = React.lazy(() => import('./pages/ELInfo').then(m => ({ default: m.ELInfoPage })));
-const FentonKBPage   = React.lazy(() => import('./pages/FentonKB').then(m => ({ default: m.FentonKBPage })));
-const TodoPage       = React.lazy(() => import('./pages/Todo').then(m => ({ default: m.TodoPage })));
 // Component gallery for the v3 redesign. Opened with ?ui-sample or #ui-sample.
 const UiSamplePage   = React.lazy(() => import('./pages/UiSample').then(m => ({ default: m.UiSamplePage })));
 // AI Assistant + Tools pages are lazy-imported below, gated on STRIPPED. In the
@@ -48,7 +48,7 @@ const UiSamplePage   = React.lazy(() => import('./pages/UiSample').then(m => ({ 
 
 // ─── Tab definitions ─────────────────────────────────────────────────────────
 type TabId =
-  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Report' | 'Inbox' | 'Todo' | 'CRM' | 'ELInfo' | 'Fenton'
+  | 'Dashboard' | 'Assistant' | 'History' | 'Analytics' | 'Report' | 'Inbox' | 'CRM'
   | 'PMO' | 'CBU' | 'Commission' | 'Schematics' | 'Filing' | 'Docs' | 'LSD' | 'Settings';
 
 // Stripped ship build vs full local app. The desktop ship is produced with
@@ -64,7 +64,7 @@ const STRIPPED = import.meta.env.PROD;
 const LOCKED_TABS = new Set<TabId>(
   // Filing is locked in the ship build too: it writes to the shared D&Q Store,
   // which is not something a rolled-out copy should be able to do unattended.
-  STRIPPED ? ['Assistant', 'ELInfo', 'Fenton', 'Todo', 'PMO', 'CBU', 'Commission', 'Schematics', 'Filing', 'Docs', 'LSD'] : [],
+  STRIPPED ? ['Assistant', 'PMO', 'CBU', 'Commission', 'Schematics', 'Filing', 'Docs', 'LSD'] : [],
 );
 const isLocked = (t: TabId) => LOCKED_TABS.has(t);
 
@@ -83,9 +83,6 @@ const CbuPage        = STRIPPED ? null : React.lazy(() => import('./pages/CBU').
 // Title/description shown on each locked tab's Coming Soon wall.
 const COMING_SOON: Partial<Record<TabId, { title: string; desc: string }>> = {
   Assistant:  { title: 'Ask Vector',        desc: 'Your in-app AI copilot for quotes, specs, and projects is being prepared for the whole team. Stay tuned.' },
-  ELInfo:     { title: 'EL Internal Info',  desc: 'Your EL division internal-updates hub — digest, files and AI chat — is coming soon to your workspace.' },
-  Fenton:     { title: 'Ask Fenton',        desc: "Our lighting application expert's answers, distilled into a searchable knowledge base. Coming soon to your workspace." },
-  Todo:       { title: 'To-Do',             desc: 'AI triage of the shared mailbox into what you can finish, what is blocked, and what the team must pick up. Coming soon.' },
   Schematics: { title: 'Schematics Reader', desc: 'Automated schematic analysis is coming soon to your workspace.' },
   PMO:        { title: 'PMO',               desc: 'PMO automation is being readied for the team and will land here soon.' },
   CBU:        { title: 'CBU Sizer',         desc: 'The CBU sizing tool is coming soon to your workspace.' },
@@ -100,7 +97,6 @@ const NAV_STRUCTURE = {
   waiting: {
     labelKey: 'navWaiting' as const,
     items: [
-      { id: 'Todo'      as TabId, Icon: ListTodo,        labelKey: 'todo'      as const },
       { id: 'Inbox'     as TabId, Icon: Mail,            labelKey: 'inbox'     as const },
       { id: 'Assistant' as TabId, Icon: Sparkles,        labelKey: 'assistant' as const },
     ],
@@ -120,8 +116,6 @@ const NAV_STRUCTURE = {
     labelKey: 'navLook' as const,
     items: [
       { id: 'CRM'    as TabId, Icon: Users,     labelKey: 'crm'      as const },
-      { id: 'Fenton' as TabId, Icon: Lightbulb, labelKey: 'fenton'   as const },
-      { id: 'ELInfo' as TabId, Icon: Megaphone, labelKey: 'elInfo'   as const },
       { id: 'Docs'   as TabId, Icon: BookOpen,  labelKey: 'docPacks' as const },
     ],
   },
@@ -141,10 +135,7 @@ const TITLE_KEYS: Record<TabId, { t: keyof typeof T.en; s: keyof typeof T.en }> 
   Dashboard: { t: 'dashboard',  s: 'sub_dashboard'  },
   Assistant: { t: 'assistant',  s: 'sub_assistant'  },
   Inbox:     { t: 'inbox',      s: 'sub_inbox'      },
-  Todo:      { t: 'todo',       s: 'sub_todo'       },
   CRM:       { t: 'crm',        s: 'sub_crm'       },
-  ELInfo:    { t: 'title_elInfo', s: 'sub_elInfo'  },
-  Fenton:    { t: 'fenton',     s: 'sub_fenton'    },
   History:   { t: 'history',    s: 'sub_history'   },
   Analytics: { t: 'analytics',  s: 'sub_analytics' },
   Report:    { t: 'report',     s: 'sub_report'    },
@@ -215,7 +206,7 @@ function Sidebar({
             {sec.items.map(it => {
               const active = it.id === tab;
               const locked = isLocked(it.id);
-              const badge = it.id === 'Todo' ? todoOpen : it.id === 'Inbox' ? inboxUnread : 0;
+              const badge = it.id === 'Inbox' ? inboxUnread : 0;
               return (
                 <button key={it.id} onClick={() => setTab(it.id)}
                   aria-current={active ? 'page' : undefined}
@@ -311,6 +302,10 @@ function Header({
         trailing={connected && !connecting ? <RefreshCw className="w-3 h-3 text-fg-4" strokeWidth={1.75} /> : undefined}>
         {connecting ? tr.connecting : connected ? (userName ? userName.split(',')[0].split(' ')[0] : tr.connected) : tr.connectJoe}
       </Button>
+
+      <KeepAwakeButton />
+
+      {!isTauri() && <RestartButton />}
 
       <IconButton icon={MessageSquarePlus} label="Send feedback" onClick={onFeedback} />
 
@@ -748,6 +743,18 @@ function WelcomeModal({ opened, onClose }: { opened: boolean; onClose: () => voi
 // NAV_STRUCTURE but forgotten here got a working sidebar button that switched to
 // a blank screen, because the render loop below never emitted a panel for it.
 // Settings is appended because its button lives in the sidebar footer, not the nav.
+// Tabs that were folded into others: Fenton and EL Info live in Ask Vector as
+// source chips, To-Do is a view inside the Inbox. A saved or linked old tab
+// lands where its content went.
+function legacyTab(t: string | null): TabId {
+  if (t === 'Fenton' || t === 'ELInfo') return 'Assistant';
+  if (t === 'Todo') {
+    try { localStorage.setItem('inbox_view', 'todo'); } catch { /* private mode */ }
+    return 'Inbox';
+  }
+  return t as TabId;
+}
+
 const VALID_TABS: TabId[] = [
   ...Object.values(NAV_STRUCTURE).flatMap(g => g.items.map(i => i.id)),
   'Settings',
@@ -760,8 +767,8 @@ const VALID_TABS: TabId[] = [
 // 0 = full-bleed: the page owns the whole area (Assistant's chat, Inbox's panes).
 // Values are in --sp-4 units (16px steps), so the frame stays on the grid.
 const PAGE_FRAME: Record<TabId, number> = {
-  Dashboard: 80, Assistant: 0,  Inbox: 0,   Todo: 80,
-  CRM:       80, ELInfo:    70, Fenton: 74, History: 80,
+  Dashboard: 80, Assistant: 0,  Inbox: 0,
+  CRM:       80, History: 80,
   Analytics: 80, Report:    70, LSD:    80, PMO:     70,
   CBU:       72, Commission: 64, Schematics: 80, Filing: 60,
   Docs:      60, Settings:   64,
@@ -777,12 +784,12 @@ const uiSample = typeof window !== 'undefined' &&
 
 export default function App() {
   const [tab, setTabState] = useState<TabId>(() => {
-    const saved = localStorage.getItem('vector_tab') as TabId;
+    const saved = legacyTab(localStorage.getItem('vector_tab'));
     return VALID_TABS.includes(saved) ? saved : 'Dashboard';
   });
   // Track which tabs have ever been opened — only mount those, never unmount
   const [visited, setVisited] = useState<Set<TabId>>(() => new Set([
-    (localStorage.getItem('vector_tab') as TabId) || 'Dashboard',
+    legacyTab(localStorage.getItem('vector_tab')) || 'Dashboard',
   ]));
   const setTab = useCallback((t: TabId) => {
     setTabState(t);
@@ -864,7 +871,7 @@ export default function App() {
   const [splashDone, setSplashDone] = useState(false);
   const [inboxUnread, setInboxUnread] = useState(0);
   // The v2 sidebar badges what is still owed, not what is queued.
-  const [todoOpen, setTodoOpen] = useState(0);
+  const [todoOpen, setTodoOpen] = useState(() => peek<{ items: unknown[] }>('todo.list:open')?.items?.length ?? 0);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(() => !localStorage.getItem(WELCOME_KEY));
   const dismissWelcome = useCallback(() => {
@@ -1070,7 +1077,8 @@ export default function App() {
                   ) : visited.has(t) && (isInbox ? (
                     <TabErrorBoundary label="Inbox">
                       <React.Suspense fallback={<div className="flex items-center justify-center h-full text-fg-3"><Loader2 className="w-5 h-5 animate-spin" /></div>}>
-                        <InboxPage toast={toast} setTab={t2 => setTab(t2 as TabId)} onUnreadCount={setInboxUnread} />
+                        <InboxPage toast={toast} setTab={t2 => setTab(t2 as TabId)} onUnreadCount={setInboxUnread}
+                          todoOpen={todoOpen} onTodoCount={setTodoOpen} />
                       </React.Suspense>
                     </TabErrorBoundary>
                   ) : (
@@ -1085,11 +1093,8 @@ export default function App() {
                       {t === 'Dashboard'  && <DashboardPage  connected={!!connected} toast={toast} onTab={setTab} />}
                       {t === 'Analytics'  && <AnalyticsPage />}
                       {t === 'Report'     && <ReportPage      toast={toast} />}
-                      {t === 'Todo'       && <TodoPage        toast={toast} onOpenCount={setTodoOpen} />}
                       {t === 'History'    && <HistoryPage      toast={toast} />}
                       {t === 'CRM'        && <CrmPage          toast={toast} />}
-                      {t === 'ELInfo'     && <ELInfoPage       toast={toast} />}
-                      {t === 'Fenton'     && <FentonKBPage     toast={toast} />}
                       {t === 'Assistant'  && AssistantPage  && <AssistantPage  connected={!!connected} toast={toast} />}
                       {t === 'Schematics' && SchematicsPage && <SchematicsPage toast={toast} />}
                 {t === 'Filing'     && FilingPage     && <FilingPage toast={toast} />}

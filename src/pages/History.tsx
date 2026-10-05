@@ -13,12 +13,14 @@ import {
 } from '../ui';
 import { MiniStackedBars, PRODUCT_COLORS } from '../lib/charts';
 import { api } from '../lib/api';
+import { peek } from '../lib/localCache';
 import { failed } from '../lib/errors';
+import { stepLabel } from '../lib/steps';
 import type { Job } from '../types';
 import type { ToastFn } from '../App';
 
 export function HistoryPage({ toast }: { toast: ToastFn }) {
-  const [jobs, setJobs] = useState<Job[]>([]);
+  const [jobs, setJobs] = useState<Job[]>(() => peek<Job[]>('jobs') ?? []);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<'all' | 'ok' | 'warn' | 'err'>('all');
   const [stepF, setStepF]   = useState<'all' | 'Step 1' | 'Step 2'>('all');
@@ -71,7 +73,7 @@ export function HistoryPage({ toast }: { toast: ToastFn }) {
         </span>
       );
     } },
-    { key: 'step', header: 'Step', width: 'calc(var(--sp-4) * 5)', render: j => <Badge tone={j.step === 'Step 1' ? 'accent' : 'neutral'}>{j.step}</Badge> },
+    { key: 'step', header: 'Upload to', width: 'calc(var(--sp-4) * 8)', render: j => <Badge tone={j.step === 'Step 1' ? 'accent' : 'neutral'}>{stepLabel(j.step)}</Badge> },
     { key: 'product', header: 'Product', width: 'calc(var(--sp-4) * 7)', render: j => j.product ? (
       <span className="inline-flex items-center gap-1.5">
         <span className="w-0.5 h-3 rounded-full shrink-0" style={{ background: PRODUCT_COLORS[j.product] || 'var(--t3)' }} />
@@ -119,9 +121,9 @@ export function HistoryPage({ toast }: { toast: ToastFn }) {
             { value: 'err',  label: 'Err' },
           ]} />
           <Segmented value={stepF} onChange={setStepF} data={[
-            { value: 'all',    label: 'All steps' },
-            { value: 'Step 1', label: 'Step 1' },
-            { value: 'Step 2', label: 'Step 2' },
+            { value: 'all',    label: 'All uploads' },
+            { value: 'Step 1', label: stepLabel('Step 1') },
+            { value: 'Step 2', label: stepLabel('Step 2') },
           ]} />
           <IconLink icon={Download} label="Export CSV" href="/api/export/jobs.csv" />
           <IconButton icon={RefreshCw} label="Refresh" tone="secondary" loading={loading} onClick={refresh} />

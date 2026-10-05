@@ -13,20 +13,24 @@ import {
   StackedAreaChart, Donut, HorizontalBars, Heatmap, PRODUCT_COLORS,
 } from '../lib/charts';
 import { api } from '../lib/api';
+import { peek } from '../lib/localCache';
 import type { AnalyticsResponse } from '../types';
 
 export function AnalyticsPage() {
   const [range, setRange] = useState<number>(30);
-  const [data, setData]   = useState<AnalyticsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [data, setData]   = useState<AnalyticsResponse | null>(() => peek<AnalyticsResponse>('analytics:30') ?? null);
+  const [loading, setLoading] = useState(() => !peek('analytics:30'));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setLoading(true);
+    // A range seen before paints from this device at once; the live answer
+    // replaces it. Only a never-seen range shows the spinner.
+    const hit = peek<AnalyticsResponse>(`analytics:${range}`);
+    if (hit) setData(hit); else setLoading(true);
     setError(null);
     api.analytics(range)
       .then(r => { setData(r); setLoading(false); })
-      .catch(e => { setError(e.message || 'Failed to load analytics'); setLoading(false); });
+      .catch(e => { if (!hit) setError(e.message || 'Failed to load analytics'); setLoading(false); });
   }, [range]);
 
   if (loading) return (
@@ -157,11 +161,11 @@ export function AnalyticsPage() {
         </Card>
 
         <Card className="col-span-12 lg:col-span-4 flex flex-col">
-          <CardTitle title="Step 1 vs Step 2" sub="Where the work splits" />
+          <CardTitle title="SharePoint List vs D&Q Store" sub="Where the work splits" />
           <div className="flex-1 flex flex-col justify-center gap-3">
             {[
-              { name: 'Step 1 — Quotation list', value: byStep['Step 1'] || 0, color: 'var(--accent)' },
-              { name: 'Step 2 — D&Q store',      value: byStep['Step 2'] || 0, color: 'var(--violet)' },
+              { name: 'SharePoint List', value: byStep['Step 1'] || 0, color: 'var(--accent)' },
+              { name: 'D&Q Store',       value: byStep['Step 2'] || 0, color: 'var(--violet)' },
             ].map(s => {
               const pct = (s.value / (stepTotal || 1)) * 100;
               return (
@@ -309,7 +313,7 @@ function Leaderboard({
   barColor: string;
 }) {
   if (items.length === 0) {
-    return <p className="px-5 py-6 text-xs text-fg-3 text-center">No data yet — Step 1 runs need to populate the customer/salesman fields first.</p>;
+    return <p className="px-5 py-6 text-xs text-fg-3 text-center">No data yet — SharePoint List uploads need to populate the customer/salesman fields first.</p>;
   }
   return (
     <div>

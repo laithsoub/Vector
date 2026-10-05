@@ -39,7 +39,7 @@ const T = {
     // Sidebar subtitles
     sub_dashboard:  'Drop quotes, tag, and push to SharePoint',
     sub_assistant:  'Your in-app AI copilot for quotes, specs & projects',
-    sub_history:   'Every Step 1 and Step 2 run',
+    sub_history:   'Every SharePoint List and D&Q Store upload',
     sub_analytics: 'Operational health across your quote pipeline',
     sub_report:    'What you actually got done, by category, over any period',
     sub_inbox:     'Outlook triage — summarize, reply, price and quote',

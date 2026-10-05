@@ -6,7 +6,7 @@ import {
   readdirSync, statSync, unlinkSync, mkdirSync, rmdirSync, createReadStream, copyFileSync, renameSync
 } from 'fs';
 import os from 'os';
-import { spawn, execFileSync } from 'child_process';
+import * as childProcess from 'child_process';
 import { request as httpsRequest } from 'https';
 import { createServer as netCreateServer } from 'net';
 import { AsyncLocalStorage } from 'async_hooks';
@@ -15,6 +15,19 @@ import { randomUUID, randomBytes, scryptSync, createCipheriv, createDecipheriv, 
 import initSqlJs from 'sql.js';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+
+// Every child (python, powershell, py.exe…) starts with its console window
+// hidden. Without this, a server that has no console of its own — hidden
+// launcher, restarted copy — pops a cmd window for each script it runs.
+// A call can still pass windowsHide: false explicitly.
+const spawn = ((cmd: string, args?: any, opts?: any) =>
+  Array.isArray(args)
+    ? childProcess.spawn(cmd, args, { windowsHide: true, ...opts })
+    : childProcess.spawn(cmd, { windowsHide: true, ...args })) as typeof childProcess.spawn;
+const execFileSync = ((file: string, args?: any, opts?: any) =>
+  Array.isArray(args)
+    ? childProcess.execFileSync(file, args, { windowsHide: true, ...opts })
+    : childProcess.execFileSync(file, { windowsHide: true, ...args })) as typeof childProcess.execFileSync;
 
 dotenv.config();
 
@@ -135,11 +148,11 @@ const CONFIG_KEYS = [
   'base', 'initials', 'sp_site', 'sp_list', 'dq_store',
   'inside_sales', 'azure_di_endpoint', 'azure_di_key',
   'gemini_key', 'ai_model', 'job_categories', 'cbu_salesmen',
-  'lsd_master_model', 'lsd_cases_root', 'lsd_ledger', 'lsd_cpq_port',
+  'lsd_master_model', 'lsd_cost_master', 'lsd_cases_root', 'lsd_ledger', 'lsd_cpq_port',
   'lsd_register', 'lsd_sales_name', 'lsd_bu', 'lsd_request_type',
   'lsd_approver', 'lsd_approver_cc',
   'lsd_keepalive', 'lsd_keepalive_min', 'lsd_keepalive_urls',
-  'lsd_queue', 'lsd_queue_min', 'lsd_daily_file', 'lsd_queue_bu',
+  'lsd_queue', 'lsd_queue_min', 'lsd_daily_file', 'lsd_queue_bu', 'lsd_queue_source', 'lsd_queue_days',
 ] as const;
 
 // ── Salesman roster ──────────────────────────────────────────────────────────
@@ -447,6 +460,26 @@ function loadDb() {
   // and "cr00us2z3yaa" depending on who typed it, and they are one quote.
   db.run(`CREATE UNIQUE INDEX IF NOT EXISTS cbu_ref_key
           ON cbu_ref(system, quoteRef COLLATE NOCASE);`);
+  // The rule table: what the engines price by, with who set each rule, where it
+  // came from and the dates it holds for. A row is 'proposed' until someone
+  // approves it — only 'approved' rows reach an engine — and a rule is never
+  // edited in place: a change is a new row that supersedes the old one, so the
+  // history of every number stays readable. `value` is JSON. The dates are the
+  // TRANSACTION's (valid_from inclusive, valid_to exclusive), not the clock's.
+  db.run(`CREATE TABLE IF NOT EXISTS rule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    domain TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    title TEXT, why TEXT,
+    source TEXT, sourceRef TEXT,
+    validFrom TEXT, validTo TEXT,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    proposedBy TEXT, proposedAt TEXT NOT NULL,
+    decidedBy TEXT, decidedAt TEXT, decisionNote TEXT,
+    supersedes INTEGER, supersededBy INTEGER
+  );`);
+  db.run(`CREATE INDEX IF NOT EXISTS rule_domain_key ON rule(domain, key, status);`);
   migrateDb();
   migrateTodo();
   migrateCrm();
@@ -670,6 +703,58 @@ function runWrite(sql: string, params: any[] = []): number {
   return id as number;
 }
 
+// ── the rule table (see `rule` in loadDb) ────────────────────────────────────
+// Only LSD has an engine that reads it so far. The engine owns what a key means
+// and what a valid value is, so the server asks it rather than keeping a copy.
+const RULE_ENGINES: Record<string, string> = { lsd: 'lsd_pricing.py' };
+
+function ruleEngine(domain: string, args: string[]): any {
+  const script = pyFile(RULE_ENGINES[domain]);
+  if (!existsSync(script)) throw new Error(`${RULE_ENGINES[domain]} is missing from this install`);
+  const [py, base] = pyArgs(script);
+  return JSON.parse(execFileSync(py, [...base, ...args],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000 }));
+}
+
+function ruleRow(r: Record<string, any>) {
+  let value: unknown = null;
+  try { value = JSON.parse(r.value); } catch {}
+  return { ...r, value };
+}
+
+// An empty domain is seeded from the engine's own defaults, as approved rules —
+// that is what the engine was already pricing by, so seeding changes no price.
+function rulesSeed(domain: string) {
+  if (!RULE_ENGINES[domain]) return;
+  const [{ c }] = queryAll('SELECT COUNT(*) AS c FROM rule WHERE domain = ?', [domain]);
+  if (c) return;
+  const now = new Date().toISOString();
+  for (const r of ruleEngine(domain, ['--dump-rules']) as any[]) {
+    db.run(`INSERT INTO rule (domain, key, value, title, why, source, status,
+              proposedBy, proposedAt, decidedBy, decidedAt, decisionNote)
+            VALUES (?, ?, ?, ?, ?, ?, 'approved', 'Vector', ?, 'Vector', ?, ?)`,
+      [domain, r.key, JSON.stringify(r.value), r.title ?? null, r.why ?? null, r.source ?? null,
+       now, now, 'Seeded from the engine defaults it was already pricing by']);
+  }
+  saveDb();
+}
+
+// What a job is handed: every approved rule, dates and all — the engine picks the
+// ones in force on the transaction's own date. Undefined (engine defaults) when
+// the table cannot be read, so a broken table never stops a case being priced.
+function rulesForJob(domain: string): any[] | undefined {
+  try {
+    rulesSeed(domain);
+    return queryAll(`SELECT id, key, value, title, source, validFrom, validTo
+                     FROM rule WHERE domain = ? AND status = 'approved'`, [domain])
+      .map(r => ({ id: r.id, key: r.key, value: ruleRow(r).value, title: r.title,
+                   source: r.source, valid_from: r.validFrom || null, valid_to: r.validTo || null }));
+  } catch (e: any) {
+    console.error(`[rules] ${domain}: falling back to engine defaults —`, e.message);
+    return undefined;
+  }
+}
+
 // Insert a job with the new optional columns
 function insertJob(j: {
   step: string;
@@ -767,7 +852,7 @@ setInterval(async () => {
       if (ok) {
         appendLog(`[retry] ${item.script} succeeded`);
         all.splice(idx, 1);
-        insertJob({ step: 'Step 2', status: 'ok', note: 'D&Q Store built (auto-retry)', durationSec: null });
+        insertJob({ step: 'Step 2', status: 'ok', note: 'Uploaded to D&Q Store (auto-retry)', durationSec: null });
       } else {
         all[idx].attempts++;
         all[idx].lastError = output.slice(-200);
@@ -1169,7 +1254,83 @@ function fentonKnowledgeBlock(limit = 30): string {
   } catch { return ''; }
 }
 
-function buildSystemPrompt(appContext: string): string {
+// ── Knowledge sources Ask Vector can be pinned to ────────────────────────────
+// 'fenton' = Mark Fenton's answers, 'elinfo' = EATON_Emergency_Lighting_INTERNAL
+// updates. Both are ALWAYS in the brain's context (relevance-picked); a chip in
+// the composer pins an answer to them only (see chatAnswer's focus mode).
+type KnowledgeSource = 'fenton' | 'elinfo';
+const KNOWLEDGE_SOURCES: Record<KnowledgeSource, string> = {
+  fenton: "Mark Fenton's answers",
+  elinfo: 'EL internal updates',
+};
+
+// A pinned message that asks to look further than the pinned sources.
+const WIDEN_RE = /\b(online|on the web|the web|web ?search|internet|google|search (it|online|the web)|look (it )?up|other sources?|elsewhere|outside (of )?(the |his |these )?|datasheets?|price ?sheet|pricing sheet|price ?list|el pricer|double[- ]?check|verify)\b/i;
+
+const KB_STOP = new Set(['the', 'and', 'for', 'with', 'what', 'which', 'this', 'that', 'from', 'have', 'does',
+  'about', 'there', 'their', 'into', 'your', 'you', 'are', 'was', 'can', 'any', 'how', 'why', 'when', 'who',
+  'tell', 'give', 'show', 'list', 'please', 'mark', 'fenton', 'update', 'updates', 'internal', 'eaton']);
+function kbTokens(q: string): string[] {
+  return Array.from(new Set(String(q || '').toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) || []))
+    .filter(t => !KB_STOP.has(t)).slice(0, 12);
+}
+// Rows ranked by how many query words they carry (ties keep newest-first order),
+// then topped up with the newest ones so recent guidance is always in view.
+function kbPick<T>(rows: T[], text: (r: T) => string, query: string, relevant: number, newest: number): T[] {
+  const toks = kbTokens(query);
+  const scored = toks.length
+    ? rows.map((r, i) => {
+        const hay = text(r).toLowerCase();
+        return { r, i, s: toks.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0) };
+      }).filter(x => x.s > 0).sort((a, b) => b.s - a.s || a.i - b.i).slice(0, relevant).map(x => x.r)
+    : [];
+  const out = [...scored];
+  for (const r of rows) { if (out.length >= scored.length + newest) break; if (!out.includes(r)) out.push(r); }
+  return out;
+}
+
+// Fenton's cards. `full` (pinned) hands over far more, with the source email.
+function fentonKnowledge(query: string, full = false): string {
+  try {
+    const rows = queryAll(
+      `SELECT received, subject, topic, question, answer, body FROM fenton_kb
+        WHERE answer IS NOT NULL AND answer != '' AND COALESCE(skipped, 0) = 0
+        ORDER BY received DESC`);
+    if (!rows.length) return '';
+    const pick = kbPick(rows, (f: any) => `${f.subject} ${f.topic} ${f.question} ${f.answer}`, query,
+      full ? 40 : 10, full ? 40 : 20);
+    return [
+      `Mark Fenton EL knowledge base — ${pick.length} of ${rows.length} answers (most relevant first, then newest; cite the date when you use one):`,
+      ...pick.map((f: any) => {
+        const head = `  [${String(f.received).slice(0, 10)}] ${f.topic || f.question || f.subject || ''} → ${f.answer}`;
+        return full && f.body ? `${head}\n    (his email: ${String(f.body).replace(/\s+/g, ' ').slice(0, 900)})` : head;
+      }),
+    ].join('\n');
+  } catch { return ''; }
+}
+// EL internal updates: the standing digest plus the emails that bear on the question.
+function elInfoKnowledge(query: string, full = false): string {
+  try {
+    const rows = queryAll(`SELECT received, subject, body, attachments FROM el_internal ORDER BY received DESC`);
+    if (!rows.length) return '';
+    const digest = String(queryAll('SELECT digest FROM el_internal_meta WHERE id = 1')[0]?.digest || '').trim();
+    const pick = kbPick(rows, (e: any) => `${e.subject} ${e.body}`, query, full ? 25 : 6, full ? 15 : 3);
+    const per = full ? 2200 : 900;
+    const files = (s: string) => { try { return (JSON.parse(s || '[]') as any[]).map(a => a.name).filter(Boolean); } catch { return []; } };
+    return [
+      `EL internal updates (EATON_Emergency_Lighting_INTERNAL) — ${rows.length} emails this year; cite the update date (YYYY-MM-DD) you draw on.`,
+      digest ? `Current-state digest:\n${digest.slice(0, full ? 6000 : 2500)}` : '',
+      `Relevant update emails (${pick.length}):`,
+      ...pick.map((e: any) => {
+        const f = files(e.attachments);
+        return `  [${String(e.received).slice(0, 10)}] ${e.subject}\n    ${String(e.body || '').replace(/\s+/g, ' ').slice(0, per)}`
+          + (f.length ? `\n    (files: ${f.join(', ')})` : '');
+      }),
+    ].filter(Boolean).join('\n');
+  } catch { return ''; }
+}
+
+function buildSystemPrompt(appContext: string, focus: KnowledgeSource[] = [], widened = false): string {
   const lines = [
     'You are Ask Vector — the single AI brain inside Vector, a quote & PMO automation app for Eaton (Budapest). The same brain answers in this chat, summarises the Inbox, and helps across the app, so behave as one consistent, self-aware assistant.',
     'Vector was designed and built by Laith Al-Soub (Technical Sales & Systems Engineer, Eaton Budapest) — its creator and owner. If asked who made/owns it: Laith Al-Soub. (Formerly "MagicUploader".)',
@@ -1177,16 +1338,16 @@ function buildSystemPrompt(appContext: string): string {
     '## How to answer (read this first)',
     '- Lead with the answer or the bottom line. No preamble, no restating the question, no "I am an AI", no "this is an email".',
     '- Say only what is useful. Never pad with the obvious. If one sentence does it, use one sentence.',
-    '- Be specific and confident. When you point at the app, name the exact tab/button ("Dashboard → Run Step 1", "PMO tab", "Connect to JOE").',
+    '- Be specific and confident. When you point at the app, name the exact tab/button ("Dashboard → Upload to SharePoint List", "PMO tab", "Connect to JOE").',
     '- You are ALREADY inside the app. Never tell the user to "open Ask Vector", "go to the Inbox", or "click Summarize" — they are already there.',
     '- Use short numbered steps ONLY when the user genuinely needs a procedure; otherwise just answer.',
     '- If something is truly missing or ambiguous, ask one sharp question instead of guessing.',
     '- Formatting: when comparing parts/options or asked to "tabulate / put in a table", output a GitHub-style markdown table (| col | col | with a |---|---| separator) — the app renders it. When asked to draft/inject an email, write the actual email (Subject + body) ready to copy. Keep tables tight: only the columns that matter.',
     '',
     '## What Vector does',
-    '- **Dashboard**: drop queue + recent jobs; Run Step 1 / Run Step 2.',
-    '- **Step 1**: extracts pricing from dropped quotes (UK/BE/FR/IT/DE/ES; PDF/Word/Excel) → uploads to the SharePoint QuotationFactory list.',
-    '- **Step 2**: creates the D&Q Store folder on SharePoint and uploads the quote PDF.',
+    '- **Dashboard**: drop queue + recent jobs; Upload to SharePoint List / Upload to D&Q Store (older runs are logged as "Step 1" / "Step 2").',
+    '- **Upload to SharePoint List**: extracts pricing from dropped quotes (UK/BE/FR/IT/DE/ES; PDF/Word/Excel) → uploads to the SharePoint QuotationFactory list.',
+    '- **Upload to D&Q Store**: creates the D&Q Store folder on SharePoint and uploads the quote PDF.',
     '- **PMO tab**: quote PDF + customer PO + BidManager DOCU_ID PDFs → a PMO Word doc, ready to email the PMO team.',
     // Named from the workbook actually on disk. Hardcoding the issue here meant
     // the brain kept quoting "July 2026" after the sheet had been replaced.
@@ -1210,6 +1371,9 @@ function buildSystemPrompt(appContext: string): string {
     '## Mark Fenton knowledge',
     "You carry Mark Fenton's (Senior Lighting Application Engineer, Eaton UK) accumulated EL guidance as a knowledge base (supplied below when present). Use it for EL application questions and cite the date (YYYY-MM-DD) of the answer you draw on. If a topic isn't covered there, say so plainly rather than inventing.",
     '',
+    '## EL internal updates',
+    'You also carry the EATON_Emergency_Lighting_INTERNAL update emails (launches, phase-outs, stock, technical notices) plus a current-state digest (supplied below when present). ALWAYS check them before answering anything about an EL product, its availability, a discontinuation or a replacement — they override older knowledge and the web. Cite the update date.',
+    '',
     '## Sales reps (people in the quote data, NOT the app team)',
     'Blair McDonald, Craig Donaldson, Joe Bayley, Mark Fenton, Ollie Bailey, Ryan Houston.',
     '',
@@ -1219,8 +1383,16 @@ function buildSystemPrompt(appContext: string): string {
     '## Common fixes',
     '- FedAuth / 401 / SharePoint 403 / cookie expired → click Connect to JOE.',
     '- PDF format not recognised → only UK/BE/FR/IT/DE/ES quotes are supported.',
-    '- Step 1 uploaded nothing → check the CSV in the base folder; re-run if empty.',
+    '- Upload to SharePoint List uploaded nothing → check the CSV in the base folder; re-run if empty.',
+    '- "List data validation failed" → the Salesforce ID is not 18 characters, or the dates are out of order (Arrived ≤ On-hold ≤ Recovering ≤ Processed).',
   ];
+  if (focus.length) {
+    const names = focus.map(f => KNOWLEDGE_SOURCES[f]).join(' and ');
+    lines.push('', '## SOURCE LOCK — overrides everything above',
+      widened
+        ? `The user pinned this answer to ${names}, and this message also asks you to look further. Answer from ${names} FIRST and say what they say; then add what the other sources (web, price sheet) contribute, clearly labelled as coming from outside ${names}.`
+        : `The user pinned this answer to ${names} ONLY. Answer strictly from the ${names} material below — no web, no price sheet, no general knowledge. Cite the date of each item you use. If the material does not cover the question, say so in one line, share the closest thing it DOES say, and offer to look online or in the price sheet (the user just has to ask). Never fill a gap from memory.`);
+  }
   if (appContext) lines.push('', '## Live app state (use for specific answers)', appContext);
   return lines.join('\n');
 }
@@ -1408,12 +1580,27 @@ async function answerMeta(
 async function chatAnswer(
   query: string,
   history?: Array<{ role: string; text: string }>,
-): Promise<{ answer: string | null; error?: string; source?: string; suggestions?: string[]; title?: string }> {
+  sources?: string[],
+): Promise<{ answer: string | null; error?: string; source?: string; suggestions?: string[]; title?: string; sources?: KnowledgeSource[] }> {
   const ai = getGemini();
   if (!ai) return { answer: null, error: 'No Gemini API key — add gemini_key in Settings' };
 
+  // Source lock: a composer chip pins the answer to Fenton and/or EL Info. The
+  // lock holds until the message itself asks to look further.
+  const focus = (sources || []).filter((x): x is KnowledgeSource => x in KNOWLEDGE_SOURCES);
+  const widened = focus.length > 0 && WIDEN_RE.test(query);
+  const locked = focus.length > 0 && !widened;
+  const kbQuery = [query, ...(history || []).filter(h => h.role === 'user').slice(-2).map(h => h.text)].join(' ');
+  const kbBlocks = (Object.keys(KNOWLEDGE_SOURCES) as KnowledgeSource[])
+    .filter(k => !locked || focus.includes(k))
+    .map(k => (k === 'fenton' ? fentonKnowledge : elInfoKnowledge)(kbQuery, focus.includes(k)))
+    .filter(Boolean);
+
   let appContext = '';
-  try {
+  if (locked) {
+    appContext = kbBlocks.length ? kbBlocks.join('\n\n')
+      : `(Nothing is stored yet for ${focus.map(f => KNOWLEDGE_SOURCES[f]).join(' / ')} — the background refresh has not run. Say so.)`;
+  } else try {
     const recentJobs = queryAll('SELECT step, pdfName, status, product, customer, timestamp, note, price, salesman FROM jobs ORDER BY id DESC LIMIT 20');
     const stats = queryAll(`SELECT COUNT(*) AS total, SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END) AS ok, SUM(CASE WHEN status='err' THEN 1 ELSE 0 END) AS failed FROM jobs WHERE timestamp >= date('now','-7 days')`)[0];
     const cfg = loadPyCfg();
@@ -1435,8 +1622,7 @@ async function chatAnswer(
         return l;
       }),
     ];
-    const fenBlock = fentonKnowledgeBlock();
-    if (fenBlock) contextLines.push('', fenBlock);
+    for (const b of kbBlocks) contextLines.push('', b);
     appContext = contextLines.join('\n');
   } catch {}
 
@@ -1455,7 +1641,7 @@ async function chatAnswer(
   // a cat-no anywhere in the thread, or product/price wording. Pure chit-chat skips it.
   const wantSheet = catTokens.length > 0
     || /\b(price|pricing|cost|ntp|list price|catalogue|catalog|cat[\s-]?no|part\s*(?:no|number)|fitting|luminaire|lumen|wattage|bulkhead|exit sign|emergency|driver|led|tube|equivalent|alternativ|replace|substitut|phase[\s-]?out|datasheet|data sheet|spec)\b/i.test(lookupText);
-  if (wantSheet) {
+  if (wantSheet && !locked) {
     try {
       // Search EACH bare token on its own — a chatty blob otherwise buries the exact row
       // under junk description-matches; the bare token gives a clean [exact] hit.
@@ -1506,10 +1692,10 @@ async function chatAnswer(
       // the visible answer is never starved. Google Search grounding is ALWAYS attached;
       // the model decides when to actually search, so it can always verify / find specs.
       config: {
-        systemInstruction: buildSystemPrompt(appContext),
+        systemInstruction: buildSystemPrompt(appContext, focus, widened),
         maxOutputTokens: 8192,
         temperature: 0.5,
-        tools: [{ googleSearch: {} }],
+        ...(locked ? {} : { tools: [{ googleSearch: {} }] }),
       },
     });
     let answer = response.text ?? null;
@@ -1534,7 +1720,7 @@ async function chatAnswer(
     }
 
     const meta = answer ? await answerMeta(ai, query, answer, history) : { title: '', suggestions: [] };
-    return { answer, source: 'gemini+web', suggestions: meta.suggestions, title: meta.title };
+    return { answer, source: locked ? 'knowledge' : 'gemini+web', suggestions: meta.suggestions, title: meta.title, sources: focus };
   } catch (e: any) {
     const detail = e.cause?.message ? ` (${e.cause.message})` : '';
     return { answer: null, error: 'Gemini error: ' + e.message + detail };
@@ -1815,6 +2001,8 @@ function jobToCard(j: any): any {
 }
 
 
+const BOOT_ID = randomUUID();
+
 function findFreePort(start: number): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = netCreateServer();
@@ -1894,6 +2082,8 @@ async function startServer() {
       // LSD Pricing: the tab is locked in the ship and lsd_pricing.py is not
       // staged into ship-automation, so the whole surface refuses here too.
       '/api/lsd',
+      // The rule table: its only engine so far is lsd_pricing.py, same reason.
+      '/api/rules',
     ];
     app.use((req, res, next) => {
       if (SHIP_BLOCKED.some(p => req.path === p || req.path.startsWith(p + '/'))) {
@@ -1933,7 +2123,79 @@ async function startServer() {
   });
 
   // ── Stats ──────────────────────────────────────────────────────────────────
-  app.get('/api/ping', (_req, res) => res.json({ version: 'Vector', pmo: true, analytics: true }));
+  // `boot` changes on every start, so the header's restart button can tell the
+  // new server from the old one still answering.
+  app.get('/api/ping', (_req, res) => res.json({ version: 'Vector', pmo: true, analytics: true, boot: BOOT_ID }));
+
+  // Restart in place: spawn a copy of this process (same node, loader flags,
+  // script, cwd, env and log handles), then exit so it can take the port. The
+  // copy retries the port while this one lets go. Not in the Tauri sidecar —
+  // Rust owns that process and reads its port from stdout.
+  app.post('/api/server/restart', (_req, res) => {
+    if (isSidecar) { res.status(409).json({ ok: false, error: 'The desktop app restarts from its own window.' }); return; }
+    try {
+      const child = spawn(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
+        cwd: process.cwd(),
+        env: { ...process.env, VECTOR_RESTARTED: '1' },
+        detached: true,
+        stdio: 'inherit',
+        windowsHide: true,
+      });
+      child.unref();
+      console.log(`[restart] handing over to pid ${child.pid}`);
+      res.json({ ok: true, boot: BOOT_ID });
+      setTimeout(() => process.exit(0), 250);
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // ── Keep the PC awake (and Teams "Available") ──────────────────────────────
+  // Header toggle. automation/keep_awake.py holds off sleep/display-off and,
+  // only while nobody is touching the PC, presses F15 so the input idle timer
+  // Teams reads never runs out. The flag persists in %LOCALAPPDATA%\Vector, so
+  // a server restart re-arms it instead of the header claiming "on" with no
+  // helper behind it. The helper exits by itself when this process dies.
+  const keepAwakeFlag = path.join(process.env.LOCALAPPDATA || os.homedir(), 'Vector', 'keepawake.json');
+  let keepAwakeProc: ReturnType<typeof spawn> | null = null;
+  let keepAwakeSince: string | null = null;
+  const keepAwakeSave = (on: boolean) => {
+    try {
+      mkdirSync(path.dirname(keepAwakeFlag), { recursive: true });
+      writeFileSync(keepAwakeFlag, JSON.stringify({ on }), 'utf8');
+    } catch {}
+  };
+  const keepAwakeStart = (): string | null => {
+    if (keepAwakeProc) return null;
+    const script = pyFile('keep_awake.py');
+    if (!existsSync(script)) return 'keep_awake.py is missing from this install';
+    const [py, base] = pyArgs(script);
+    const proc = spawn(py, [...base, '--parent-pid', String(process.pid)],
+      { windowsHide: true, stdio: 'ignore', env: { ...process.env, PYTHONUTF8: '1' } });
+    keepAwakeProc = proc;
+    keepAwakeSince = new Date().toISOString();
+    proc.on('exit', () => { if (keepAwakeProc === proc) { keepAwakeProc = null; keepAwakeSince = null; } });
+    proc.on('error', () => { if (keepAwakeProc === proc) { keepAwakeProc = null; keepAwakeSince = null; } });
+    return null;
+  };
+  const keepAwakeStop = () => {
+    const p = keepAwakeProc;
+    keepAwakeProc = null; keepAwakeSince = null;
+    try { p?.kill(); } catch {}
+  };
+  try {
+    if (JSON.parse(readFileSync(keepAwakeFlag, 'utf8')).on) keepAwakeStart();
+  } catch {}
+  app.get('/api/keepawake', (_req, res) => {
+    res.json({ on: !!keepAwakeProc, since: keepAwakeSince });
+  });
+  app.post('/api/keepawake', (req, res) => {
+    const on = !!req.body?.on;
+    if (on) {
+      const err = keepAwakeStart();
+      if (err) { res.status(500).json({ on: false, error: err }); return; }
+    } else keepAwakeStop();
+    keepAwakeSave(on);
+    res.json({ on: !!keepAwakeProc, since: keepAwakeSince });
+  });
 
   app.get('/api/stats', (_req, res) => {
     const cfg = loadPyCfg();
@@ -4187,7 +4449,7 @@ async function startServer() {
     }
     try {
       spawn('explorer.exe', ['/select,', path.resolve(target)],
-        { detached: true, stdio: 'ignore' }).unref();
+        { detached: true, stdio: 'ignore', windowsHide: false }).unref();
       res.json({ ok: true });
     } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
   });
@@ -4301,7 +4563,13 @@ async function startServer() {
         // The client calls the staged upload `file`; the engine calls it `bom`.
         bom: (job as any).bom || (job as any).file,
         master, cases_root: lsdCasesRoot(),
+        // The Fire plant-cost price list (unit cost for lines CPQ's Approval
+        // History adds). Blank lets the engine find the newest one itself.
+        cost_master: String((loadPyCfg() as any).lsd_cost_master || '').trim(),
         ledger: (job as any).ledger || (loadPyCfg() as any).lsd_ledger || 'R2321',
+        // The approved rules; the engine keeps the ones in force on the
+        // transaction's date and reports them back as `rules`.
+        rules: rulesForJob('lsd'),
         // Cancel is cooperative: the engine watches for this file and unwinds,
         // closing Excel behind it. See _check_cancel in lsd_pricing.py.
         cancel_file: cancelPath,
@@ -4709,76 +4977,248 @@ async function startServer() {
     return m;
   }
 
-  function runQueue(force = false): Promise<any> {
+  // Where the queue comes from (Laith 2026-09-30):
+  //   'merge' (default) — CPQ's own "Approval Required" mail first (Inbox\CPQ
+  //       Approvals, lsd_approvals.py, FIRE lines only), then any row in Dalia's
+  //       daily sheet the mail does not have. CPQ only mails the approver on a
+  //       deal, so UAE / Qatar cases reach her sheet but never Laith's inbox.
+  //   'mail'  — the approval mail alone.   'sheet' — her LSD Daily work alone.
+  const queueSource = (): 'merge' | 'mail' | 'sheet' => {
+    const v = String((loadPyCfg() as any).lsd_queue_source || 'merge').trim().toLowerCase();
+    return v === 'mail' || v === 'sheet' ? v : 'merge';
+  };
+  let lastSheet: any = null;         // reused while the keep-alive is reloading tabs
+
+  // One Python read → its result JSON (or {ok:false, error}).
+  function runQueueScript(scriptName: string, job: any, what: string): Promise<any> {
     return new Promise(resolve => {
-      if (queueBusy) { resolve(queueState); return; }
-      // The keep-alive reloads the OneDrive tabs this read goes through, and a read
-      // started mid-reload fails for nothing. The timer just tries again next tick.
-      if (keepaliveBusy && !force) { resolve(queueState); return; }
-      const script = pyFile('lsd_queue.py');
-      if (!existsSync(script)) {
-        resolve({ ...queueState, ok: false, error: 'lsd_queue.py is missing from this install' });
-        return;
-      }
-      queueBusy = true;
-      const cfg     = loadPyCfg() as any;
+      const script = pyFile(scriptName);
+      if (!existsSync(script)) { resolve({ ok: false, error: `${scriptName} is missing from this install` }); return; }
       const tmp     = path.join(os.tmpdir(), `lsdq_${Date.now()}_${randomUUID().slice(0, 8)}`);
       const jobPath = path.join(tmp, 'job.json');
       const outPath = path.join(tmp, 'out.json');
       const cleanup = () => { for (const p of [jobPath, outPath]) { try { unlinkSync(p); } catch {} } try { rmdirSync(tmp); } catch {} };
-      const finish = (out: any) => {
-        queueBusy = false;
-        const now = new Date().toISOString();
-        if (out?.ok) {
-          const cases = localCases();
-          // First sighting per transaction. The very first read stamps nothing, or
-          // every open row in her sheet would arrive flagged as new.
-          let seen: Record<string, string> = {};
-          let baseline = false;
-          try { seen = JSON.parse(readFileSync(LSD_QUEUE_SEEN, 'utf8')); } catch { baseline = true; }
-          const counts: Record<string, number> = {};
-          for (const r of out.rows || []) {
-            const key = r.transaction || `name:${r.name}`;
-            if (!(key in seen)) seen[key] = baseline ? '' : now;
-            r.first_seen = seen[key] || null;
-            r.case_folder = (r.transaction && cases.get(r.transaction)) || null;
-            // Priced here but her Status is still open: done by Laith, not yet noted.
-            if (r.case_folder && r.kind === 'fetch') r.kind = 'priced';
-            counts[r.kind] = (counts[r.kind] || 0) + 1;
-          }
-          try { writeFileSync(LSD_QUEUE_SEEN, JSON.stringify(seen), 'utf8'); } catch {}
-          queueState = { ...out, counts, ran: now };
-        } else {
-          // Keep the last good rows on screen; only the error is new.
-          queueState = { ...queueState, ran: now, ok: false,
-                         error: out?.error || 'The daily sheet read produced no result.' };
-        }
-        resolve(queueState);
-      };
       try {
         mkdirSync(tmp, { recursive: true });
-        writeFileSync(jobPath, JSON.stringify({
-          port: Number(cfg.lsd_cpq_port) || 9222,
-          file: String(cfg.lsd_daily_file || '').trim(),
-          bu: String(cfg.lsd_queue_bu || '').trim(),          // blank = FIRE
-        }), 'utf8');
-      } catch (e: any) { cleanup(); finish({ ok: false, error: e.message }); return; }
+        writeFileSync(jobPath, JSON.stringify(job), 'utf8');
+      } catch (e: any) { cleanup(); resolve({ ok: false, error: e.message }); return; }
       const [py, base] = pyArgs(script);
       const proc = spawn(py, [...base, '--job', jobPath, '--out', outPath],
         { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
       let errBuf = '';
       proc.stderr.on('data', (d: Buffer) => { errBuf += d.toString(); });
       const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 180_000);
-      proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); finish({ ok: false, error: e.message }); });
+      proc.on('error', (e: any) => { clearTimeout(killer); cleanup(); resolve({ ok: false, error: e.message }); });
       proc.on('close', () => {
         clearTimeout(killer);
         let out: any = null;
         try { if (existsSync(outPath)) out = JSON.parse(readFileSync(outPath, 'utf8')); } catch {}
         cleanup();
-        finish(out || { ok: false, error: errBuf.trim().slice(-300) || 'The daily sheet read produced no result.' });
+        resolve(out || { ok: false, error: errBuf.trim().slice(-300) || `The ${what} read produced no result.` });
       });
     });
   }
+
+  // The list Laith asked for (2026-10-01): read the approval mail AND Dalia's
+  // sheet, compare the mail against the sheet, and
+  //   - marked done in her sheet (Status Done/Cancelled, or her green fill) → ignore
+  //   - not registered in her sheet, or registered with an EMPTY Notes cell → list it
+  //   - registered with a comment in Notes ("Done by Laith", "Kiran approval", …) → ignore
+  // Her open rows the mail never saw go through the same test. Each row says
+  // where it came from: Mail, Sheet, or Mail + Sheet.
+  function mergeQueue(mail: any, sheet: any): any {
+    const regs: Record<string, any> = (sheet?.ok && sheet.registered) || {};
+    const haveSheet = !!sheet?.ok;
+    const rows: any[] = [];
+    const skipped = { done: 0, commented: 0 };
+    const inMail = new Set<string>();
+    for (const r of (mail?.ok ? mail.rows : null) || []) {
+      inMail.add(r.transaction);
+      const reg = r.transaction ? regs[r.transaction] : null;
+      if (reg?.closed) { skipped.done++; continue; }
+      if (reg && String(reg.notes || '').trim()) { skipped.commented++; continue; }
+      rows.push({
+        ...r,
+        from: reg ? 'both' : 'mail',
+        notes: (reg ? `In Dalia's sheet (${reg.status || 'no status'}), no comment` : "Not in Dalia's sheet")
+               + (r.notes ? ` · ${r.notes}` : ''),
+      });
+    }
+    for (const r of (haveSheet ? sheet.rows : null) || []) {
+      if (r.transaction && inMail.has(r.transaction)) continue;
+      if (String(r.notes || '').trim()) { skipped.commented++; continue; }
+      rows.push({ ...r, from: 'sheet', notes: 'No CPQ approval mail to you' });
+    }
+    const errors = [mail && !mail.ok && `Approval mail: ${mail.error}`,
+                    sheet && !sheet.ok && `Dalia's sheet: ${sheet.error}`,
+                    // Without her sheet nothing can be ruled out as done — say so.
+                    !haveSheet && mail?.ok && "Dalia's sheet not read — rows are NOT checked against it"]
+      .filter(Boolean);
+    return {
+      ok: !!(mail?.ok || haveSheet), source: 'merge',
+      error: errors.join(' · ') || undefined,
+      folder: mail?.folder, file: sheet?.file,
+      closed: skipped.done, commented: skipped.commented,        // mail rows left out
+      other_bu: (mail?.other_bu || 0) + (sheet?.other_bu || 0),
+      bu_filter: mail?.bu_filter || sheet?.bu_filter || ['FIRE'],
+      rows,
+    };
+  }
+
+  async function runQueue(force = false): Promise<any> {
+    if (queueBusy) return queueState;
+    const src = queueSource();
+    // The keep-alive reloads the OneDrive tabs the sheet read goes through, and a
+    // read started mid-reload fails for nothing — reuse the last sheet read then.
+    const sheetBlocked = keepaliveBusy && !force;
+    if (src === 'sheet' && sheetBlocked) return queueState;
+    queueBusy = true;
+    try {
+      const cfg = loadPyCfg() as any;
+      const job = {
+        port: Number(cfg.lsd_cpq_port) || 9222,
+        file: String(cfg.lsd_daily_file || '').trim(),
+        bu: String(cfg.lsd_queue_bu || '').trim(),          // blank = FIRE
+        days: Number(cfg.lsd_queue_days) || 45,             // mail look-back
+        // Parsed approval mail by EntryID: a tick opens only mail it has not seen,
+        // instead of every body in the folder every 5 minutes (made Outlook lag).
+        cache: path.join(LSD_DIR, 'approvals_cache.json'),
+      };
+      const mail = src === 'sheet' ? null : await runQueueScript('lsd_approvals.py', job, 'approval mail');
+      let sheet: any = null;
+      if (src !== 'mail') {
+        sheet = sheetBlocked ? lastSheet : await runQueueScript('lsd_queue.py', job, 'daily sheet');
+        if (sheet?.ok && !sheetBlocked) lastSheet = sheet;
+        else if (src === 'merge' && !sheet?.ok && lastSheet) {
+          sheet = { ...lastSheet, stale: sheet?.error || 'busy' };
+        }
+      }
+      const out: any = src === 'mail' ? { ...mail, source: 'mail' }
+                     : src === 'sheet' ? { ...sheet, registered: undefined, source: 'sheet' }
+                     : mergeQueue(mail, sheet);
+      if (src === 'merge' && sheet?.stale) {
+        out.error = [out.error, `Dalia's sheet: showing the last good read (${sheet.stale})`].filter(Boolean).join(' · ');
+      }
+
+      const now = new Date().toISOString();
+      if (out?.ok) {
+        const cases = localCases();
+        const talk = new Map<string, string>();
+        try { for (const t of lsdTalkPayload().threads) if (t.transaction) talk.set(t.transaction, t.state); } catch {}
+        // First sighting per transaction. The very first read stamps nothing, or
+        // every open row would arrive flagged as new.
+        let seen: Record<string, string> = {};
+        let baseline = false;
+        try { seen = JSON.parse(readFileSync(LSD_QUEUE_SEEN, 'utf8')); } catch { baseline = true; }
+        const counts: Record<string, number> = {};
+        for (const r of out.rows || []) {
+          const key = r.transaction || `name:${r.name}`;
+          if (!(key in seen)) seen[key] = baseline ? '' : now;
+          r.first_seen = seen[key] || null;
+          r.case_folder = (r.transaction && cases.get(r.transaction)) || null;
+          // Priced here but still open upstream: done by Laith, not yet noted.
+          if (r.case_folder && r.kind === 'fetch') r.kind = 'priced';
+          // Kiran already said proceed in the Dalia & Kiran mail: nothing to price.
+          if (r.kind === 'fetch' && r.transaction && talk.get(r.transaction) === 'approved') r.kind = 'approved';
+          counts[r.kind] = (counts[r.kind] || 0) + 1;
+        }
+        try { writeFileSync(LSD_QUEUE_SEEN, JSON.stringify(seen), 'utf8'); } catch {}
+        queueState = { ...out, counts, ran: now };
+      } else {
+        // Keep the last good rows on screen; only the error is new.
+        queueState = { ...queueState, ran: now, ok: false,
+                       error: out?.error || 'The queue read produced no result.' };
+      }
+      return queueState;
+    } catch (e: any) {
+      queueState = { ...queueState, ran: new Date().toISOString(), ok: false, error: e.message };
+      return queueState;
+    } finally { queueBusy = false; }
+  }
+
+  // ── the rule table and its approval queue ──────────────────────────────────
+  // Every row, newest first: the tab splits it into waiting / in force / history.
+  app.get('/api/rules', (req, res) => {
+    const domain = String(req.query.domain || 'lsd');
+    try {
+      rulesSeed(domain);
+      const rules = queryAll('SELECT * FROM rule WHERE domain = ? ORDER BY id DESC', [domain]).map(ruleRow);
+      res.json({ ok: true, rules });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // A change enters the queue here and prices nothing until it is approved.
+  // `supersedes` names the rule it replaces; the engine vets the value first.
+  app.post('/api/rules/propose', async (req, res) => {
+    const b = (req.body || {}) as any;
+    const domain = String(b.domain || 'lsd');
+    const key = String(b.key || '').trim();
+    const date = (v: unknown) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
+    const validFrom = date(b.validFrom), validTo = date(b.validTo);
+    if (!RULE_ENGINES[domain]) { res.status(400).json({ ok: false, error: `No engine reads '${domain}' rules.` }); return; }
+    if (!key) { res.status(400).json({ ok: false, error: 'A rule needs a key.' }); return; }
+    if (!String(b.source || '').trim()) {
+      res.status(400).json({ ok: false, error: 'Say where the rule comes from — a mail, a call, a case number.' }); return;
+    }
+    if (validFrom && validTo && validTo <= validFrom) {
+      res.status(400).json({ ok: false, error: '"Until" must be after "from".' }); return;
+    }
+    try {
+      const chk = ruleEngine(domain, ['--check-rule', JSON.stringify({ key, value: b.value })]);
+      if (chk.error) { res.status(400).json({ ok: false, error: chk.error }); return; }
+      const who = String(b.by || '').trim() || (await connectedUserName()) || 'Laith';
+      const id = runWrite(
+        `INSERT INTO rule (domain, key, value, title, why, source, sourceRef, validFrom, validTo,
+                           status, proposedBy, proposedAt, supersedes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?, ?)`,
+        [domain, key, JSON.stringify(b.value), b.title || null, b.why || null, String(b.source).trim(),
+         b.sourceRef || null, validFrom, validTo, who, new Date().toISOString(),
+         Number.isInteger(b.supersedes) ? b.supersedes : null]);
+      res.json({ ok: true, id });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
+
+  // approve | reject | retire. Approving closes out the rule it replaces: a dated
+  // rule ends the old one the day it starts (both stay approved, so a re-run of
+  // an older case still prices by the old number); an open-ended one retires it.
+  app.post('/api/rules/:id/decide', async (req, res) => {
+    const id = Number(req.params.id);
+    const b = (req.body || {}) as any;
+    const act = String(b.action || '');
+    const [r] = queryAll('SELECT * FROM rule WHERE id = ?', [id]);
+    if (!r) { res.status(404).json({ ok: false, error: 'No such rule.' }); return; }
+    const want: Record<string, string> = { approve: 'proposed', reject: 'proposed', retire: 'approved' };
+    if (!want[act]) { res.status(400).json({ ok: false, error: 'action is approve, reject or retire' }); return; }
+    if (r.status !== want[act]) {
+      res.status(409).json({ ok: false, error: `That rule is ${r.status}; only a ${want[act]} rule can be ${act}d.` }); return;
+    }
+    const who = String(b.by || '').trim() || (await connectedUserName()) || 'Laith';
+    const now = new Date().toISOString();
+    const note = String(b.note || '').trim() || null;
+    try {
+      if (act === 'approve') {
+        // What it replaces: the named rule, else whatever is approved on the same
+        // key and still open when this one starts.
+        const olds = r.supersedes
+          ? queryAll(`SELECT * FROM rule WHERE id = ? AND status = 'approved'`, [r.supersedes])
+          : queryAll(`SELECT * FROM rule WHERE domain = ? AND key = ? AND status = 'approved'
+                        AND (validTo IS NULL OR validTo > ?)`, [r.domain, r.key, r.validFrom || '']);
+        for (const o of olds) {
+          if (r.validFrom && (!o.validFrom || o.validFrom < r.validFrom)) {
+            db.run('UPDATE rule SET validTo = ?, supersededBy = ? WHERE id = ?', [r.validFrom, id, o.id]);
+          } else {
+            db.run(`UPDATE rule SET status = 'retired', supersededBy = ?, decidedBy = ?, decidedAt = ?,
+                      decisionNote = ? WHERE id = ?`, [id, who, now, `Replaced by #${id}`, o.id]);
+          }
+        }
+      }
+      const status = { approve: 'approved', reject: 'rejected', retire: 'retired' }[act];
+      db.run('UPDATE rule SET status = ?, decidedBy = ?, decidedAt = ?, decisionNote = ? WHERE id = ?',
+             [status, who, now, note, id]);
+      saveDb();
+      res.json({ ok: true });
+    } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
+  });
 
   app.get('/api/lsd/queue', (_req, res) => {
     res.json(queuePayload(queueState));
@@ -4796,6 +5236,225 @@ async function startServer() {
     const mins = Math.max(2, Number((loadPyCfg() as any).lsd_queue_min) || 5);
     (global as any).__vectorLsdQueueTimer = setInterval(tick, mins * 60_000);
     setTimeout(tick, 45_000);   // after the boot keep-alive sweep has woken the tabs
+  }
+
+  // ── Dalia & Kiran: the approval conversation around each case ─────────────
+  // Dalia sends Kiran the pricing summary, Kiran answers "Proceed" or asks for
+  // a rework ("margins above 43% and RPI 4-5%", "push these two lines to 20%"),
+  // and Laith is on copy. Those replies land in the personal Inbox (and again in
+  // "email drop"), so this sweeps their mail from the last 30 days, keeps one
+  // copy per mail and groups it by transaction for the LSD tab.
+  const LSD_UPDATES      = path.join(LSD_DIR, 'updates.json');
+  const LSD_TALK_SENDERS = 'dalianabil,kiranpoulose';
+  const LSD_TALK_DAYS    = 30;
+  let lsdTalkRunning = false;
+  const lsdTalkLoad = (): any => {
+    try { return JSON.parse(readFileSync(LSD_UPDATES, 'utf8')); } catch { return { ran: null, mails: [] }; }
+  };
+
+  // Reply text only: cut the quoted thread, the signature and Outlook's links.
+  function lsdTopReply(body: string): string {
+    let b = String(body || '').replace(/\r/g, '');
+    const cut = b.search(/\n\s*(From:|-----Original|On .{5,80} wrote:|_{10,}|Get Outlook for)/);
+    if (cut > 0) b = b.slice(0, cut);
+    const sig = b.search(/\n\s*(Dalia Nabil|Kiran Poulose)\s*\n/);
+    if (sig > 0) b = b.slice(0, sig);
+    return b.replace(/<(https?|mailto):[^>]*>/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
+  }
+
+  // Dalia's summary table arrives flattened to one cell per line: the 7 column
+  // headers, then 7 cells per pricing group. Rebuild it so the panel can show it.
+  const LSD_TALK_COLS = ['Pricing Groups', 'Add. Discount', 'Proposed Total Net Price', 'E2E% @ Proposed Price',
+                         'Target E2E%', 'Total RPI %', 'Total RPI Value'];
+  function lsdSummaryTable(text: string): { rows: string[][]; rest: string } {
+    const lines = text.split('\n').map(l => l.trim());
+    const at = lines.findIndex(l => /^pricing groups$/i.test(l));
+    if (at < 0) return { rows: [], rest: text };
+    let i = at + 1;
+    // Skip the header cells by name — "E2E% @ Proposed Price" has digits too.
+    const heads = LSD_TALK_COLS.slice(1).map(c => c.toLowerCase());
+    while (i < lines.length && heads.includes(lines[i].toLowerCase())) i++;
+    const rows: string[][] = [];
+    while (i + LSD_TALK_COLS.length <= lines.length) {
+      const cells = lines.slice(i, i + LSD_TALK_COLS.length);
+      if (!cells[0] || /[\d$%]/.test(cells[0]) || !cells.slice(1).every(c => /[\d$%]/.test(c))) break;
+      rows.push(cells);
+      i += LSD_TALK_COLS.length;
+    }
+    if (!rows.length) return { rows: [], rest: text };
+    return { rows, rest: [...lines.slice(0, at), ...lines.slice(i)].filter(Boolean).join('\n') };
+  }
+
+  const lsdTalkKey = (subject: string) => {
+    const w = String(subject || '').match(/W\d{9}E/i);
+    return w ? w[0].toUpperCase()
+      : String(subject || '').replace(/^\s*((re|fw|fwd)\s*:\s*|\[external\]\s*|reminder\s*:\s*)+/gi, '').trim().toLowerCase();
+  };
+
+  // Where a thread stands, read from its newest mail.
+  function lsdTalkState(m: any): string {
+    const top = String(m.text || '').toLowerCase();
+    if (m.who === 'kiran') return /^\s*(hi dalia\s*)?(please\s+)?proceed\b/.test(top) || /\bproceed\s+as\s+below\b/.test(top)
+      ? 'approved' : 'rework';
+    if (/^\s*hi,?\s+laith\b/.test(top)) return 'for_laith';
+    if (/^\s*hi,?\s+kiran\b/.test(top) || /@poulose/.test(top)) return 'with_kiran';
+    return 'sent';
+  }
+
+  function lsdTalkPayload() {
+    const st = lsdTalkLoad();
+    const threads = new Map<string, any>();
+    for (const m of st.mails || []) {
+      const k = lsdTalkKey(m.subject);
+      if (!threads.has(k)) threads.set(k, { key: k, transaction: /^W\d{9}E$/.test(k) ? k : null, subject: m.subject, mails: [] });
+      threads.get(k).mails.push(m);
+    }
+    const list = [...threads.values()].map(t => {
+      t.mails.sort((a: any, b: any) => String(b.received).localeCompare(String(a.received)));
+      return { ...t, last: t.mails[0].received, state: lsdTalkState(t.mails[0]) };
+    }).sort((a, b) => String(b.last).localeCompare(String(a.last)));
+    return { ran: st.ran, error: st.error || null, running: lsdTalkRunning, days: LSD_TALK_DAYS, threads: list };
+  }
+
+  async function refreshLsdTalk(): Promise<void> {
+    if (lsdTalkRunning) return;
+    lsdTalkRunning = true;
+    try {
+      const d = new Date(Date.now() - LSD_TALK_DAYS * 86_400_000);
+      const since = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`;
+      const r = await runOutlookPy(['--action', 'emails-from', '--sender', LSD_TALK_SENDERS, '--since', since, '--skip-auto']);
+      if (r.error && !(r.emails || []).length) {
+        writeFileSync(LSD_UPDATES, JSON.stringify({ ...lsdTalkLoad(), error: r.error }), 'utf8');
+        return;
+      }
+      // One copy per mail: the same message sits in Inbox and "email drop" under
+      // different EntryIDs, stamped up to a few seconds apart.
+      const mails: any[] = [];
+      for (const e of (r.emails || []) as any[]) {
+        if (/\bincident\b|\bINC\d{6,}/i.test(e.subject || '')) continue;   // IT tickets, not pricing
+        const t = Date.parse(String(e.received).replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1'));
+        const subj = String(e.subject || '').trim().toLowerCase();
+        if (mails.some(m => m._subj === subj && Math.abs(m._t - t) <= 10_000)) continue;
+        const text = lsdTopReply(e.body);
+        const { rows, rest } = lsdSummaryTable(text);
+        const who = /kiran/i.test(`${e.senderEmail} ${e.sender}`) ? 'kiran' : 'dalia';
+        mails.push({
+          _subj: subj, _t: t,
+          entryId: e.entryId, received: e.received, subject: e.subject, who,
+          text: rest, table: rows.length ? { cols: LSD_TALK_COLS, rows } : null,
+          attachments: (e.attachments || []).filter((a: any) => !a.isInline).map((a: any) => a.name),
+        });
+      }
+      mkdirSync(LSD_DIR, { recursive: true });
+      writeFileSync(LSD_UPDATES, JSON.stringify({
+        ran: new Date().toISOString(), error: r.error || null,
+        mails: mails.map(({ _subj, _t, ...m }) => m),
+      }), 'utf8');
+    } finally { lsdTalkRunning = false; }
+    // Every refresh also reads the new mail for rules. Never fatal to the feed.
+    await mineLsdRules().catch(e => appendLog(`[lsd-rules] ${e.message}`));
+  }
+
+  // ── rules out of Dalia's and Kiran's mail ─────────────────────────────────
+  // Laith 2026-09-30: "fetch rules from Dalia's emails with me or Kiran". Each
+  // mail is read ONCE by the model (entryIds kept in rules_mined.json); anything
+  // it finds that would change how a FUTURE case is priced or checked enters the
+  // rule table as a PROPOSAL — it prices nothing until someone approves it. A
+  // number that fits an engine key is proposed on that key; the rest go in as a
+  // `guideline.` in words, with the sentence quoted and the mail as the source.
+  const LSD_RULES_MINED = path.join(LSD_DIR, 'rules_mined.json');
+  let lsdMineRunning = false;
+  async function mineLsdRules(force = false): Promise<{ read: number; proposed: number }> {
+    if (lsdMineRunning) return { read: 0, proposed: 0 };
+    const ai = getGemini();
+    if (!ai) return { read: 0, proposed: 0 };
+    lsdMineRunning = true;
+    try {
+      let seen: Record<string, string> = {};
+      try { seen = JSON.parse(readFileSync(LSD_RULES_MINED, 'utf8')).seen || {}; } catch {}
+      // A bare "Proceed" or "find attached" carries no rule — skip it unread.
+      const todo = (lsdTalkLoad().mails || [])
+        .filter((m: any) => m.entryId && (force || !seen[m.entryId]))
+        .filter((m: any) => String(m.text || '').replace(/\s+/g, ' ').length > 80);
+      if (!todo.length) return { read: 0, proposed: 0 };
+      rulesSeed('lsd');
+      const have = queryAll(`SELECT key, value, title, status FROM rule WHERE domain = 'lsd'
+                             AND status IN ('approved', 'proposed')`);
+      let proposed = 0;
+      for (let i = 0; i < todo.length; i += 8) {
+        const batch = todo.slice(i, i + 8);
+        const prompt = [
+          'You read pricing mail between Dalia (LSD pricing analyst), Kiran (the approver) and Laith (the analyst learning the job) at Eaton Middle East, FIRE products, Gulf customers.',
+          'Find the WORKING RULES in them: anything that says how a FUTURE case must be priced, checked, approved or sent — thresholds (E2E %, RPI %, discount caps), which price to carry (last approved, last stock order, customer fixed prices), what to flag, what must never go out, customer-specific standing terms.',
+          'NOT a rule: a one-off decision on one case with nothing to generalise ("push these two lines to 20%"), a greeting, a status update, an attachment note. When a case decision clearly implies a general rule, state the general rule.',
+          'Rules already in the table (do not repeat them unless the mail CHANGES the number):',
+          ...have.map(r => `- ${r.key} = ${r.value} (${r.status}) ${r.title || ''}`),
+          '',
+          'Engine keys a number can go on (fractions, 6% = 0.06): rpi_rate.H1, rpi_rate.H2 (RPI gate per half-year), rpi_working_level, add_disc_cap, std_discount, e2e_concession (list, e.g. [0.37,0.35]). Anything else: key "guideline" with the rule in words.',
+          'Return ONLY JSON: {"rules":[{"mail":<mail number>,"key":"<engine key or guideline>","value":<number | list | null>,"title":"<max 8 words>","text":"<the rule as an instruction, max 35 words>","quote":"<the exact words from the mail, max 40 words>"}]}. Empty list when there is none.',
+          '',
+          ...batch.map((m: any, j: number) =>
+            `--- mail ${j + 1} | ${String(m.received).slice(0, 10)} | from ${m.who} | ${m.subject}\n${String(m.text).slice(0, 2500)}`),
+        ].join('\n');
+        const r = await generateWithRetry(ai, {
+          model: smartModel(),
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: { maxOutputTokens: 2000, temperature: 0.1 },
+        });
+        const found = Array.isArray(extractObject(r.text ?? '')?.rules) ? extractObject(r.text ?? '').rules : [];
+        for (const x of found) {
+          const m = batch[Number(x?.mail) - 1];
+          const text = String(x?.text || '').trim();
+          if (!m || !text) continue;
+          const title = String(x.title || text).slice(0, 80);
+          let key = String(x.key || 'guideline').trim();
+          let value: any = x.value;
+          const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+          const asNote = () => { key = `guideline.${slug}`; value = { text, quote: String(x.quote || '').slice(0, 300) }; };
+          if (key === 'guideline' || key.startsWith('guideline.')) asNote();
+          else if (ruleEngine('lsd', ['--check-rule', JSON.stringify({ key, value })]).error) asNote();
+          // The same mail proposing the same thing twice (a re-scan) is one proposal.
+          const dupe = queryAll(`SELECT id FROM rule WHERE domain = 'lsd' AND sourceRef = ? AND (key = ? OR title = ?)`,
+                                [m.entryId, key, title]);
+          if (dupe.length) continue;
+          const who = m.who === 'kiran' ? 'Kiran' : 'Dalia';
+          runWrite(
+            `INSERT INTO rule (domain, key, value, title, why, source, sourceRef, status, proposedBy, proposedAt)
+             VALUES ('lsd', ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)`,
+            [key, JSON.stringify(value), title,
+             key.startsWith('guideline.') ? (x.quote ? `"${String(x.quote).slice(0, 300)}"` : null)
+                                          : `${text}${x.quote ? ` — "${String(x.quote).slice(0, 300)}"` : ''}`,
+             `${who}'s mail ${String(m.received).slice(0, 10)}: ${String(m.subject).slice(0, 120)}`,
+             m.entryId, 'Vector (read from mail)', new Date().toISOString()]);
+          proposed++;
+        }
+        for (const m of batch) seen[m.entryId] = new Date().toISOString();
+        writeFileSync(LSD_RULES_MINED, JSON.stringify({ seen }), 'utf8');
+      }
+      if (proposed) saveDb();
+      appendLog(`[lsd-rules] read ${todo.length} mail(s), proposed ${proposed} rule(s)`);
+      return { read: todo.length, proposed };
+    } finally { lsdMineRunning = false; }
+  }
+  app.post('/api/rules/mine', async (req, res) => {
+    try {
+      if ((req.body || {}).refresh) await refreshLsdTalk();
+      else await mineLsdRules(!!(req.body || {}).force);
+      const [{ c }] = queryAll(`SELECT COUNT(*) AS c FROM rule WHERE domain = 'lsd' AND status = 'proposed'`);
+      res.json({ ok: true, waiting: c });
+    } catch (e: any) { res.status(500).json({ ok: false, error: aiErrorText(e) }); }
+  });
+
+  app.get('/api/lsd/updates', (_req, res) => { res.json(lsdTalkPayload()); });
+  app.post('/api/lsd/updates/refresh', async (_req, res) => {
+    try { await refreshLsdTalk(); res.json(lsdTalkPayload()); }
+    catch (e: any) { res.status(500).json({ ...lsdTalkPayload(), error: e.message }); }
+  });
+  // Hourly in the background; the panel's Refresh button reads it on demand.
+  if (!(global as any).__vectorLsdTalkTimer && !isSidecar) {
+    const tick = () => { refreshLsdTalk().catch(e => appendLog(`[lsd-updates] ${e.message}`)); };
+    (global as any).__vectorLsdTalkTimer = setInterval(tick, 60 * 60_000);
+    setTimeout(tick, 5 * 60_000);
   }
 
   // Pull a transaction straight from Oracle CPQ (its REST API, driven through the
@@ -4931,7 +5590,7 @@ async function startServer() {
       const isDir = statSync(target).isDirectory();
       // explorer.exe returns exit code 1 even when it succeeds, so nothing is
       // read back from it — fire and forget.
-      spawn('explorer.exe', isDir ? [target] : ['/select,', target], { detached: true, stdio: 'ignore' }).unref();
+      spawn('explorer.exe', isDir ? [target] : ['/select,', target], { detached: true, stdio: 'ignore', windowsHide: false }).unref();
       res.json({ ok: true });
     } catch (e: any) { res.status(500).json({ ok: false, error: e.message }); }
   });
@@ -5577,17 +6236,53 @@ async function startServer() {
     '.bmp': 'image/bmp', '.webp': 'image/webp', '.tif': 'image/tiff', '.tiff': 'image/tiff',
     '.pdf': 'application/pdf',
   };
+  // Gemini takes no Excel MIME type, so spreadsheets go in as text: each sheet's
+  // cached values rendered tab-separated by sheet_to_text.py.
+  const SHEET_EXTS = new Set(['.xlsx', '.xlsm', '.xlsb', '.xls', '.csv']);
+  function sheetText(file: string): Promise<string> {
+    return new Promise(resolve => {
+      const script = pyFile('sheet_to_text.py');
+      if (!existsSync(script)) { resolve(''); return; }
+      const [py, base] = pyArgs(script);
+      const proc = spawn(py, [...base, '--input', file, '--max-chars', '60000'],
+        { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } });
+      let out = '';
+      const killTimer = setTimeout(() => { try { proc.kill(); } catch {} }, 60_000);
+      proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+      proc.on('error', () => { clearTimeout(killTimer); resolve(''); });
+      proc.on('close', () => {
+        clearTimeout(killTimer);
+        try { resolve(String(JSON.parse(out.trim()).text || '')); } catch { resolve(''); }
+      });
+    });
+  }
+
+  // Spreadsheets are now on by default, so every chat question would re-pull the
+  // file over COM and re-render it; the bytes behind an EntryID never change.
+  const sheetPartCache = new Map<string, any>();
+
   async function attachmentParts(entryId: string, indices: number[]): Promise<any[]> {
     const parts: any[] = [];
     const tmpDir = path.join(os.tmpdir(), 'vector_sum');
     for (const idx of indices) {
+      const cached = sheetPartCache.get(`${entryId}|${idx}`);
+      if (cached) { parts.push(cached); continue; }
       try {
         const att = await runOutlookPy(['--action', 'get-attachment', '--id', entryId, '--index', String(idx), '--dest', tmpDir]);
         if (att.error || !att.path) continue;
         const ext  = path.extname(att.path).toLowerCase();
         const mime = VISION_MIME[ext];
-        if (!mime) continue;
-        parts.push({ inlineData: { mimeType: mime, data: readFileSync(att.path).toString('base64') } });
+        if (mime) {
+          parts.push({ inlineData: { mimeType: mime, data: readFileSync(att.path).toString('base64') } });
+        } else if (SHEET_EXTS.has(ext)) {
+          const text = await sheetText(att.path);
+          if (text) {
+            const part = { text: `\n**Spreadsheet attachment: ${att.name || path.basename(att.path)}** (cell values, tab-separated per row)\n${text}` };
+            if (sheetPartCache.size >= 50) sheetPartCache.delete(sheetPartCache.keys().next().value!);
+            sheetPartCache.set(`${entryId}|${idx}`, part);
+            parts.push(part);
+          }
+        }
         try { unlinkSync(att.path); } catch {}
       } catch { /* skip a bad attachment, keep the rest */ }
     }
@@ -6958,6 +7653,118 @@ async function startServer() {
     });
   });
 
+  // ── "Next up": what to do next across the whole workload ──────────────────
+  // Candidates from the To-Do board, Dalia's LSD queue, the drop queue and
+  // today's failed jobs, scored so the card works with no AI at all; Gemini
+  // then picks and orders the top few and says why. Cached until the
+  // workload itself changes (or an hour passes, or the user asks again).
+  let nextCache: { key: string; at: number; data: any } | null = null;
+  app.get('/api/todo/next', async (req, res) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const days = (iso: string) => {
+      const t = Date.parse(iso); return Number.isFinite(t) ? Math.floor((Date.now() - t) / 86_400_000) : 0;
+    };
+    type Cand = { ref: string; kind: 'todo' | 'lsd' | 'queue' | 'jobs'; id?: number | string;
+                  title: string; facts: string; action: string; score: number };
+    const cands: Cand[] = [];
+
+    const todos = queryAll(`SELECT * FROM todo WHERE status != 'done'`).map(todoRow);
+    for (const t of todos as any[]) {
+      const overdue = t.due && t.due < today ? days(t.due) + 1 : 0;
+      const age = days(t.received || t.createdAt);
+      const score = (overdue ? 100 + overdue * 3 : 0) + (t.priority === 'high' ? 40 : 0)
+        + (t.bucket === 'direct' ? 20 : t.bucket === 'needs_info' ? 8 : 0)
+        + (t.status === 'waiting' ? -35 : 0) + (t.due === today ? 25 : 0) + Math.min(age, 30);
+      cands.push({
+        ref: `T${t.id}`, kind: 'todo', id: t.id, score,
+        title: t.title || t.subject,
+        facts: [t.bucket, t.priority === 'high' ? 'HIGH' : '', t.status === 'waiting' ? 'waiting on others' : '',
+                overdue ? `overdue ${overdue}d` : t.due ? `due ${t.due}` : '', `from ${t.sender || '?'}`, `${age}d old`,
+                t.blocker ? `blocked: ${t.blocker}` : ''].filter(Boolean).join(' · '),
+        action: t.action || '',
+      });
+    }
+
+    const lsdRows = ((queueState?.rows || []) as any[]).filter(r => r.kind === 'fetch' || r.kind === 'priced' || r.kind === 'hold');
+    for (const r of lsdRows) {
+      const age = Number(r.age_days) || 0;
+      cands.push({
+        ref: `L${r.transaction || r.row}`, kind: 'lsd', id: r.transaction || String(r.row),
+        score: (r.kind === 'fetch' ? 45 : r.kind === 'priced' ? 30 : 5) + Math.min(age * 4, 60),
+        title: `LSD ${r.transaction || '(no number)'} — ${r.customer_name || r.name || 'customer ?'}`,
+        facts: [r.kind === 'fetch' ? 'not priced yet' : r.kind === 'priced' ? 'priced, not sent back' : 'on hold',
+                `${age}d in Dalia's sheet`, r.status, r.value ? `value ${r.value}` : ''].filter(Boolean).join(' · '),
+        action: r.kind === 'fetch' ? 'Fetch from CPQ and price it' : r.kind === 'priced' ? 'Check the priced file and send it back' : 'Chase what it is waiting on',
+      });
+    }
+
+    let dropQueue = 0;
+    try {
+      const dir = path.join(loadPyCfg().base, 'PDF Quotes');
+      dropQueue = existsSync(dir) ? readdirSync(dir).filter((f: string) => /\.(pdf|xlsx|docx?)$/i.test(f)).length : 0;
+    } catch {}
+    if (dropQueue) cands.push({ ref: 'Q', kind: 'queue', score: 30 + dropQueue * 5,
+      title: `${dropQueue} quote file(s) waiting in the drop folder`, facts: 'not uploaded to the SharePoint list yet',
+      action: 'Dashboard → Upload to SharePoint List' });
+
+    const failed = Number(queryAll(`SELECT COUNT(*) c FROM jobs WHERE status = 'err' AND timestamp >= date('now')`)[0]?.c || 0);
+    if (failed) cands.push({ ref: 'J', kind: 'jobs', score: 35 + failed * 5,
+      title: `${failed} job(s) failed today`, facts: 'see History for the error notes', action: 'History → re-run the failed ones' });
+
+    cands.sort((a, b) => b.score - a.score);
+    const load = {
+      open: todos.length,
+      overdue: (todos as any[]).filter(t => t.due && t.due < today && t.status !== 'waiting').length,
+      high: (todos as any[]).filter(t => t.priority === 'high').length,
+      waiting: (todos as any[]).filter(t => t.status === 'waiting').length,
+      lsd: lsdRows.length,
+      dropQueue, failedToday: failed,
+    };
+
+    const fallback = () => ({
+      headline: cands.length ? `${cands.length} thing(s) open — start with the top one.` : 'Nothing is waiting on you.',
+      items: cands.slice(0, 4).map(c => ({ kind: c.kind, id: c.id ?? null, title: c.title, why: c.facts, action: c.action })),
+    });
+
+    const key = createHash('sha1').update(JSON.stringify(cands.map(c => [c.ref, c.score, c.facts]))).digest('hex');
+    const fresh = nextCache && nextCache.key === key && Date.now() - nextCache.at < 3600_000;
+    if (fresh && req.query.refresh !== '1') { res.json(nextCache!.data); return; }
+
+    let out: any = { ...fallback(), ai: false };
+    const ai = getGemini();
+    if (ai && cands.length) {
+      try {
+        const now = new Date();
+        const prompt = [
+          `You plan the next hour for an Eaton EL quote engineer (Budapest). It is ${now.toLocaleDateString('en-GB', { weekday: 'long' })} ${today}, ${now.toTimeString().slice(0, 5)}.`,
+          `Workload: ${load.open} open to-dos (${load.overdue} overdue, ${load.high} high priority, ${load.waiting} waiting on others), ${load.lsd} LSD cases open in Dalia's sheet, ${dropQueue} files in the drop queue, ${failed} failed jobs today.`,
+          'Candidates (ref | title | facts | suggested action), pre-sorted by a rough score:',
+          ...cands.slice(0, 25).map(c => `${c.ref} | ${c.title} | ${c.facts} | ${c.action}`),
+          '',
+          'Pick the 3-4 things to do NEXT, in order. Priorities: overdue and high-priority customer commitments first; things only this engineer can finish ("direct") before blocked ones; ageing LSD cases before they breach; quick wins that unblock others. Waiting-on-others items only if a chase is due.',
+          'Return ONLY JSON: {"headline":"<one sentence on the state of the day, max 18 words>","items":[{"ref":"<ref>","why":"<max 14 words, concrete>","action":"<imperative next step, max 10 words>"}]}',
+        ].join('\n');
+        const r = await generateWithRetry(ai, {
+          model: AI_MODEL_FAST,
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          config: { maxOutputTokens: 600, temperature: 0.2, thinkingConfig: { thinkingBudget: 0 } },
+        });
+        const obj = extractObject(r.text ?? '');
+        const byRef = new Map(cands.map(c => [c.ref, c]));
+        const items = (Array.isArray(obj?.items) ? obj.items : [])
+          .map((x: any) => ({ c: byRef.get(String(x?.ref || '')), x }))
+          .filter((p: any) => p.c)
+          .slice(0, 4)
+          .map(({ c, x }: any) => ({ kind: c.kind, id: c.id ?? null, title: c.title,
+            why: String(x.why || c.facts).slice(0, 140), action: String(x.action || c.action).slice(0, 80) }));
+        if (items.length) out = { headline: String(obj.headline || out.headline).slice(0, 160), items, ai: true };
+      } catch { /* the scored list stands */ }
+    }
+    out = { ok: true, ...out, load, generatedAt: new Date().toISOString() };
+    nextCache = { key, at: Date.now(), data: out };
+    res.json(out);
+  });
+
   // POST /api/todo — create (no id) or patch (id + only the fields to change).
   app.post('/api/todo', (req, res) => {
     const b   = (req.body || {}) as any;
@@ -7433,7 +8240,7 @@ async function startServer() {
     const summarizeSystem = [
       `You are Ask Vector, reading an email for ${me ? me + ', ' : ''}an Eaton quote engineer in Budapest who is ALREADY looking at this email open in the app's Inbox.`,
       `Give the bottom line first. No filler, no "this is an email", no restating the sender/subject/date already on screen, no "I have analysed…".`,
-      `NEVER tell the user to open the Inbox, select this email, or click Summarize — they are already here. Only mention ANOTHER tab when a real next action needs it (Dashboard → Step 1, PMO tab, EL Pricer, Draft Reply).`,
+      `NEVER tell the user to open the Inbox, select this email, or click Summarize — they are already here. Only mention ANOTHER tab when a real next action needs it (Dashboard → Upload to SharePoint List, PMO tab, EL Pricer, Draft Reply).`,
       `Be adaptive and proportional: cover only what matters for THIS email. A one-line email gets a one-line answer. Omit any heading that would be empty. Never invent facts that aren't in the email or images.`,
     ].join('\n');
 
@@ -7447,7 +8254,7 @@ async function startServer() {
       (body || '').slice(0, 12000),
       ``,
       indices.length
-        ? `Image(s)/document(s) from this email are attached below. Read them fully — text, tables, drawings, part numbers, photos — and fold what you see into the answer. Questions in the body may refer to them.`
+        ? `Image(s)/document(s)/spreadsheet contents from this email are attached below. Read them fully — text, tables, drawings, part numbers, photos, spreadsheet rows — and fold what you see into the answer. Questions in the body or in a spreadsheet may refer to them; answer those itemised.`
         : ``,
       ``,
       `Write the summary in markdown, shaped to the email (skip anything that doesn't apply):`,
@@ -7808,7 +8615,7 @@ async function startServer() {
       ``,
       (body || '').slice(0, 8000),
       analysis ? `\nEmail summary so far:\n${analysis}` : '',
-      chatIndices.length ? `\nImage(s)/document(s) from this email are attached to the latest question — read them to answer.` : '',
+      chatIndices.length ? `\nImage(s)/document(s)/spreadsheet contents from this email are attached to the latest question — read them to answer. Never ask the user to paste content that is attached.` : '',
     ].join('\n');
 
     try {
@@ -7878,34 +8685,57 @@ async function startServer() {
   });
 
   // Pull this year's emails from the sender, upsert new ones (incremental).
+  async function refreshElInternal(): Promise<{ added: number; total: number; lastRefreshAt: string; error?: string }> {
+    const since = `01/01/${new Date().getFullYear()}`;
+    const r = await runOutlookPy(['--action', 'emails-from', '--sender', EL_SENDER_MATCH, '--since', since]);
+    const fetched = (r.emails || []) as any[];
+    const existing = new Set(queryAll('SELECT entryId FROM el_internal').map((x: any) => x.entryId));
+    const now = new Date().toISOString();
+    let added = 0;
+    for (const e of fetched) {
+      runWrite(
+        `INSERT OR REPLACE INTO el_internal (entryId, received, subject, sender, senderEmail, body, attachments, ts) VALUES (?,?,?,?,?,?,?,?)`,
+        [e.entryId, e.received || '', e.subject || '', e.sender || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), now],
+      );
+      if (!existing.has(e.entryId)) added++;
+    }
+    elWriteMeta({ lastRefreshAt: now });
+    return { added, total: fetched.length, lastRefreshAt: now, error: r.error };
+  }
+
   app.post('/api/el-internal/refresh', async (_req, res) => {
     try {
-      const since = `01/01/${new Date().getFullYear()}`;
-      const r = await runOutlookPy(['--action', 'emails-from', '--sender', EL_SENDER_MATCH, '--since', since]);
-      const fetched = (r.emails || []) as any[];
-      const existing = new Set(queryAll('SELECT entryId FROM el_internal').map((x: any) => x.entryId));
-      const now = new Date().toISOString();
-      let added = 0;
-      for (const e of fetched) {
-        runWrite(
-          `INSERT OR REPLACE INTO el_internal (entryId, received, subject, sender, senderEmail, body, attachments, ts) VALUES (?,?,?,?,?,?,?,?)`,
-          [e.entryId, e.received || '', e.subject || '', e.sender || '', e.senderEmail || '', e.body || '', JSON.stringify(e.attachments || []), now],
-        );
-        if (!existing.has(e.entryId)) added++;
-      }
-      elWriteMeta({ lastRefreshAt: now });
-      res.json({ added, total: fetched.length, emails: elRows(), lastRefreshAt: now, error: r.error });
+      res.json({ ...(await refreshElInternal()), emails: elRows() });
     } catch (e: any) {
       res.json({ error: e.message, emails: elRows() });
     }
   });
 
+  // The EL Info tab folded into Ask Vector, so nothing clicks Refresh any more:
+  // pull new updates in the background and rebuild the digest when they change.
+  let _elRefreshing = false;
+  async function maybeRefreshElInternal() {
+    if (_elRefreshing || !getGemini()) return;
+    _elRefreshing = true;
+    try {
+      const r = await refreshElInternal();
+      if (r.added > 0 || !elMeta().digest) await elDigest();
+      appendLog(`[el-internal] background refresh: ${r.added} new of ${r.total}`);
+    } catch (e: any) { appendLog('[el-internal] background refresh failed: ' + e.message); }
+    _elRefreshing = false;
+  }
+  setTimeout(maybeRefreshElInternal, 120_000);
+  setInterval(maybeRefreshElInternal, 6 * 3600 * 1000);
+
   // Consolidated "current state" digest across all stored updates.
   app.post('/api/el-internal/digest', async (_req, res) => {
+    res.json(await elDigest());
+  });
+  async function elDigest(): Promise<{ digest: string | null; digestAt?: string; error?: string }> {
     const ai = getGemini();
-    if (!ai) { res.json({ digest: null, error: 'No Gemini API key — add it in Settings' }); return; }
+    if (!ai) return { digest: null, error: 'No Gemini API key — add it in Settings' };
     const rows = elRows();
-    if (rows.length === 0) { res.json({ digest: null, error: 'No EL internal emails stored yet — hit Refresh first.' }); return; }
+    if (rows.length === 0) return { digest: null, error: 'No EL internal emails stored yet — hit Refresh first.' };
     const me = await connectedUserName();
     const prompt = [
       `You are compiling a living internal-updates brief for ${me ? me + ', ' : ''}an Eaton Emergency Lighting (EL) engineer in Budapest,`,
@@ -7930,12 +8760,12 @@ async function startServer() {
       });
       const digest = response.text; const now = new Date().toISOString();
       if (digest) elWriteMeta({ digest, digestAt: now });
-      res.json({ digest, digestAt: now });
+      return { digest: digest ?? null, digestAt: now };
     } catch (e: any) {
       const detail = e.cause?.message ? ` (${e.cause.message})` : '';
-      res.json({ digest: null, error: 'Gemini error: ' + e.message + detail });
+      return { digest: null, error: 'Gemini error: ' + e.message + detail };
     }
-  });
+  }
 
   // Ask-AI across all stored EL internal updates.
   app.post('/api/el-internal/chat', async (req, res) => {
@@ -8417,14 +9247,22 @@ async function startServer() {
   // Quotations List metadata (mine-scoped) and lets Gemini answer in prose
   // (count from TotalRows, salesmen, materials) with clickable result cards.
   app.post('/api/quote-ask', async (req, res) => {
-    const { query, history } = req.body as {
+    const { query, history, sources } = req.body as {
       query: string;
       history?: Array<{ role: string; text: string }>;
+      sources?: string[];
     };
     if (!query?.trim()) { res.json({ answer: null, error: 'no question was sent' }); return; }
 
     const ai = getGemini();
     if (!ai) { res.json({ answer: null, error: 'No Gemini API key — add gemini_key in Settings' }); return; }
+
+    // Pinned to Fenton / EL Info → a knowledge question by definition: no
+    // quote search, no CRM routing.
+    if (Array.isArray(sources) && sources.some(x => x in KNOWLEDGE_SOURCES)) {
+      res.json({ ...(await chatAnswer(query, history, sources)), results: [] });
+      return;
+    }
 
     // ── 1. Classify intent + extract a clean search term ────────────────────
     let intent: 'search' | 'chat' | 'crm' = 'chat';
@@ -8654,6 +9492,9 @@ async function startServer() {
                     // REQUESTED FROM is not in any quotation PDF — the extractor
                     // reads it off the originating mail thread in the index.
                     MAGIC_MAIL_INDEX: MAIL_INDEX,
+                    // …and a BidManager quote prints no Salesforce id at all, so
+                    // the extractor asks crm_quote what id that works number has.
+                    MAGIC_DB: DB_PATH,
                     ...(salesman ? { MAGIC_INSIDE_SALES: salesman } : {}),
                     ...(division ? { MAGIC_DIVISION: division } : {}),
                     ...(lines    ? { MAGIC_DIVISION_MAP: lines } : {}),
@@ -8667,10 +9508,10 @@ async function startServer() {
 
     p1.on('close', code1 => {
       if (code1 !== 0) {
-        fail('[ERR] PDF extraction failed — stopping.');
+        fail('[ERR] Could not read the quotes — nothing was uploaded.');
         insertJob({
           step: 'Step 1', status: 'err', items: 0,
-          note: 'PDF extraction failed',
+          note: 'Could not read the quotes',
           product: division || null,
           durationSec: Math.round((Date.now() - t0) / 1000),
         });
@@ -8723,7 +9564,12 @@ async function startServer() {
     let finished = false;
     res.on('close', () => { if (!finished) { try { p2.kill(); } catch {} } });
     let items = 0;
-    p2.stdout.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(l => { send(l); if (l.includes('[OK]')) items++; }));
+    // Count from the script's own tally: '[OK]' also tags the connect/resolve
+    // lines, which inflated "N item(s) uploaded" in the job history.
+    p2.stdout.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(l => {
+      send(l);
+      if (l.startsWith('__SUMMARY__:')) { try { items = JSON.parse(l.slice(12)).uploaded || 0; } catch {} }
+    }));
     p2.stderr.on('data', d => String(d).split('\n').filter(l => l.trim()).forEach(l => send(`[WARN] ${l}`)));
     p2.on('error', err => { finished = true; send(`[ERR] Could not start Python: ${err.message}`); res.write(`data: __DONE__:false\n\n`); res.end(); });
     p2.on('close', code2 => {
@@ -8750,7 +9596,7 @@ async function startServer() {
           step: 'Step 1', status: ok ? 'ok' : 'err',
           items,
           product: division || null,
-          note: ok ? `${items} item(s) uploaded` : 'Upload failed',
+          note: ok ? `${items} item(s) uploaded` : 'SharePoint List upload failed',
           durationSec: dur,
         });
       }
@@ -8800,7 +9646,7 @@ async function startServer() {
     runPyScript(res, script, (ok, dur) => {
       insertJob({
         step: 'Step 2', status: ok ? 'ok' : 'err',
-        note: ok ? 'D&Q Store built' : 'D&Q Store failed',
+        note: ok ? 'Uploaded to D&Q Store' : 'D&Q Store upload failed',
         durationSec: dur,
       });
       if (!ok) addToRetryQueue('step2', 'D&Q Store upload failed — will auto-retry when reconnected');
@@ -9608,7 +10454,7 @@ async function startServer() {
       const all = loadRetryQueue();
       const idx = all.findIndex(x => x.id === item.id);
       if (idx > -1) {
-        if (ok) { all.splice(idx, 1); insertJob({ step: 'Step 2', status: 'ok', note: 'D&Q Store built (manual retry)', durationSec: null }); }
+        if (ok) { all.splice(idx, 1); insertJob({ step: 'Step 2', status: 'ok', note: 'Uploaded to D&Q Store (manual retry)', durationSec: null }); }
         else { all[idx].attempts++; all[idx].lastError = output.slice(-200); }
         saveRetryQueue(all);
       }
@@ -9645,7 +10491,7 @@ async function startServer() {
     app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'dist', 'index.html')));
   }
 
-  app.listen(PORT, '127.0.0.1', () => {
+  const onListening = () => {
     if (isSidecar) {
       // Tauri reads this line from stdout to get the API port
       process.stdout.write(`VECTOR_PORT:${PORT}\n`);
@@ -9664,7 +10510,19 @@ async function startServer() {
         console.warn('[pricelist] CHANGED since last acknowledged — quotes priced before now used the previous issue.');
       }
     }).catch(() => { /* never block startup on this */ });
-  });
+  };
+  // A restarted copy starts while the old process is still letting go of the
+  // port, so it waits for it (up to ~20 s) instead of dying on EADDRINUSE.
+  const listen = (tries: number) => {
+    app.listen(PORT, '127.0.0.1', onListening).on('error', (e: any) => {
+      if (e.code === 'EADDRINUSE' && process.env.VECTOR_RESTARTED && tries > 0) {
+        setTimeout(() => listen(tries - 1), 300);
+        return;
+      }
+      throw e;
+    });
+  };
+  listen(66);
 }
 
 startServer().catch(err => { console.error(err); process.exit(1); });

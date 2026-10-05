@@ -26,6 +26,7 @@ SETUP: Uses same FedAuth + rtFa cookies as Automation_V4.py
 """
 
 import os
+import json
 import shutil
 import sys
 import io
@@ -179,18 +180,51 @@ def ensure_folder(session, digest, parent_path, folder_name):
     return full_path   # site-relative, no leading slash
 
 
+_FOLDER_IDS = {}
+
+
+def _odata_str(s):
+    """A value for inside an OData '...' literal: apostrophe doubled (St Paul's), URL-encoded."""
+    return requests.utils.quote(s.replace("'", "''"), safe="")
+
+
+def folder_id(session, folder_path):
+    """UniqueId of a site-relative folder, resolved one segment at a time.
+
+    Addressing a file by its full path put folder + file name in the URL twice
+    and hit SharePoint's maxUrlLength on long project names. Walking down by id
+    keeps every request to one short name: GetFolderById(parent)/Folders/GetByUrl(name).
+    """
+    rel = _site_rel(folder_path)
+    if rel in _FOLDER_IDS:
+        return _FOLDER_IDS[rel]
+    root = _site_rel(DQ_STORE)
+    hdr = {"Accept": "application/json;odata=verbose"}
+    if rel == root or "/" not in rel:
+        enc = requests.utils.quote(f"/sites/ELTechsupport/{rel}".replace("'", "''"), safe="/")
+        url = f"{SITE_URL}/_api/web/GetFolderByServerRelativeUrl('{enc}')?$select=UniqueId"
+    else:
+        parent, _, name = rel.rpartition("/")
+        pid = folder_id(session, parent)
+        url = (f"{SITE_URL}/_api/web/GetFolderById('{pid}')/Folders/GetByUrl('{_odata_str(name)}')"
+               f"?$select=UniqueId")
+    r = session.get(url, headers=hdr, timeout=TIMEOUT)
+    r.raise_for_status()
+    _FOLDER_IDS[rel] = r.json()["d"]["UniqueId"]
+    return _FOLDER_IDS[rel]
+
+
 def upload_file(session, digest, folder_server_path, file_path):
     """Upload a file into a SharePoint folder."""
-    filename   = os.path.basename(file_path)
-    rel        = _site_rel(folder_server_path)          # clean site-relative
-    server_rel = f"/sites/ELTechsupport/{rel}"          # full server-relative
-    enc_path   = requests.utils.quote(server_rel, safe="/")
-    enc_file   = requests.utils.quote(filename, safe="")
-    url = (
-        f"{SITE_URL}/_api/web/GetFolderByServerRelativeUrl"
-        f"('{enc_path}')"
-        f"/Files/add(url='{enc_file}',overwrite=true)"
-    )
+    filename = os.path.basename(file_path)
+    try:
+        fid = folder_id(session, folder_server_path)
+    except Exception as e:
+        print(f"  [ERR] {filename}: folder not found on SharePoint ({_site_rel(folder_server_path)}): {e}")
+        return False
+    # Folder by id, so the URL carries only the file name — not the whole
+    # D&Q Store path, which pushed long project names past maxUrlLength.
+    url = f"{SITE_URL}/_api/web/GetFolderById('{fid}')/Files/add(url='{_odata_str(filename)}',overwrite=true)"
     headers = {
         "Accept": "application/json;odata=verbose",
         "X-RequestDigest": digest,
@@ -203,8 +237,38 @@ def upload_file(session, digest, folder_server_path, file_path):
         print(f"  [OK] Uploaded: {filename}")
         return True
     else:
-        print(f"  [ERR] Upload failed: {r.status_code} {r.text[:150]}")
+        try:
+            why = r.json()["error"]["message"]["value"]
+        except Exception:
+            why = f"HTTP {r.status_code} {r.text[:150]}"
+        print(f"  [ERR] {filename}: {why}")
         return False
+
+
+# Short (SR00…/CR00…) or full (006…) Salesforce id. Explicit lookarounds, not
+# \b: underscore is a word character, so \b never fires in Eaton file names.
+_SFID_RE = re.compile(
+    r"(?<![A-Za-z0-9])((?:CR|SR|EU|QR)00[A-Za-z0-9]{6,12}|006[A-Za-z0-9]{15})(?![A-Za-z0-9])"
+)
+# Bare tail inside a project name ("Eversheds … - EL - 00yduKjYAI") = record
+# 006QO00000yduKjYAI. Same rule as pdf_to_csv._SFID_TAIL_RE: mixed case, so
+# dates and order numbers don't pass.
+_SFID_TAIL_RE = re.compile(r"(?<![A-Za-z0-9])00([A-Za-z0-9]{5}[A-Z0-5]{3})(?![A-Za-z0-9])")
+# No Salesforce id at all: BidManager code (QW28237) or the quotation number.
+_BM_CODE_RE = re.compile(r"(?<![A-Za-z0-9])(Q[BWV]\d{5}[A-Z]?\d{0,2}R?)(?![A-Za-z0-9])")
+_QUOTE_NO_RE = re.compile(r"Quotation No:\s*([A-Z0-9]{2}[A-Z0-9]{2}\d{4}X\d[A-Z]\d(?:-\d{4})?)", re.IGNORECASE)
+
+
+def _find_key(text):
+    """(key, token-as-written) for the first Salesforce id in text, else ('', '')."""
+    m = _SFID_RE.search(text)
+    if m:
+        return m.group(1), m.group(1)
+    for m in _SFID_TAIL_RE.finditer(text):
+        t = m.group(1)
+        if any(c.islower() for c in t) and any(c.isupper() for c in t):
+            return "006QO00000" + t, m.group(0)
+    return "", ""
 
 
 def extract_quote_info(pdf_path):
@@ -215,31 +279,32 @@ def extract_quote_info(pdf_path):
     sf_id = ""
     quote_name = ""
 
-    m = re.search(r"QUOTATION REF:\s*(\S+)", page1, re.IGNORECASE)
-    if m:
-        sf_id = m.group(1).rstrip("-")
-
-    # Fallback: extract SF ID from filename (e.g. "SR00kE7n7YAC Eton College.pdf")
+    # QUOTATION REF usually opens with the id ("SR00kE7n7YAC - Eton"), but some
+    # quotes carry only the project name there ("St Paul's Cat") — taking its
+    # first word made "St" the id and the folder "St — Paul's …". Accept only a
+    # token shaped like a Salesforce id, wherever it sits on the page.
+    ref  = re.search(r"QUOTATION REF:\s*(.*)", page1, re.IGNORECASE)
+    proj = re.search(r"Project Reference:\s*(.*)", page1, re.IGNORECASE)
+    ref_line  = ref.group(1).strip() if ref else ""
+    proj_line = proj.group(1).strip() if proj else ""
+    fname = os.path.splitext(os.path.basename(pdf_path))[0]
+    token = ""
+    for text in (ref_line, proj_line, page1, fname):
+        sf_id, token = _find_key(text)
+        if sf_id:
+            break
     if not sf_id:
-        fname = os.path.splitext(os.path.basename(pdf_path))[0]
-        # Match SF ID pattern: starts with 2 letters + digits + letters
-        mf = re.match(r"([A-Z]{2}\d{2}[A-Za-z0-9]+)", fname)
-        if mf:
-            sf_id = mf.group(1)
-            # Quote name = rest of filename after SF ID
-            rest = fname[len(sf_id):].strip(" -_–")
-            if rest:
-                quote_name = rest
+        m = _BM_CODE_RE.search(ref_line) or _BM_CODE_RE.search(proj_line) or _QUOTE_NO_RE.search(page1)
+        if m:
+            sf_id = token = m.group(1)
 
-    # Try dash-separated name
-    m2 = re.search(r"Project Reference:\s*" + re.escape(sf_id) + r"\s*[-–]\s*(.*)", page1, re.IGNORECASE)
-    if m2:
-        quote_name = m2.group(1).strip()
-    else:
-        # Space-only separator
-        m3 = re.search(r"Project Reference:\s*" + re.escape(sf_id) + r"\s+(.*)", page1, re.IGNORECASE)
-        if m3:
-            quote_name = m3.group(1).strip()
+    # Quote name = the project reference with the id taken out.
+    if proj_line:
+        quote_name = proj_line.replace(token, "") if token else proj_line
+        quote_name = re.sub(r"\s{2,}", " ", quote_name).strip(" -–—")
+    elif sf_id and fname.startswith(sf_id):
+        # e.g. "SR00kE7n7YAC Eton College.pdf"
+        quote_name = fname[len(sf_id):].strip(" -_–")
 
     return sf_id, quote_name
 
@@ -278,7 +343,7 @@ def process_pdf(session, digest, pdf_path):
 
     sf_id, quote_name = extract_quote_info(pdf_path)
     if not sf_id:
-        print(f"  [!] Could not extract SF ID — skipping.")
+        print(f"  [ERR] {filename}: no Salesforce id found in the file or its name — skipped.")
         return False
 
     revision = is_revision(quote_name)
@@ -350,6 +415,7 @@ if __name__ == "__main__":
 
         if not pdf_files:
             print(f"[!] No pending files in manifest.", flush=True)
+            print(f"__SUMMARY__:{json.dumps({'uploaded': 0, 'failed': 0})}", flush=True)
             sys.exit(0)
 
         for f in pdf_files:
@@ -370,7 +436,16 @@ if __name__ == "__main__":
         print(f"\n{'='*55}")
         print(f"  Done — {success_count}/{len(pdf_files)} processed successfully.")
         print(f"{'='*55}\n")
+        # Machine-readable tally for the Dashboard toast.
+        print(f"__SUMMARY__:{json.dumps({'uploaded': success_count, 'failed': len(pdf_files) - success_count})}", flush=True)
+        # Used to exit 0 even when every file failed, so the app said "built".
+        if success_count == 0:
+            print("[ERR] No quote reached the D&Q Store — see the errors above.", flush=True)
+            sys.exit(1)
 
+    except SystemExit:
+        raise
     except Exception as e:
-        print(f"[FATAL ERROR] {e}")
+        print(f"[ERR] {e}")
         traceback.print_exc()
+        sys.exit(1)

@@ -878,8 +878,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
 
   return (
     <div className="space-y-5">
+      {/* min-w-0 on both cells: a grid cell's min width is its content, so the
+          8-column schedule used to widen its cell past the screen and over the
+          input card. Now the table scrolls inside its own card instead. */}
       <div className="grid grid-cols-12 gap-5 items-start">
-      <div className="col-span-12 lg:col-span-5 space-y-5">
+      <div className="col-span-12 xl:col-span-4 space-y-5 min-w-0">
 
       {/* Unified Input card */}
       <Card>
@@ -1014,8 +1017,8 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
           )}
 
           {/* Toolbar */}
-          <div className="flex items-center justify-between px-3 py-2 border-t border-line">
-            <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 border-t border-line">
+            <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
               <UiButton tone="ghost" aria-label="Attach PDF or image" type="button" onClick={() => fileRef.current?.click()} hint="Attach PDF or image">
                 <Paperclip className="w-3.5 h-3.5" /> Attach
               </UiButton>
@@ -1063,7 +1066,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
       </Card>
       </div>
 
-      <div className="col-span-12 lg:col-span-7 space-y-5">
+      <div className="col-span-12 xl:col-span-8 space-y-5 min-w-0">
 
       {/* Live read-out — items stream in as they're priced */}
       {streaming && (
@@ -1103,7 +1106,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
             title="Suggested matches"
             sub="AI ranked these Eaton/Cooper products against your description and any images. Confidence + reasoning shown — pick the right one."
           />
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-3">
             {result.candidates.map((c, idx) => {
               const tone = c.confidence === 'high'
                 ? 'bg-ok-soft ring-ok-line '
@@ -1143,7 +1146,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                       </div>
                     )}
                   </div>
-                  <div className="flex gap-2 mt-2.5 pt-2.5 border-t border-line">
+                  <div className="flex flex-wrap gap-2 mt-2.5 pt-2.5 border-t border-line">
                     <Button tone="primary" size="sm" Icon={Plus} onClick={() => pickCandidate(c, false)}>
                       Add to schedule
                     </Button>
@@ -1161,11 +1164,11 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
       {/* Results */}
       {result && !result.error && matched.length > 0 && (
         <Card>
-          <div className="flex items-center justify-between mb-4">
-            <div>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+            <div className="min-w-0">
               <CardTitle title="Material Schedule" sub={`${pricelistName(plv)} NTP`} />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <TextInput
                 value={projectName}
                 onChange={e => setProjectName(e.currentTarget.value)}
@@ -1184,12 +1187,12 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
               <thead>
                 <tr className="bg-surface">
                   <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Ref</th>
-                  <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Catalogue No</th>
+                  <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide whitespace-nowrap">Catalogue No</th>
                   <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Description</th>
                   <th className="px-3 py-2 text-left font-semibold text-fg-3 text-2xs uppercase tracking-wide">Family</th>
                   <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide">Qty</th>
-                  <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide">NTP/Unit</th>
-                  <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide">Line NTP</th>
+                  <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide whitespace-nowrap">NTP/Unit</th>
+                  <th className="px-3 py-2 text-right font-semibold text-fg-3 text-2xs uppercase tracking-wide whitespace-nowrap">Line NTP</th>
                   <th className="w-8 px-2 py-2" />
                 </tr>
               </thead>
@@ -1199,8 +1202,8 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                   return (
                   <tr key={i} className={cn('border-t border-line',
                     i % 2 === 0 ? '' : 'bg-surface')}>
-                    <td className="px-3 py-2 mono text-xs text-fg-3">{item.ref || '—'}</td>
-                    <td className="px-3 py-2">
+                    <td className="px-3 py-2 mono text-xs text-fg-3 whitespace-nowrap">{item.ref || '—'}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
                       <div className="flex items-center gap-1">
                         <span className="mono font-medium text-accent-text">{item.cat_no}</span>
                         {uncertain && item.original_input && item.original_input !== item.cat_no && (
@@ -1210,7 +1213,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                         )}
                       </div>
                     </td>
-                    <td className="px-3 py-2 text-fg-2 max-w-xs">
+                    <td className="px-3 py-2 text-fg-2 min-w-48 max-w-xs">
                       <span className="line-clamp-2">{item.description}</span>
                       {item.search_note && (
                         <span className="mt-0.5 block text-2xs text-warn leading-snug" title={item.search_note}>
@@ -1219,9 +1222,9 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                       )}
                     </td>
                     <td className="px-3 py-2 text-fg-3 text-xs">{item.family}</td>
-                    <td className="px-3 py-2 text-right mono text-fg-2">{item.qty}</td>
-                    <td className="px-3 py-2 text-right mono text-fg-2">{fmtGBP(item.ntp)}</td>
-                    <td className="px-3 py-2 text-right mono font-medium text-fg">{fmtGBP(item.line_ntp)}</td>
+                    <td className="px-3 py-2 text-right mono text-fg-2 whitespace-nowrap">{item.qty}</td>
+                    <td className="px-3 py-2 text-right mono text-fg-2 whitespace-nowrap">{fmtGBP(item.ntp)}</td>
+                    <td className="px-3 py-2 text-right mono font-medium text-fg whitespace-nowrap">{fmtGBP(item.line_ntp)}</td>
                     <td className="px-2 py-2 text-center">
                       {uncertain && (
                         <ItemMenu
@@ -1239,7 +1242,7 @@ export function SchematicsPage({ toast }: { toast: (type: 'ok'|'err'|'warn', msg
                   <td colSpan={6} className="px-3 py-2.5 text-right font-semibold text-fg-2 text-sm">
                     Total NTP (ex VAT)
                   </td>
-                  <td className="px-3 py-2.5 text-right mono font-medium text-base text-fg">
+                  <td className="px-3 py-2.5 text-right mono font-medium text-base text-fg whitespace-nowrap">
                     {fmtGBP(result.total_ntp)}
                   </td>
                 </tr>

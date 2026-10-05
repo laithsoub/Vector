@@ -43,6 +43,7 @@ export interface Config {
   // prior-year average, so the tab cannot price anything without it; blank means
   // "use the newest .xlsb in data/lsd".
   lsd_master_model?: string;
+  lsd_cost_master?: string;
   lsd_cases_root?:   string;   // blank = Desktop\LSD Pricing Doc when it exists
   lsd_ledger?:       string;   // MV Ledger code for the country prior-year lookup
   lsd_cpq_port?:     string;   // Edge remote-debugging port for Fetch-from-CPQ (blank = 9222)

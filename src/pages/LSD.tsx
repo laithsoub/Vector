@@ -20,10 +20,13 @@ import { Checkbox, EmptyState, PercentInput, Select, IconButton as UiIconButton 
 import { cn } from '../lib/cn';
 import { Card, CardTitle, Pill, Field, TextInput, Button, relTime } from '../lib/ui';
 import { api } from '../lib/api';
+import { peek } from '../lib/localCache';
 import { failed, plural } from '../lib/errors';
 import type { LsdLine, LsdResult, LsdCase, LsdMeta, LsdRegister, LsdPushResult,
-              LsdKeepalive, LsdKeepaliveTab, LsdQueue, LsdQueueRow } from '../lib/api';
+              LsdKeepalive, LsdKeepaliveTab, LsdQueue, LsdQueueRow,
+              LsdTalk, LsdTalkMail, LsdTalkThread } from '../lib/api';
 import { openExternal } from '../lib/shell';
+import { RulesPanel } from './LsdRules';
 import type { ToastFn } from '../App';
 
 // ─── formatting ──────────────────────────────────────────────────────────────
@@ -59,6 +62,10 @@ const EMPTY: Omit<LsdMeta, 'file'> = {
   half: 'auto', aprc: 'auto', ledger: 'R2321', revision: '', baseline: true,
   // Blank unless an approver sent the case back against a number.
   rpi_target: null,
+  // A 5x country-average line keeps the RPI until the customer confirms the order.
+  order_confirmed: false,
+  // Typo-looking requests confirmed as real — empty until the analyst says so.
+  typo_keep: [] as string[],
   // These never touch the price — they are the daily register's own columns,
   // filled here because this is the only moment anyone knows them.
   bu: '', status: 'Priced', sales_name: '', cpq_updated: '', notes: '', rpi_comment: '',
@@ -176,7 +183,16 @@ const QUEUE_KIND: Record<LsdQueueRow['kind'], string> = {
   hold:      'On hold',
   no_number: 'No transaction number yet',
   no_bu:     'BU blank in her sheet — check it is Fire',
+  approved:  'Kiran already said proceed in the mail',
 };
+
+// Where a merged queue row came from — shown next to the number.
+const SOURCE_LABEL = { mail: 'Mail', sheet: 'Sheet', both: 'Mail + Sheet' } as const;
+const SOURCE_TIP = {
+  mail:  "CPQ mailed you an approval; not in Dalia's sheet yet",
+  sheet: "In Dalia's sheet with no comment; CPQ never mailed you an approval for it",
+  both:  "CPQ approval mail, and in Dalia's sheet with no comment",
+} as const;
 
 function ago(iso: string | null | undefined): string {
   if (!iso) return 'not yet';
@@ -207,6 +223,10 @@ function QueueTable({ rows, onFetch, disabled, todo }: {
               <tr key={`${r.transaction}-${r.row}`} className="border-t border-line-2">
                 <td className="px-2 py-1.5 whitespace-nowrap font-medium text-fg tabular-nums">
                   {r.transaction || r.raw_transaction || '—'}
+                  {r.from && (
+                    <span className="ml-1.5 text-2xs font-medium px-1 rounded text-fg-2 bg-subtle"
+                          title={SOURCE_TIP[r.from]}>{SOURCE_LABEL[r.from]}</span>
+                  )}
                   {fresh && (
                     <span className="ml-1.5 text-2xs font-semibold px-1 rounded"
                           style={{ color: 'var(--ok)', background: 'var(--ok-soft)' }}>NEW</span>
@@ -259,21 +279,25 @@ function QueueTable({ rows, onFetch, disabled, todo }: {
 function QueuePanel({ toast, onFetch, disabled }: {
   toast: ToastFn; onFetch: (w: string) => void; disabled: boolean;
 }) {
-  const [q, setQ]               = useState<LsdQueue | null>(null);
+  const [q, setQ]               = useState<LsdQueue | null>(() => peek<LsdQueue>('lsd.queue') ?? null);
   const [busy, setBusy]         = useState(false);
   const [open, setOpen]         = useState(true);
   const [showOther, setShowOther] = useState(false);
   // The to-fetch numbers already shown, so a row Dalia adds while the tab is
   // open gets a toast instead of appearing silently in a list nobody is watching.
   const known = useRef<Set<string> | null>(null);
+  // False while the rows on screen are this device's saved copy: they show at
+  // once, but Fetch waits for the live sheet.
+  const [live, setLive]         = useState(false);
 
   const take = useCallback((r: LsdQueue) => {
     setQ(r);
+    setLive(true);
     if (!r.ok) return;
     const now = new Set((r.rows || []).filter(x => x.kind === 'fetch').map(x => x.transaction));
     if (known.current) {
       const fresh = [...now].filter(w => !known.current!.has(w));
-      if (fresh.length) toast('ok', `New in Dalia's sheet: ${fresh.join(', ')}`);
+      if (fresh.length) toast('ok', `New to price: ${fresh.join(', ')}`);
     }
     known.current = now;
   }, [toast]);
@@ -290,8 +314,8 @@ function QueuePanel({ toast, onFetch, disabled }: {
     try {
       const r = await api.lsdQueueRefresh();
       take(r);
-      if (!r.ok) toast('err', r.error || "Could not read Dalia's sheet.");
-    } catch (e) { toast('err', failed("read Dalia's daily sheet", e)); }
+      if (!r.ok) toast('err', r.error || 'Could not read the queue.');
+    } catch (e) { toast('err', failed('read the LSD queue', e)); }
     setBusy(false);
   };
 
@@ -300,6 +324,9 @@ function QueuePanel({ toast, onFetch, disabled }: {
   const todo    = rows.filter(r => r.kind === 'fetch');
   const other   = rows.filter(r => r.kind !== 'fetch');
   const working = busy || q.running;
+  // 'merge' (default) and 'mail' both lead with CPQ's approval mail.
+  const fromMail = q.source === 'mail' || q.source === 'merge';
+  const merged = q.source === 'merge';
 
   return (
     <Card className="order-1">
@@ -309,9 +336,14 @@ function QueuePanel({ toast, onFetch, disabled }: {
           <ClipboardList className="w-4 h-4 shrink-0 text-fg-2" />
           <span className="text-sm font-semibold text-fg truncate"
                 title={q.bu_filter?.length
-                  ? `Only BU ${q.bu_filter.join(', ')} — ${q.other_bu ?? 0} open row(s) in other BUs are not listed`
+                  ? (fromMail
+                      ? (merged
+                          ? `CPQ approval mail checked against Dalia's sheet (FIRE only). Left out: ${q.closed ?? 0} done in her sheet (Done / green), ${q.commented ?? 0} with a comment in her Notes, ${q.other_bu ?? 0} CBS/EL`
+                          : `From the CPQ "Approval Required" mail in ${q.folder || 'CPQ Approvals'} — only transactions with FIRE lines; ${q.other_bu ?? 0} CBS/EL-only and ${q.closed ?? 0} no-longer-required are not listed`)
+                      : `Only BU ${q.bu_filter.join(', ')} — ${q.other_bu ?? 0} open row(s) in other BUs are not listed`)
                   : 'Every BU'}>
-            {q.bu_filter?.length ? `${q.bu_filter.map(b => b[0] + b.slice(1).toLowerCase()).join(' / ')} waiting` : 'Waiting'} in Dalia's sheet
+            {q.bu_filter?.length ? `${q.bu_filter.map(b => b[0] + b.slice(1).toLowerCase()).join(' / ')} waiting` : 'Waiting'}
+            {merged ? " — CPQ mail + Dalia's sheet" : fromMail ? ' approval in CPQ' : " in Dalia's sheet"}
           </span>
         </button>
         <span className="text-xs tabular-nums px-1.5 py-px rounded-md shrink-0"
@@ -325,27 +357,195 @@ function QueuePanel({ toast, onFetch, disabled }: {
             : `Read ${ago(q.ran)}`}
           {q.enabled ? ` · every ${q.everyMin} min` : ' · auto-read off'}
         </span>
-        <Button tone="outline" size="sm" Icon={working ? Loader2 : RefreshCw} disabled={working} onClick={refresh}
-                title="Read Dalia's sheet now instead of waiting for the next timed read"
-                className={cn('shrink-0', working && '[&_svg]:animate-spin')}>
-          {working ? 'Reading…' : 'Refresh'}
-        </Button>
+        <UiIconButton icon={RefreshCw} label={fromMail ? 'Read the approval mail now' : 'Read the sheet now'} className="shrink-0" onClick={refresh} disabled={working} />
       </div>
 
       {open && q.ran != null && (
         <div className="mt-2.5 flex flex-col gap-2">
           {todo.length > 0
-            ? <QueueTable rows={todo} onFetch={onFetch} disabled={disabled} todo />
-            : <p className="text-xs text-fg-3">Nothing to pick up — every open row is priced here, on hold, or has no number.</p>}
+            ? <QueueTable rows={todo} onFetch={onFetch} disabled={disabled || !live} todo />
+            : <p className="text-xs text-fg-3">Nothing to pick up — every open {fromMail ? 'approval' : 'row'} is priced here{fromMail ? ' or approved' : ', on hold, or has no number'}.</p>}
           {other.length > 0 && (
             <>
               <button onClick={() => setShowOther(s => !s)}
                       className="self-start flex items-center gap-1 text-xs text-fg-3 hover:text-fg">
                 <ChevronRight className={cn('w-3 h-3 transition-transform', showOther && 'rotate-90')} />
-                {plural(other.length, 'other open row')} — priced here, on hold, no number or no BU
+                {plural(other.length, 'other open row')} — {fromMail ? 'priced here or already approved' : 'priced here, on hold, no number or no BU'}
               </button>
-              {showOther && <QueueTable rows={other} onFetch={onFetch} disabled={disabled} />}
+              {showOther && <QueueTable rows={other} onFetch={onFetch} disabled={disabled || !live} />}
             </>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─── Dalia ↔ Kiran: the approval conversation, newest thread first ──────────
+const TALK_STATE: Record<LsdTalkThread['state'], { label: string; tone: 'ok' | 'warn' | 'brand' | 'neutral' }> = {
+  approved:   { label: 'Kiran approved', tone: 'ok' },
+  rework:     { label: 'Kiran asks',     tone: 'warn' },
+  for_laith:  { label: 'For you',        tone: 'brand' },
+  with_kiran: { label: 'With Kiran',     tone: 'neutral' },
+  sent:       { label: 'Sent on',        tone: 'neutral' },
+};
+const TALK_SEEN_KEY = 'mu_lsd_talk_seen';
+const TALK_SHOWN = 6;
+const talkTitle = (subject: string) =>
+  subject.replace(/^\s*((re|fw|fwd)\s*:\s*|\[external\]\s*|reminder\s*:\s*)+/gi, '');
+
+function TalkMail({ m, toast }: { m: LsdTalkMail; toast: ToastFn }) {
+  const openMail = async () => {
+    try {
+      const r = await api.outlookOpenInOutlook(m.entryId);
+      if (r.error) toast('err', r.error);
+    } catch (e) { toast('err', failed('open the mail in Outlook', e)); }
+  };
+  return (
+    <div className="pl-3 border-l-2" style={{ borderColor: m.who === 'kiran' ? 'var(--warn)' : 'var(--line-3)' }}>
+      <div className="flex items-center gap-2 text-2xs text-fg-3">
+        <span className="font-semibold text-fg-2">{m.who === 'kiran' ? 'Kiran' : 'Dalia'}</span>
+        <span className="tabular-nums">{String(m.received).slice(0, 16)}</span>
+        {m.attachments.length > 0 && (
+          <span className="truncate" title={m.attachments.join('\n')}>· {plural(m.attachments.length, 'attachment')}</span>
+        )}
+        <button onClick={openMail} className="ml-auto flex items-center gap-1 hover:text-fg">
+          <ExternalLink className="w-3 h-3" /> Outlook
+        </button>
+      </div>
+      {m.text && <p className="mt-1 text-xs text-fg whitespace-pre-line leading-relaxed">{m.text}</p>}
+      {m.table && (
+        <div className="mt-1.5 overflow-x-auto">
+          <table className="text-2xs tabular-nums">
+            <thead>
+              <tr className="text-fg-3 text-left">
+                {m.table.cols.map((c, i) => (
+                  <th key={c} className={cn('px-1.5 py-0.5 font-medium whitespace-nowrap', i > 0 && 'text-right')}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {m.table.rows.map(r => (
+                <tr key={r[0]} className={cn('border-t border-line-2', /^overall$/i.test(r[0]) && 'font-semibold text-fg')}>
+                  {r.map((c, i) => (
+                    <td key={i} className={cn('px-1.5 py-0.5 whitespace-nowrap', i > 0 && 'text-right')}>{c.replace(/\s+/g, ' ')}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TalkPanel({ toast, onFetch, disabled }: {
+  toast: ToastFn; onFetch: (w: string) => void; disabled: boolean;
+}) {
+  const [t, setT]               = useState<LsdTalk | null>(() => peek<LsdTalk>('lsd.updates') ?? null);
+  const [live, setLive]         = useState(false);   // false = saved copy on screen; Fetch waits
+  const [busy, setBusy]         = useState(false);
+  const [open, setOpen]         = useState(true);
+  const [all, setAll]           = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  // A thread with mail newer than the last visit to this tab reads "new".
+  const [seen] = useState<string>(() => { try { return localStorage.getItem(TALK_SEEN_KEY) || ''; } catch { return ''; } });
+  useEffect(() => () => { try { localStorage.setItem(TALK_SEEN_KEY, new Date().toISOString()); } catch {} }, []);
+
+  useEffect(() => {
+    const load = async () => { try { setT(await api.lsdUpdates()); setLive(true); } catch {} };
+    load();
+    const id = setInterval(load, 5 * 60_000);   // the Outlook sweep itself runs server-side, hourly
+    return () => clearInterval(id);
+  }, []);
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const before = new Set((t?.threads || []).map(x => `${x.key}@${x.last}`));
+      const r = await api.lsdUpdatesRefresh();
+      setT(r);
+      if (r.error) toast('err', r.error);
+      else {
+        const n = r.threads.filter(x => !before.has(`${x.key}@${x.last}`)).length;
+        toast('ok', n ? `${plural(n, 'thread')} with new mail from Dalia or Kiran` : 'Nothing new from Dalia or Kiran');
+      }
+    } catch (e) { toast('err', failed("read Dalia's and Kiran's mail", e)); }
+    setBusy(false);
+  };
+
+  if (!t) return null;
+  const working = busy || t.running;
+  // received is Outlook's "YYYY-MM-DD HH:MM:SS+00:00"; seen is an ISO stamp.
+  const isNew   = (x: LsdTalkThread) => !!seen && String(x.last) > seen.replace('T', ' ');
+  const fresh   = t.threads.filter(isNew).length;
+  const shown   = all ? t.threads : t.threads.slice(0, TALK_SHOWN);
+
+  return (
+    <Card className="order-1">
+      <div className="flex items-center gap-2 min-w-0">
+        <button onClick={() => setOpen(o => !o)} className="flex items-center gap-1.5 min-w-0 text-left">
+          <ChevronRight className={cn('w-3.5 h-3.5 shrink-0 text-fg-3 transition-transform', open && 'rotate-90')} />
+          <Mail className="w-4 h-4 shrink-0 text-fg-2" />
+          <span className="text-sm font-semibold text-fg truncate">Dalia &amp; Kiran</span>
+        </button>
+        <span className="text-xs tabular-nums px-1.5 py-px rounded-md shrink-0"
+              style={fresh ? { color: 'var(--accent)', background: 'var(--s3)' } : { color: 'var(--t3)' }}>
+          {t.ran == null ? 'not read yet' : fresh ? `${fresh} new` : plural(t.threads.length, 'thread')}
+        </span>
+        <span className="ml-auto min-w-0 text-2xs text-fg-3 truncate" title={t.error || undefined}>
+          {t.error ? <span style={{ color: 'var(--err)' }}>{t.error}</span> : `Read ${ago(t.ran)} · last ${t.days} days`}
+        </span>
+        <Button tone="outline" size="sm" Icon={working ? Loader2 : RefreshCw} disabled={working} onClick={refresh}
+                title="Read Dalia's and Kiran's latest mail from Outlook now (takes a few minutes)"
+                className={cn('shrink-0', working && '[&_svg]:animate-spin')}>
+          {working ? 'Reading Outlook…' : 'Refresh'}
+        </Button>
+      </div>
+
+      {open && t.ran != null && (
+        <div className="mt-2.5 flex flex-col">
+          {t.threads.length === 0 && <p className="text-xs text-fg-3">No mail from Dalia or Kiran in the last {t.days} days.</p>}
+          {shown.map(x => {
+            const st = TALK_STATE[x.state];
+            const m0 = x.mails[0];
+            const isOpen = expanded === x.key;
+            return (
+              <div key={x.key} className="border-t border-line-2 first:border-t-0">
+                <div className="flex items-center gap-2 py-1.5 min-w-0">
+                  <button onClick={() => setExpanded(isOpen ? null : x.key)} className="flex items-center gap-2 min-w-0 flex-1 text-left">
+                    <ChevronRight className={cn('w-3 h-3 shrink-0 text-fg-3 transition-transform', isOpen && 'rotate-90')} />
+                    <Pill tone={st.tone}>{st.label}</Pill>
+                    {isNew(x) && (
+                      <span className="text-2xs font-semibold px-1 rounded shrink-0"
+                            style={{ color: 'var(--ok)', background: 'var(--ok-soft)' }}>NEW</span>
+                    )}
+                    <span className="text-xs text-fg truncate" title={x.subject}>{talkTitle(x.subject)}</span>
+                  </button>
+                  <span className="text-2xs text-fg-3 shrink-0 tabular-nums">
+                    {m0.who === 'kiran' ? 'Kiran' : 'Dalia'} · {String(x.last).slice(5, 16)}
+                  </span>
+                  {x.transaction && (
+                    <UiIconButton icon={CloudDownload} label={`Fetch ${x.transaction} from CPQ`} size="sm" className="shrink-0"
+                      disabled={disabled || !live} onClick={() => onFetch(x.transaction!)} />
+                  )}
+                </div>
+                {!isOpen && m0.text && (
+                  <p className="pl-5 pb-1.5 -mt-0.5 text-2xs text-fg-3 truncate">{m0.text.split('\n').slice(0, 2).join(' · ')}</p>
+                )}
+                {isOpen && (
+                  <div className="pl-5 pb-2.5 flex flex-col gap-3">
+                    {x.mails.map(m => <TalkMail key={m.entryId} m={m} toast={toast} />)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {t.threads.length > TALK_SHOWN && (
+            <button onClick={() => setAll(a => !a)} className="self-start mt-1 text-xs text-fg-3 hover:text-fg">
+              {all ? 'Show fewer' : `Show all ${t.threads.length} threads`}
+            </button>
           )}
         </div>
       )}
@@ -555,7 +755,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
   const [busy, setBusy]       = useState<'' | 'upload' | 'preview' | 'build'>('');
   const [result, setResult]   = useState<LsdResult | null>(null);
   const [built, setBuilt]     = useState<LsdResult | null>(null);
-  const [cases, setCases]     = useState<LsdCase[]>([]);
+  const [cases, setCases]     = useState<LsdCase[]>(() => peek<{ cases: LsdCase[] }>('lsd.cases')?.cases ?? []);
   const [drag, setDrag]       = useState(false);
   const [showLog, setShowLog] = useState(false);
   const [cpqNum, setCpqNum]   = useState('');
@@ -563,7 +763,7 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
   const [cpqNote, setCpqNote] = useState('');
   // What the analyst's OneDrive already holds for this transaction.
   const [revNote, setRevNote] = useState('');
-  const [reg, setReg]         = useState<LsdRegister | null>(null);
+  const [reg, setReg]         = useState<LsdRegister | null>(() => peek<LsdRegister>('lsd.register') ?? null);
   const [regBusy, setRegBusy] = useState<'' | 'load' | 'upload' | 'save'>('');
   const progress = useRunProgress();
   // One button, whose job is whatever the run needs next. Four buttons meant
@@ -719,7 +919,18 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
       }
       // CPQ's header customer is the sold-to; some deals price a different
       // account, so make the auto-filled number visible, not silent.
-      setCpqNote(`Fetched ${r.lines ?? ''} line(s). Customer ${h.customer || '?'} — CPQ's own; change it if you price a different account.`);
+      // Approval History asks ("Add QTY xx of Item xx") are not on CPQ's BOM; the
+      // fetch appended them as lines. Say what was added, skipped and unreadable.
+      const ap = r.approval;
+      const apNote = !ap?.history?.length ? '' : [
+        ap.added.length ? `Added from Approval History: ${ap.added.map(a => `${a.material} x${a.qty}`).join(', ')}.` : '',
+        ap.skipped.length ? `Already on the BOM, not added again: ${ap.skipped.map(a => a.material).join(', ')}.` : '',
+        ap.unparsed.length ? `Check by hand: ${ap.unparsed.map(u => `"${u.comment}"`).join('; ')}.` : '',
+        !ap.added.length && !ap.skipped.length && !ap.unparsed.length
+          ? `Approval History: ${ap.history.map(u => `"${u.comment}"`).join('; ')}.` : '',
+      ].filter(Boolean).join(' ');
+      setCpqNote(`Fetched ${r.lines ?? ''} line(s). Customer ${h.customer || '?'} — CPQ's own; change it if you price a different account.`
+                 + (apNote ? ` ${apNote}` : ''));
       toast('ok', `Pulled ${w} from CPQ.`);
     } catch (e) { setCpqNote(failed('reach CPQ', e)); toast('err', failed('reach CPQ', e)); }
     finally { setCpqBusy(false); progress.end(); setTimeout(progress.clear, 900); }
@@ -746,15 +957,17 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
     } catch (e) { toast('err', failed('cancel the run', e)); }
   };
 
-  const price = async () => {
+  // `m` re-prices with a changed header straight away (the typo answer), rather
+  // than waiting a render for setMeta to land.
+  const price = async (m: typeof meta = meta) => {
     if (!file) return;
     const run = startRun();
     setBusy('preview'); setBuilt(null);
     progress.begin(['price']);
     try {
-      const r = await api.lsdPreview({ ...meta, file: file.path, job_id: run.id }, run.ctl.signal);
+      const r = await api.lsdPreview({ ...m, file: file.path, job_id: run.id }, run.ctl.signal);
       setResult(r);
-      if (r.ok && !r.cancelled) pricedSig.current = JSON.stringify([meta, file.path]);
+      if (r.ok && !r.cancelled) pricedSig.current = JSON.stringify([m, file.path]);
       if (r.cancelled) toast('warn', 'Cancelled.');
       else if (!r.ok) toast('err', r.error || 'Pricing failed.');
       else toast('ok', `${plural(r.summary?.lines || 0, 'line')} priced.`);
@@ -918,6 +1131,12 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
       <QueuePanel
         toast={toast} disabled={runningNow || cpqBusy}
         onFetch={w => { reset(); setCpqNum(w); void fetchCpq(w); }} />
+      {/* Where each case stands with the approver — Dalia's summaries and Kiran's answers. */}
+      <TalkPanel
+        toast={toast} disabled={runningNow || cpqBusy}
+        onFetch={w => { reset(); setCpqNum(w); void fetchCpq(w); }} />
+      {/* The numbers the engine prices by, and the changes waiting approval. */}
+      <RulesPanel toast={toast} />
 
       <Card className="order-1">
         <div
@@ -1125,6 +1344,20 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                     placeholder="4.5" />
                 </Field>
               </div>
+              <Checkbox
+                className="col-span-2 pt-1"
+                size="xs"
+                checked={!!meta.order_confirmed}
+                onChange={e => setMeta(m => ({ ...m, order_confirmed: e.currentTarget.checked }))}
+                label={
+                  <span className="text-2xs text-fg-3 leading-relaxed">
+                    <span className="text-fg-2 font-medium">Order confirmed</span> — the customer has
+                    fixed the quantities. Until then a line over 5x last year's country qty is marked
+                    provisional. Either way it keeps the RPI; once confirmed, it drops only if the
+                    5x rule ("fivex_country_no_gate") is approved in the rule table.
+                  </span>
+                }
+              />
               <Checkbox
                 className="col-span-2 pt-1"
                 size="xs"
@@ -1408,14 +1641,58 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                   {s.headline}
                 </div>
               )}
+              {/* A price nobody could have meant stops the case here and asks.
+                  Default: not copied, priced on target E2E + RPI gate. */}
+              {!!s.suspect?.length && (
+                <div className="mb-3 px-3 py-2.5 rounded-panel border border-err-line bg-err-soft">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-fg mb-1.5">
+                    <AlertCircle className="w-4 h-4 shrink-0" style={{ color: 'var(--err)' }} />
+                    Looks like a typo — check with sales before this goes out
+                  </div>
+                  {s.suspect.map(x => (
+                    <div key={x.material} className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-1.5
+                                                     border-t border-err-line first:border-t-0">
+                      <div className="min-w-0 flex-1 text-xs text-fg-2 leading-relaxed">
+                        <span className="font-mono text-fg">{x.material}</span> · {x.description} · qty {x.qty}
+                        <div>{x.why}</div>
+                      </div>
+                      {x.typo && file && (
+                        <Button size="sm" tone="ghost" disabled={!!busy}
+                                onClick={() => {
+                                  const m = { ...meta, typo_keep: [...(meta.typo_keep || []), x.material] };
+                                  setMeta(m); price(m);
+                                }}>
+                          It's real — price at {money(x.requested, cur)}
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!!s.typo_kept?.length && (
+                <div className="mb-3 text-xs text-fg-3">
+                  Priced as requested after you confirmed: {s.typo_kept.join(', ')} ·{' '}
+                  <button className="underline" disabled={!!busy || !file}
+                          onClick={() => { const m = { ...meta, typo_keep: [] }; setMeta(m); price(m); }}>
+                    undo
+                  </button>
+                </div>
+              )}
               {/* One row on a wide screen, two up on a phone — never a column. */}
               <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-2">
                 <Kpi label="Lines" value={s.lines} />
                 <Kpi label={`Total net · ${cur}`} value={money(s.grand_total, cur)} />
+                {/* A line with no cost is left OUT of this, never counted as a
+                    free one — the hint says how much of the money it saw. */}
                 <Kpi label="E2E @ proposed" value={pct(s.overall_e2e)}
-                     tone={s.target_e2e && s.overall_e2e !== null && s.overall_e2e < s.target_e2e
+                     tone={s.cost_missing ? 'var(--warn)'
+                             : s.target_e2e && s.overall_e2e !== null && s.overall_e2e < s.target_e2e
                              ? 'var(--warn)' : 'var(--ok)'}
-                     hint={s.target_e2e ? `target ${pct(s.target_e2e, 0)}` : 'no target on these groups'} />
+                     hint={s.cost_missing
+                             ? (s.cost_missing >= s.lines
+                                  ? 'no cost on any line'
+                                  : `over ${pct(s.cost_cover, 0)} of the money`)
+                             : s.target_e2e ? `target ${pct(s.target_e2e, 0)}` : 'no target on these groups'} />
                 {/* A double-digit RPI is what the approver challenges first, and
                     the total alone does not answer it — name the line it came
                     from when one line dominates. */}
@@ -1488,6 +1765,29 @@ export function LsdPage({ toast }: { toast: ToastFn }) {
                       {s.rework.why}.
                     </span>
                   )}
+                </div>
+              )}
+
+              {/* No cost, no margin. The usual cause is a CPQ export taken from
+                  a session whose price book never loaded: List Price comes back
+                  0 and Cost blank, and the list can be rescued from the Trigger
+                  sheet but the cost cannot. Say so where the E2E would be. */}
+              {!!s.cost_missing && (
+                <div className="mt-3 flex items-start gap-2 rounded-panel border border-line-2
+                                px-3 py-2.5 text-xs text-fg leading-relaxed"
+                     style={{ background: 'color-mix(in srgb, var(--warn) 7%, transparent)' }}>
+                  <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: 'var(--warn)' }} />
+                  <span>
+                    <b>No cost on {plural(s.cost_missing, 'line')}</b>
+                    {s.cost_missing >= s.lines
+                      ? <> — this case has no margin reading at all.</>
+                      : <> — the E2E above is measured over {pct(s.cost_cover, 0)} of the
+                          money, and says nothing about the rest.</>}
+                    {' '}Neither the transaction nor the master carries one for those
+                    materials. A List Price of 0 with no Customer Condition is the tell:
+                    the document was never priced in CPQ. Reprice it there, fetch it
+                    again and re-run this — before quoting a margin to anyone.
+                  </span>
                 </div>
               )}
 

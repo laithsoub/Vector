@@ -4,10 +4,10 @@ import {
   Sparkles, Send, Trash2, Copy, Check, Loader2, AlertCircle,
   Mail, ClipboardList, Zap, HelpCircle, ChevronRight, CornerDownLeft,
   MessageSquare, Plus, Search, ExternalLink, FolderOpen, X, FileText, User,
-  Download, ChevronDown, Eraser,
+  Download, ChevronDown, Eraser, Lightbulb, Megaphone, RefreshCw,
 } from 'lucide-react';
 import { cn } from '../lib/cn';
-import { api } from '../lib/api';
+import { api, type KnowledgeSource } from '../lib/api';
 import { failed } from '../lib/errors';
 import { relTime } from '../lib/ui';
 import { exportAnswer, EXPORT_FORMATS, type ExportFormat } from '../lib/export';
@@ -21,6 +21,16 @@ import {
 
 const CONVS_KEY  = 'mu_assistant_convs';
 const ACTIVE_KEY = 'mu_assistant_active';
+const SOURCES_KEY = 'mu_assistant_sources';
+
+// The two knowledge bases that used to be tabs of their own. Ask Vector always
+// reads both; pinning one (a composer chip) answers from it alone until the
+// message asks to look online or elsewhere.
+const SOURCES: Array<{ id: KnowledgeSource; label: string; hint: string; icon: typeof Lightbulb }> = [
+  { id: 'fenton', label: 'Fenton', hint: "Answer only from Mark Fenton's past answers", icon: Lightbulb },
+  { id: 'elinfo', label: 'EL Info', hint: 'Answer only from the EL internal updates (launches, phase-outs, stock)', icon: Megaphone },
+];
+const sourceNames = (ids: KnowledgeSource[]) => SOURCES.filter(x => ids.includes(x.id)).map(x => x.label).join(' + ');
 // localStorage is ~5 MB for the whole origin and this is not the only thing in it.
 const MAX_STORED_CONVS = 40;
 let _mid = Date.now();
@@ -47,6 +57,7 @@ interface Message {
   meta?: { count: number; scope: string; term: string }; // search summary header
   suggestions?: string[];                               // AI quick-action offers (clickable chips)
   title?: string;                                       // AI topic title (used to name exports)
+  sources?: KnowledgeSource[];                          // pinned knowledge sources it was asked/answered from
 }
 
 interface Conversation {
@@ -64,6 +75,7 @@ const QUICK_PROMPTS: Array<{
   prompt: string;
   emailHint?: true;
   quoteSearch?: true;
+  pin?: KnowledgeSource;                                 // pins this source; no prompt = just focus the box
 }> = [
   {
     label: 'Search for a Quote',
@@ -78,6 +90,20 @@ const QUICK_PROMPTS: Array<{
     icon: Mail,
     prompt: '',
     emailHint: true,
+  },
+  {
+    label: "What's new in EL?",
+    sub: 'Launches, phase-outs and stock from the EL internal updates',
+    icon: Megaphone,
+    prompt: "What's the current state of the EL internal updates? New launches, discontinued products and stock issues — newest first.",
+    pin: 'elinfo',
+  },
+  {
+    label: 'Ask Mark Fenton',
+    sub: "Answers from his past EL application guidance",
+    icon: Lightbulb,
+    prompt: '',
+    pin: 'fenton',
   },
   {
     label: 'Walk me through PMO',
@@ -104,10 +130,10 @@ const QUICK_PROMPTS: Array<{
     prompt: 'What went wrong with the last failed job? Explain the error and what I should do.',
   },
   {
-    label: 'Run Step 1 guide',
+    label: 'SharePoint List upload guide',
     sub: 'Extract PDFs and push to SharePoint',
     icon: ChevronRight,
-    prompt: 'Walk me through running Step 1 from scratch — what do I need to prepare and what could go wrong?',
+    prompt: 'Walk me through uploading quotes to the SharePoint List from scratch — what do I need to prepare and what could go wrong?',
   },
 ];
 
@@ -380,7 +406,8 @@ function Bubble({ msg, onCopy, toast, exportTitle }: {
   if (msg.role === 'user') {
     return (
       <UserMessage text={msg.text} time={msg.ts}
-        badge={msg.isEmail ? <Badge tone="warn" leftSection={<Mail className="w-3 h-3" />}>Email detected</Badge> : undefined} />
+        badge={msg.isEmail ? <Badge tone="warn" leftSection={<Mail className="w-3 h-3" />}>Email detected</Badge>
+          : msg.sources?.length ? <Badge tone="ai">{sourceNames(msg.sources)} only</Badge> : undefined} />
     );
   }
   return (
@@ -597,6 +624,33 @@ export function AssistantPage({
   const [aiAvailable, setAiAvailable] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [quoteSearchOpen, setQuoteSearchOpen] = useState(false);
+  const [pinned, setPinned] = useState<KnowledgeSource[]>(() => {
+    try { return (JSON.parse(localStorage.getItem(SOURCES_KEY) || '[]') as string[]).filter((x): x is KnowledgeSource => x === 'fenton' || x === 'elinfo'); }
+    catch { return []; }
+  });
+  useEffect(() => { try { localStorage.setItem(SOURCES_KEY, JSON.stringify(pinned)); } catch { /* private mode */ } }, [pinned]);
+  const togglePin = (id: KnowledgeSource) => setPinned(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+
+  // Pull Mark Fenton's new replies now instead of waiting for the 6-hourly
+  // background sweep (which also needs JOE cookies). The Outlook sweep walks
+  // both mailboxes, so it takes a few minutes.
+  const [fentonRefreshing, setFentonRefreshing] = useState(false);
+  const refreshFenton = async () => {
+    if (fentonRefreshing) return;
+    setFentonRefreshing(true);
+    toast('info', "Reading Mark Fenton's mail from Outlook — this takes a few minutes");
+    try {
+      const r = await api.fentonRefresh(false);
+      if (r.error) toast('err', `Fenton refresh: ${r.error}`);
+      else toast('ok', r.added
+        ? `Fenton: ${r.added} new mail${r.added === 1 ? '' : 's'} · ${r.cards.length} cards`
+        : `Fenton is up to date · ${r.cards.length} cards`);
+    } catch (e) {
+      toast('err', failed('refresh the Fenton knowledge base', e));
+    } finally {
+      setFentonRefreshing(false);
+    }
+  };
 
   const endRef       = useRef<HTMLDivElement>(null);
   const textareaRef  = useRef<HTMLTextAreaElement>(null);
@@ -693,8 +747,9 @@ export function AssistantPage({
   }
 
   // Send message
-  async function send(text?: string) {
+  async function send(text?: string, pinOverride?: KnowledgeSource[]) {
     const q = (text ?? input).trim();
+    const srcs = pinOverride ?? pinned;
     if (!q || loading || !aiAvailable) return;
 
     setInput('');
@@ -706,6 +761,7 @@ export function AssistantPage({
       text: q,
       isEmail: looksLikeEmail(q),
       ts: Date.now(),
+      sources: srcs.length ? srcs : undefined,
     };
 
     const currentConv = convs.find(c => c.id === activeId);
@@ -728,7 +784,7 @@ export function AssistantPage({
         role: m.role === 'assistant' ? 'model' : 'user',
         text: m.text,
       }));
-      const r = await api.quoteAsk(q, history);
+      const r = await api.quoteAsk(q, history, srcs.length ? srcs : undefined);
       const aiMsg: Message = {
         id: ++_mid,
         role: 'assistant',
@@ -796,7 +852,12 @@ export function AssistantPage({
     label: p.label,
     sub: p.sub,
     onRun: () => {
-      if (p.quoteSearch) setQuoteSearchOpen(true);
+      if (p.pin) {
+        const next = pinned.includes(p.pin) ? pinned : [...pinned, p.pin];
+        setPinned(next);
+        if (p.prompt) send(p.prompt, next); else textareaRef.current?.focus();
+      }
+      else if (p.quoteSearch) setQuoteSearchOpen(true);
       else if (p.emailHint) textareaRef.current?.focus();
       else send(p.prompt);
     },
@@ -915,8 +976,28 @@ export function AssistantPage({
             onSubmit={() => send()}
             loading={loading}
             disabled={!aiAvailable}
-            placeholder={isEmpty ? 'Ask anything, or paste an email…' : 'Follow up…'}
+            placeholder={pinned.length
+              ? `Ask ${sourceNames(pinned)}… (say “online” to look further)`
+              : isEmpty ? 'Ask anything, or paste an email…' : 'Follow up…'}
+            hint={pinned.length ? <>Only <strong className="font-semibold">{sourceNames(pinned)}</strong> · no web</> : undefined}
             tools={<>
+              {SOURCES.map(src => {
+                const on = pinned.includes(src.id);
+                return (
+                  <React.Fragment key={src.id}>
+                    <UiButton tone={on ? 'ai' : 'ghost'} size="xs" icon={src.icon}
+                      aria-pressed={on} onClick={() => togglePin(src.id)}
+                      hint={on ? `${src.hint} — click to use every source again` : src.hint}>
+                      {src.label}
+                    </UiButton>
+                    {src.id === 'fenton' && (
+                      <UiIconButton icon={RefreshCw} size="xs" label="Refresh Fenton from Outlook"
+                        loading={fentonRefreshing} disabled={fentonRefreshing} onClick={refreshFenton} />
+                    )}
+                  </React.Fragment>
+                );
+              })}
+              <span className="w-px h-4 bg-line-2 mx-1 shrink-0" aria-hidden />
               <UiButton tone="ghost" size="xs" icon={Search} onClick={() => setQuoteSearchOpen(true)}
                 hint="Search your past SharePoint quotes">
                 Quote search
@@ -927,7 +1008,7 @@ export function AssistantPage({
                     <UiButton tone="ghost" size="xs" icon={Sparkles} trailing={<ChevronDown className="w-3 h-3" />}>Quick asks</UiButton>
                   </Menu.Target>
                   <Menu.Dropdown>
-                    {QUICK_PROMPTS.filter(p => !p.emailHint && !p.quoteSearch).map(p => (
+                    {QUICK_PROMPTS.filter(p => p.prompt && !p.pin).map(p => (
                       <Menu.Item key={p.label} leftSection={<p.icon />} disabled={loading || !aiAvailable}
                         onClick={() => send(p.prompt)}>
                         {p.label}

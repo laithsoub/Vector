@@ -160,22 +160,34 @@ def run(job, log):
         log(f"Nothing matching {pat!r} to download.", "warn")
         out["downloaded"] = None
         return out
-    pick = picks[-1]                                   # already sorted by revision
-
-    got = json.loads(_evaluate(port, _download_js(pick["path"]), 120000) or "{}")
-    if got.get("error"):
-        raise RuntimeError(f"Could not download {pick['name']}: HTTP {got['error']}")
+    # EVERY approved revision, not just the newest. A revision that adds items has
+    # to be checked against the price the customer was actually given, and that may
+    # have been set two revisions back — the newest offer alone cannot answer it.
+    # They are small (~60 KB) and there are rarely more than a handful.
+    out["downloaded_all"] = []
     os.makedirs(job["out_dir"], exist_ok=True)
-    local = os.path.join(job["out_dir"], f"{pick['name']}.{pick['type']}")
-    with open(local, "wb") as fh:
-        fh.write(base64.b64decode(got["b64"]))
-    log(f"Downloaded {os.path.basename(local)} ({got['bytes'] / 1024:.0f} KB) — "
-        f"revision {revision_of(pick['name']) or 'first'}")
-    out["downloaded"] = {"name": pick["name"], "path": local,
-                         "revision": revision_of(pick["name"])}
+    for f in picks[-MAX_OFFERS:]:
+        got = json.loads(_evaluate(port, _download_js(f["path"]), 120000) or "{}")
+        if got.get("error"):
+            # One unreadable older revision must not fail the fetch: the newest is
+            # what the build carries from, and it is downloaded last.
+            log(f"Could not download {f['name']}: HTTP {got['error']}", "warn")
+            continue
+        local = os.path.join(job["out_dir"], f"{f['name']}.{f['type']}")
+        with open(local, "wb") as fh:
+            fh.write(base64.b64decode(got["b64"]))
+        log(f"Downloaded {os.path.basename(local)} ({got['bytes'] / 1024:.0f} KB) — "
+            f"revision {revision_of(f['name']) or 'first'}")
+        out["downloaded_all"].append({"name": f["name"], "path": local,
+                                      "revision": revision_of(f["name"])})
+    if not out["downloaded_all"]:
+        raise RuntimeError(f"Could not download any approved offer for {transaction}.")
+    # The newest one stays `downloaded` — it is what the build carries from.
+    out["downloaded"] = out["downloaded_all"][-1]
     return out
 
 
+MAX_OFFERS  = 8          # approved revisions of THIS transaction worth pulling
 MAX_HISTORY = 6          # the customer's newest earlier deals worth opening
 MIN_OVERLAP = 0.6        # share of this BOM's materials the old offer must price
 
