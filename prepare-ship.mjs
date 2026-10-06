@@ -31,7 +31,7 @@ const EXCLUDE_NAMES = new Set([
   'cbu_ref_scan.py',
   // LSD pricing: the rule, the margin floors and the prior-year logic are
   // internal pricing policy, and the tab is locked in the ship anyway
-  'lsd_pricing.py', 'cpq_fetch.py', 'lsd_register.py', 'tab_keepalive.py',
+  'lsd_pricing.py', 'lsd_macros.py', 'cpq_fetch.py', 'lsd_register.py', 'tab_keepalive.py',
   // internal maintenance tooling — audits/rewrites the shared D&Q Store, must
   // never reach an installed copy on someone else's machine
   'dq_backfill_audit.py',

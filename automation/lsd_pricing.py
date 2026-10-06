@@ -2595,6 +2595,7 @@ def build_case(bom_path, priced, summary, meta, log):
             base_path = _build_baseline(app, base_path, meta, log)
 
         wb = app.Workbooks.Open(os.path.abspath(work_path), UpdateLinks=0)
+        _repair_macros(wb, log)
         _fill_working(wb, priced, meta, log)
         _check_cancel(meta, "after filling the ledger")
 
@@ -2690,6 +2691,7 @@ def _build_baseline(app, path, meta, log):
     wb = None
     try:
         wb = app.Workbooks.Open(os.path.abspath(path), UpdateLinks=0)
+        _repair_macros(wb, log)
         _paste_bom(wb, meta)
         _set_header(wb, meta, log)
         app.CalculateFullRebuild()
@@ -2709,6 +2711,19 @@ def _build_baseline(app, path, meta, log):
         except Exception:
             pass
     return path
+
+
+def _repair_macros(wb, log):
+    """The model's own buttons, rewritten against the names the workbook holds
+    now (lsd_macros.py). The master is already patched; this keeps a build right
+    when someone drops in an unpatched master. A blocked VBA project only costs
+    the buttons, never the build."""
+    try:
+        import lsd_macros
+        lsd_macros.install(wb, LEDGER_SHEET, log)
+    except Exception as e:
+        log(f"Could not repair the model's macro buttons ({e}) — the file is fine, "
+            f"but its Working File / Refresh buttons may error.", "warn")
 
 
 def _paste_bom(wb, meta):
