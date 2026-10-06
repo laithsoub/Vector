@@ -2723,7 +2723,7 @@ def _repair_macros(wb, log):
         lsd_macros.install(wb, LEDGER_SHEET, log)
     except Exception as e:
         log(f"Could not repair the model's macro buttons ({e}) — the file is fine, "
-            f"but its Working File / Refresh buttons may error.", "warn")
+            f"but its Working File / Offer Letter icons may error.", "warn")
 
 
 def _paste_bom(wb, meta):

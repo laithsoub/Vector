@@ -13,8 +13,12 @@ for the offer letter). Both were recorded against names that no longer exist:
 so every master since July stops on "Run-time error '9': Subscript out of range"
 (verified on Dalia's untouched AUG 2026 master, 2026-10-06). This rewrites both
 against what the workbook actually holds — ThisWorkbook, the sheet found by name
-prefix, the pivot's own source range — and adds a Refresh button beside the
-ledger's 'Summary' that recalculates and refreshes the summary pivot.
+prefix, the pivot's own source range.
+
+No Refresh button (Laith, 2026-10-06: "skip the refresh button"). A button is a
+macro, and macros are blocked wherever the file was not opened with its content
+enabled, so it only ever errored; the Summary pivot refreshes natively
+(right-click → Refresh) and needs no macro.
 
 The code goes into the EXISTING modules (Module16, Module5) so the icons'
 [0]!WorkingFile / [0]!OfferLetter keep resolving. Needs "Trust access to the VBA
@@ -25,7 +29,7 @@ project object model" (HKCU ...\\Excel\\Security\\AccessVBOM = 1).
 import os
 import sys
 
-MARK = "' Vector macros v1"
+MARK = "' Vector macros v2"
 
 MODULE_WORKING = MARK + r"""
 ' Rewritten by Vector, 2026-10-06. The recorded version pointed at a sheet,
@@ -83,22 +87,6 @@ Private Sub DropLinks(wb As Workbook)
         wb.BreakLink Name:=v(i), Type:=xlLinkTypeExcelLinks
     Next i
     On Error GoTo 0
-End Sub
-
-' The Summary's Refresh button.
-Sub RefreshSummary()
-    Dim ws As Worksheet, pt As PivotTable
-    On Error GoTo Fail
-    Set ws = LedgerSheet()
-    If ws Is Nothing Then Set ws = ActiveSheet
-    Application.CalculateFull
-    For Each pt In ws.PivotTables
-        pt.PivotCache.Refresh
-        ShowRealGroups pt
-    Next pt
-    Exit Sub
-Fail:
-    MsgBox "Could not refresh the summary: " & Err.Description, vbExclamation, "Refresh"
 End Sub
 
 ' The 'Working File' icon: the ledger alone, as values, in a new workbook to send.
@@ -217,43 +205,21 @@ def _set_code(vbp, sub, code, fallback_name):
     cm.AddFromString(code)
 
 
-def _refresh_button(ws):
-    """A 'Refresh' button beside the ledger's 'Summary' heading."""
+def _drop_refresh_button(ws):
+    """The v1 'Refresh' button, if a file still carries it."""
     for i in range(ws.Shapes.Count, 0, -1):
         if ws.Shapes(i).Name == REFRESH_SHAPE:
             ws.Shapes(i).Delete()
-    anchor = None
-    for addr in ("AK9", "AK8", "AK10"):
-        if str(ws.Range(addr).Value or "").strip().lower().startswith("summary"):
-            anchor = ws.Range(addr)
-            break
-    if anchor is None:
-        anchor = ws.Range("AK9")
-    cell = anchor.Offset(1, 2)                    # the column right of the heading
-    h = max(float(cell.Height) - 2, 16.0)
-    shp = ws.Shapes.AddShape(5, float(cell.Left) + 4, float(cell.Top) + 1, 72.0, h)  # rounded rect
-    shp.Name = REFRESH_SHAPE
-    shp.Fill.ForeColor.RGB = 0x9C4F1F             # BGR → Eaton-ish blue #1F4F9C
-    shp.Line.Visible = 0
-    tr = shp.TextFrame2.TextRange
-    tr.Text = "Refresh"
-    tr.Font.Size = 10
-    tr.Font.Bold = -1
-    tr.Font.Fill.ForeColor.RGB = 0xFFFFFF
-    shp.TextFrame2.VerticalAnchor = 3             # middle
-    tr.ParagraphFormat.Alignment = 2              # centre
-    shp.Placement = 3                             # free-floating
-    shp.OnAction = "RefreshSummary"
 
 
 def install(wb, ledger_name="Model Ledger ", log=None):
-    """Rewrite WorkingFile / OfferLetter and add the Summary Refresh button.
+    """Rewrite WorkingFile / OfferLetter (and drop v1's Refresh button).
     Idempotent. Raises when the VBA project cannot be reached."""
     vbp = wb.VBProject
     _set_code(vbp, "WorkingFile", MODULE_WORKING, "Module16")
     _set_code(vbp, "OfferLetter", MODULE_OFFER, "Module5")
     led = wb.Worksheets(ledger_name)
-    _refresh_button(led)
+    _drop_refresh_button(led)
     # Bare macro names: a workbook-qualified OnAction breaks the moment the file
     # is renamed or opened from a mail.
     for ws, macro in ((led, "WorkingFile"), (wb.Worksheets("Feedback"), "OfferLetter")):
@@ -266,8 +232,7 @@ def install(wb, ledger_name="Model Ledger ", log=None):
             if act.lower().endswith("!" + macro.lower()) or act.lower() == macro.lower():
                 shp.OnAction = macro
     if log:
-        log("Repaired the model's Working File / Offer Letter buttons and added the "
-            "Summary Refresh button")
+        log("Repaired the model's Working File / Offer Letter buttons")
 
 
 def main(paths):
