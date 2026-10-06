@@ -661,6 +661,10 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
   const [, setClock]              = useState(0);
   const [selectedId, setSelectedRaw] = useState(_oSelected);
   const [detail, setDetail]       = useState<EmailDetail | null>(null);
+  const detailRef = useRef<EmailDetail | null>(null);
+  detailRef.current = detail;
+  // The id whose open failed, so the pane says so instead of spinning forever.
+  const [failedId, setFailedId]   = useState('');
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [compose, setCompose]     = useState<ComposeMode | null>(null);
   const [ribbon, setRibbon]       = usePref<RibbonTab>('ol_ribbon', 'home');
@@ -800,17 +804,35 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
     setCompose(null);
     setShowInline(false);
     if (!selectedId) { setDetail(null); return; }
+    // Already holding this message: it was just re-keyed below, no second fetch.
+    if (detailRef.current?.entryId === selectedId) { setLoadingDetail(false); return; }
     const ctl = new AbortController();
     setLoadingDetail(true);
+    setFailedId('');
     const t = setTimeout(() => {
       api.outlookEmail(selectedId, _storeOf[selectedId], ctl.signal)
         .then((r: any) => {
           if (ctl.signal.aborted) return;
-          if (r.error) { toast('warn', failed('open that email', r.error)); setDetail(null); return; }
-          setDetail(r as EmailDetail);
+          if (r.error) { toast('warn', failed('open that email', r.error)); setDetail(null); setFailedId(selectedId); return; }
+          const d = r as EmailDetail;
+          // A search hit can carry an id the index recorded before the message
+          // was moved; Outlook re-finds it under a NEW EntryID. Re-key the row to
+          // the real id, or the reading pane waits for a match that never comes.
+          const realId = d.entryId || selectedId;
+          if (realId !== selectedId) {
+            if (_storeOf[selectedId] && !_storeOf[realId]) _storeOf[realId] = _storeOf[selectedId];
+            const rekey = (e: EmailSummary) => e.entryId === selectedId ? { ...e, entryId: realId, unread: false } : e;
+            setEmails(prev => prev.map(rekey));
+            setDeep(prev => prev ? { ...prev, list: prev.list.map(rekey) } : prev);
+            detailRef.current = d;
+            setDetail(d);
+            setSelected(realId);
+            return;
+          }
+          setDetail(d);
           setEmails(prev => prev.map(e => e.entryId === selectedId ? { ...e, unread: false } : e));
         })
-        .catch(e => { if (!ctl.signal.aborted && !isCancel(e)) toast('err', failed('open that email', e)); })
+        .catch(e => { if (!ctl.signal.aborted && !isCancel(e)) { toast('err', failed('open that email', e)); setFailedId(selectedId); } })
         .finally(() => { if (!ctl.signal.aborted) setLoadingDetail(false); });
     }, 120);
     return () => { clearTimeout(t); ctl.abort(); };
@@ -1132,7 +1154,17 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
       );
     }
     if (!liveDetail) {
-      return <div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-fg-4" /></div>;
+      if (failedId !== selectedId) return <div className="h-full flex items-center justify-center"><Loader2 className="w-5 h-5 animate-spin text-fg-4" /></div>;
+      return (
+        <div className="h-full flex flex-col items-center justify-center gap-3 text-center px-6">
+          <Mail className="w-10 h-10 text-fg-4" strokeWidth={1.25} />
+          <p className="text-lg font-medium text-fg-2">Outlook could not open this message</p>
+          <p className="text-sm text-fg-4">It may have been moved or deleted since the search index last synced.</p>
+          <button className="text-sm text-accent-text hover:underline" onClick={() => {
+            const id = selectedId; setSelected(''); setTimeout(() => setSelected(id), 0);
+          }}>Try again</button>
+        </div>
+      );
     }
     const d = liveDetail;
     const files  = d.attachments.filter(a => !a.isInline);
@@ -1509,7 +1541,7 @@ function InboxOutlookPage({ toast, setTab, onUnreadCount, onSwitchLayout }: Inbo
               <div className="flex-1 min-h-0 overflow-y-auto">
                 {!liveDetail ? (
                   <div className="h-full flex flex-col items-center justify-center gap-2 px-6 text-center text-sm text-fg-3">
-                    {selectedId ? <Loader2 className="w-5 h-5 animate-spin text-fg-4" /> : <>
+                    {selectedId ? (failedId !== selectedId ? <Loader2 className="w-5 h-5 animate-spin text-fg-4" /> : 'Nothing to work on — the message did not open.') : <>
                       <Sparkles className="w-8 h-8 text-fg-4" strokeWidth={1.25} />
                       Select an email and Vector works on it here.
                     </>}

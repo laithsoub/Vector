@@ -569,7 +569,7 @@ export const api = {
   // `storeId` is the mailbox the hit came from; a shared-mailbox EntryID does
   // not resolve against the default store, so opening fails without it.
   outlookEmail:       (id: string, storeId?: string, signal?: AbortSignal) =>
-                        axios.get<any>(`/api/outlook/email/${encodeURIComponent(id)}`, { params: { store: storeId || 'default' }, timeout: 30_000, signal }).then(r => r.data),
+                        axios.get<any>(`/api/outlook/email/${encodeURIComponent(id)}`, { params: { store: storeId || 'default' }, timeout: 90_000, signal }).then(r => r.data),
   // Searches the scoped mail index (UKQuoteFactoryEL → Inbox + Completed by
   // Laith): subject, sender, recipients, body and attachment names. Falls back to
   // a live Outlook sweep while the index is still cold.
